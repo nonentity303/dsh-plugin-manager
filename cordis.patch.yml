@@ -1,0 +1,8 @@
+# plugin-manager patch layer: disable the read-only inventory tab (replaced by
+# this manager's tab) and insert the manager plugin row.
+- id: ui-settings-plugin-inventory
+  disabled: true
+
+- insert:
+    - id: plugin-manager-pro
+      name: '@dsh-local/plugin-manager'

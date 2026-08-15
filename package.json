@@ -1,7 +1,7 @@
 {
   "name": "@dsh-local/plugin-manager",
-  "version": "0.1.3",
-  "description": "本地插件管理器：列出插件名称/功能简介/必要程度(红黄绿)/启用状态(红黄灰绿)，提供启用停用开关",
+  "version": "0.2.1",
+  "description": "本地插件管理器：分类折叠、红黄绿状态、可配置更新源（npm/GitHub）的一键更新",
   "keywords": [
     "deepseek-harness",
     "dsh",

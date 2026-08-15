@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * 插件管理器 —— 浏览器端（打包产物 lib/client.js 由客户端模块系统经
- * /plugins/<id>/client.js 提供）。
+ * 插件管理器 —— 浏览器端 v0.2（打包产物 lib/client.js 由客户端模块系统提供）。
  *
- * 界面：插件名称 / 功能简介 / 必要程度（红=必须 黄=推荐 绿=可选）/
- * 启用状态（红=错误·需检查 黄=需更新 灰=未启用 绿=启用）/ 开关按键。
+ * 界面：按必要程度折叠分组（必须/推荐/可选）、插件名称/简介、
+ * 启用状态（红=错误·需检查 黄=需更新 灰=未启用 绿=启用）、
+ * 更新按钮（从配置的更新源拉取）、更新源管理面板。
  */
 
 const NS = "settings.pluginManagerPro";
@@ -30,6 +30,8 @@ const NECESSITY_META = {
 	optional: { color: COLORS.green, key: "necessityOptional" }
 };
 
+const NECESSITY_ORDER = ["core", "recommended", "optional"];
+
 /** 状态优先：错误(红) > 需更新(黄) > 未启用(灰)/启用(绿)。 */
 function statusOf(entry) {
 	if (entry.phase === "failed" || entry.error) return "error";
@@ -37,9 +39,11 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
+	const [open, setOpen] = useState(new Set(["core"]));
+	const [showSources, setShowSources] = useState(false);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
@@ -60,43 +64,96 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 		};
 	}, [list, request]);
 
-	const rows = useMemo(() => {
+	const searching = query.trim() !== "";
+
+	const sections = useMemo(() => {
 		if (state.status !== "ready") return [];
 		const normalized = query.trim().toLocaleLowerCase();
-		return state.snapshot.entries.filter((entry) => {
+		const filtered = state.snapshot.entries.filter((entry) => {
 			if (!normalized) return true;
 			return entry.configId.toLocaleLowerCase().includes(normalized)
 				|| entry.description.toLocaleLowerCase().includes(normalized)
 				|| entry.moduleName.toLocaleLowerCase().includes(normalized);
 		});
+		return NECESSITY_ORDER.map((key) => ({
+			key,
+			entries: filtered.filter((entry) => entry.necessity === key)
+		})).filter((section) => section.entries.length > 0);
 	}, [query, state]);
 
-	const refreshAll = () => {
-		setFeedback(null);
-		setBusy("refresh");
-		refresh().then((snapshot) => {
-			setState({ status: "ready", snapshot });
-		}, (error) => {
-			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
-		}).finally(() => setBusy(null));
-	};
+	const updatable = useMemo(() => {
+		if (state.status !== "ready") return [];
+		return state.snapshot.entries.filter((entry) => entry.needsUpdate === true && entry.managed);
+	}, [state]);
 
-	const toggle = async (entry) => {
-		setBusy(entry.entryId);
+	const run = async (key, operation) => {
+		setBusy(key);
 		setFeedback(null);
 		try {
-			const receipt = await setEnabled(entry.entryId, !entry.enabled);
-			setState({ status: "ready", snapshot: receipt.snapshot });
-			const failed = receipt.items.filter((item) => item.status === "failed").map((item) => item.message).filter(Boolean).join(" ");
-			const restart = receipt.items.filter((item) => item.status === "restart-required").map((item) => item.message).filter(Boolean).join(" ");
-			if (failed) setFeedback({ severity: "error", message: failed });
-			else if (restart) setFeedback({ severity: "warning", message: restart });
+			const result = await operation();
+			// list/refresh/getSources/setSources 直接返回快照本体；setEnabled/update 返回
+			// { ..., snapshot } 收据结构 —— 统一取快照。
+			const snapshot = result?.snapshot ?? result;
+			setState({ status: "ready", snapshot });
+			return result;
 		} catch (error) {
 			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+			return null;
 		} finally {
 			setBusy(null);
 		}
 	};
+
+	const refreshAll = () => run("refresh", () => refresh());
+
+	const toggle = (entry) => run(`entry:${entry.entryId}`, () => setEnabled(entry.entryId, !entry.enabled)).then((receipt) => {
+		if (!receipt) return;
+		const failed = receipt.items.filter((item) => item.status === "failed").map((item) => item.message).filter(Boolean).join(" ");
+		const restart = receipt.items.filter((item) => item.status === "restart-required").map((item) => item.message).filter(Boolean).join(" ");
+		if (failed) setFeedback({ severity: "error", message: failed });
+		else if (restart) setFeedback({ severity: "warning", message: restart });
+	});
+
+	const updateOne = (entry) => run(`update:${entry.packageName}`, () => update([entry.packageName])).then((receipt) => {
+		if (!receipt || receipt.items.length === 0) return;
+		const item = receipt.items[0];
+		if (item.status === "updated") setFeedback({ severity: "success", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "failed") setFeedback({ severity: "error", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "not-managed") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "up-to-date") setFeedback({ severity: "success", message: `${item.packageName}: ${t("upToDate")}` });
+	});
+
+	const updateAll = () => {
+		if (updatable.length === 0) return;
+		const names = updatable.map((entry) => entry.packageName);
+		run("update:all", () => update(names)).then((receipt) => {
+			if (!receipt) return;
+			const updated = receipt.items.filter((item) => item.status === "updated").length;
+			const failed = receipt.items.filter((item) => item.status === "failed").map((item) => `${item.packageName}: ${item.message}`).join(" ");
+			const skipped = receipt.items.filter((item) => item.status !== "updated" && item.message).map((item) => `${item.packageName}: ${item.message}`).join("；");
+			const parts = [];
+			if (updated > 0) parts.push(`${updated} 个已更新`);
+			if (skipped) parts.push(skipped);
+			if (failed) setFeedback({ severity: "error", message: parts.join("；") });
+			else setFeedback({ severity: "success", message: parts.join("；") });
+		});
+	};
+
+	const saveSources = (sources) => run("sources", () => setSources(sources)).then((snapshot) => {
+		if (snapshot) setFeedback({ severity: "success", message: t("sourcesSaved") });
+	});
+
+	const toggleSection = (key) => {
+		setOpen((current) => {
+			const next = new Set(current);
+			if (next.has(key)) next.delete(key);
+			else next.add(key);
+			return next;
+		});
+	};
+
+	const expandAll = () => setOpen(new Set(NECESSITY_ORDER));
+	const collapseAll = () => setOpen(new Set());
 
 	if (state.status === "loading") {
 		return <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("loading")}</p>;
@@ -110,18 +167,31 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 		);
 	}
 
+	const snapshot = state.snapshot;
+
 	return (
-		<section aria-label={t("title")} style={{ width: "100%", maxWidth: 860, display: "flex", flexDirection: "column", gap: 12, color: "var(--dsw-alias-label-primary)" }}>
-			<header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+		<section aria-label={t("title")} style={{ width: "100%", maxWidth: 880, display: "flex", flexDirection: "column", gap: 10, color: "var(--dsw-alias-label-primary)" }}>
+			<header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
 				<div>
 					<h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{t("title")}</h3>
 					<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
-						{t("profile")}: <code style={{ fontFamily: "var(--ds-font-family-code)" }}>{state.snapshot.profileName}</code>
+						{t("profile")}: <code style={{ fontFamily: "var(--ds-font-family-code)" }}>{snapshot.profileName}</code>
 					</p>
 				</div>
-				<button type="button" aria-label={t("refresh")} title={t("refresh")} onClick={refreshAll} disabled={busy === "refresh"} style={{ ...buttonStyle, width: 32, height: 32, display: "grid", placeItems: "center" }}>
-					{busy === "refresh" ? "…" : "↻"}
-				</button>
+				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+					{updatable.length > 0 ? (
+						<button type="button" onClick={updateAll} disabled={busy !== null}
+							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
+							{t("updateAll")} ({updatable.length})
+						</button>
+					) : null}
+					<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
+						{t("sources")}
+					</button>
+					<button type="button" aria-label={t("refresh")} title={t("refresh")} onClick={refreshAll} disabled={busy !== null} style={{ ...buttonStyle, width: 32, height: 32, display: "grid", placeItems: "center" }}>
+						{busy === "refresh" ? "…" : "↻"}
+					</button>
+				</div>
 			</header>
 
 			{/* 图例 */}
@@ -142,6 +212,9 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 				))}
 			</div>
 
+			{/* 更新源面板 */}
+			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
+
 			<label style={{ display: "flex", position: "relative", alignItems: "center" }}>
 				<span className="srOnly">{t("search")}</span>
 				<input
@@ -152,7 +225,7 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 					style={{
 						boxSizing: "border-box",
 						width: "100%",
-						height: 36,
+						height: 34,
 						border: "1px solid var(--dsw-alias-border-l2)",
 						background: "var(--dsw-alias-bg-layer-1)",
 						color: "var(--dsw-alias-label-primary)",
@@ -164,8 +237,8 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 				/>
 			</label>
 
-			{state.snapshot.entries.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("empty")}</p> : null}
-			{state.snapshot.entries.length > 0 && rows.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("emptySearch")}</p> : null}
+			{snapshot.entries.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("empty")}</p> : null}
+			{snapshot.entries.length > 0 && sections.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("emptySearch")}</p> : null}
 
 			{feedback ? (
 				<p role={feedback.severity === "error" ? "alert" : "status"} style={{
@@ -176,108 +249,258 @@ function PluginManagerTab({ list, refresh, setEnabled, t }) {
 					borderRadius: 6,
 					background: feedback.severity === "error"
 						? "color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)"
-						: "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 12%, transparent)",
+						: feedback.severity === "warning"
+							? "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 12%, transparent)"
+							: "color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 12%, transparent)",
 					color: feedback.severity === "error"
 						? "var(--dsw-alias-state-error-primary)"
-						: "var(--dsw-alias-state-warning-primary)"
+						: feedback.severity === "warning"
+							? "var(--dsw-alias-state-warning-primary)"
+							: "var(--dsw-alias-state-success-primary, #22c55e)"
 				}}>
 					{feedback.message}
 				</p>
 			) : null}
 
-			<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-				{rows.map((entry) => {
-					const status = statusOf(entry);
-					const statusMeta = STATUS_META[status];
-					const necessityMeta = NECESSITY_META[entry.necessity] ?? NECESSITY_META.recommended;
-					const running = busy === entry.entryId;
+			{/* 折叠分组（按必要程度） */}
+			{sections.length > 1 ? (
+				<div style={{ display: "flex", gap: 6, justifyContent: "flex-end", fontSize: 12 }}>
+					<button type="button" onClick={expandAll} style={linkButtonStyle}>{t("expandAll")}</button>
+					<button type="button" onClick={collapseAll} style={linkButtonStyle}>{t("collapseAll")}</button>
+				</div>
+			) : null}
+
+			<div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+				{sections.map((section) => {
+					const meta = NECESSITY_META[section.key];
+					const enabledCount = section.entries.filter((entry) => entry.enabled).length;
+					const sectionUpdatable = section.entries.filter((entry) => entry.needsUpdate === true && entry.managed).length;
+					const isOpen = searching || open.has(section.key);
 					return (
-						<li key={entry.entryId} style={{
-							display: "flex",
-							alignItems: "center",
-							gap: 10,
-							padding: "8px 10px",
+						<section key={section.key} style={{
 							border: "1px solid var(--dsw-alias-border-l2)",
 							background: "var(--dsw-alias-bg-layer-3)",
 							borderRadius: 8,
-							minWidth: 0
+							overflow: "hidden"
 						}}>
-							{/* 启用状态（红/黄/灰/绿） */}
-							<span title={entry.error ?? undefined} style={{ display: "inline-flex", alignItems: "center", gap: 5, flex: "none", width: 86, fontSize: 12, color: statusMeta.color }}>
-								<i style={{ width: 9, height: 9, borderRadius: "50%", background: statusMeta.color, display: "inline-block", flex: "none" }} />
-								{t(statusMeta.key)}
-							</span>
-							{/* 名称 + 简介 */}
-							<div style={{ flex: "1 1 auto", minWidth: 0 }}>
-								<div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-									<strong style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.configId}</strong>
-									<span style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.moduleName}</span>
-								</div>
-								<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-secondary)", fontSize: 12, lineHeight: "18px" }}>{entry.description}</p>
-								{entry.installedVersion || entry.latestVersion ? (
-									<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 11, fontFamily: "var(--ds-font-family-code)" }}>
-										{entry.installedVersion ?? "?"}{entry.latestVersion ? ` → ${entry.latestVersion}` : ""}
-										{entry.needsUpdate === null && entry.installedVersion ? ` (${t("versionUnknown")})` : ""}
-									</p>
-								) : null}
-							</div>
-							{/* 必要程度（红/黄/绿） */}
-							<span style={{
-								flex: "none",
-								fontSize: 11,
-								fontWeight: 600,
-								padding: "2px 8px",
-								borderRadius: 999,
-								border: `1px solid ${necessityMeta.color}`,
-								color: necessityMeta.color
-							}}>
-								{t(necessityMeta.key)}
-							</span>
-							{/* 开关按键 */}
-							<label
-								title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-								style={{
-									flex: "none",
-									display: "inline-flex",
-									alignItems: "center",
-									cursor: entry.protected || running ? "not-allowed" : "pointer",
-									opacity: entry.protected ? 0.55 : 1
-								}}
-							>
-								<input
-									type="checkbox"
-									checked={entry.enabled}
-									disabled={entry.protected || running}
-									aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-									onChange={() => toggle(entry)}
-									style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
-								/>
+							<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", userSelect: "none" }} onClick={() => toggleSection(section.key)}>
 								<span aria-hidden="true" style={{
-									position: "relative",
-									width: 36,
-									height: 20,
-									borderRadius: 999,
-									background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
-									transition: "background 120ms ease"
-								}}>
-									<i style={{
-										position: "absolute",
-										top: 2,
-										left: entry.enabled ? 18 : 2,
-										width: 16,
-										height: 16,
-										borderRadius: "50%",
-										background: "#fff",
-										transition: "left 120ms ease"
-									}} />
+									width: 10,
+									height: 10,
+									borderRadius: 3,
+									background: meta.color,
+									flex: "none",
+									transform: isOpen ? "rotate(90deg)" : "none",
+									transition: "transform 120ms ease",
+									clipPath: "polygon(0 0, 100% 50%, 0 100%)"
+								}} />
+								<span style={{ fontSize: 13, fontWeight: 600 }}>{t(meta.key)}</span>
+								<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
+									{enabledCount}/{section.entries.length}
 								</span>
-								{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
-							</label>
-						</li>
+								{sectionUpdatable > 0 ? (
+									<span style={{
+										fontSize: 11,
+										padding: "1px 7px",
+										borderRadius: 999,
+										background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 16%, transparent)",
+										color: "var(--dsw-alias-state-warning-primary)",
+										fontWeight: 600
+									}}>
+										{t("updateAvailable")} {sectionUpdatable}
+									</span>
+								) : null}
+								<span style={{ marginLeft: "auto", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
+									{isOpen ? "▾" : "▸"}
+								</span>
+							</header>
+							{isOpen ? (
+								<ul style={{ listStyle: "none", margin: 0, padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 6 }}>
+									{section.entries.map((entry) => {
+										const status = statusOf(entry);
+										const statusMeta = STATUS_META[status];
+										const running = busy === `entry:${entry.entryId}` || busy === `update:${entry.packageName}`;
+										const updating = busy === `update:${entry.packageName}` || busy === "update:all";
+										const canUpdate = entry.needsUpdate === true && entry.managed && !updating;
+										return (
+											<li key={entry.entryId} style={{
+												display: "flex",
+												alignItems: "center",
+												gap: 10,
+												padding: "8px 10px",
+												border: "1px solid var(--dsw-alias-border-l2)",
+												background: "var(--dsw-alias-bg-layer-1)",
+												borderRadius: 8,
+												minWidth: 0
+											}}>
+												<span title={entry.error ?? undefined} style={{ display: "inline-flex", alignItems: "center", gap: 5, flex: "none", width: 86, fontSize: 12, color: statusMeta.color }}>
+													<i style={{ width: 9, height: 9, borderRadius: "50%", background: statusMeta.color, display: "inline-block", flex: "none" }} />
+													{t(statusMeta.key)}
+												</span>
+												<div style={{ flex: "1 1 auto", minWidth: 0 }}>
+													<div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+														<strong style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.configId}</strong>
+														<span style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.moduleName}</span>
+													</div>
+													<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-secondary)", fontSize: 12, lineHeight: "18px" }}>{entry.description}</p>
+													{entry.installedVersion || entry.latestVersion ? (
+														<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 11, fontFamily: "var(--ds-font-family-code)" }}>
+															{entry.installedVersion ?? "?"}{entry.latestVersion ? ` → ${entry.latestVersion}` : ""}
+															{entry.updateSource ? ` (${entry.updateSource})` : ""}
+															{entry.needsUpdate === null && entry.installedVersion ? ` (${t("versionUnknown")})` : ""}
+														</p>
+													) : null}
+												</div>
+												<span style={{
+													flex: "none",
+													fontSize: 11,
+													fontWeight: 600,
+													padding: "2px 8px",
+													borderRadius: 999,
+													border: `1px solid ${NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow}`,
+													color: NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow
+												}}>
+													{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
+												</span>
+												{canUpdate ? (
+													<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
+														style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
+														{t("update")}
+													</button>
+												) : entry.needsUpdate === true && !entry.managed ? (
+													<span title={entry.moduleName} style={{ flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("notManaged")}</span>
+												) : null}
+												<label
+													title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+													style={{
+														flex: "none",
+														display: "inline-flex",
+														alignItems: "center",
+														cursor: entry.protected || running ? "not-allowed" : "pointer",
+														opacity: entry.protected ? 0.55 : 1
+													}}
+												>
+													<input
+														type="checkbox"
+														checked={entry.enabled}
+														disabled={entry.protected || running}
+														aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+														onChange={() => toggle(entry)}
+														style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+													/>
+													<span aria-hidden="true" style={{
+														position: "relative",
+														width: 36,
+														height: 20,
+														borderRadius: 999,
+														background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
+														transition: "background 120ms ease"
+													}}>
+														<i style={{
+															position: "absolute",
+															top: 2,
+															left: entry.enabled ? 18 : 2,
+															width: 16,
+															height: 16,
+															borderRadius: "50%",
+															background: "#fff",
+															transition: "left 120ms ease"
+														}} />
+													</span>
+													{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
+												</label>
+											</li>
+										);
+									})}
+								</ul>
+							) : null}
+						</section>
 					);
 				})}
-			</ul>
+			</div>
 		</section>
+	);
+}
+
+/** 更新源管理面板。 */
+function SourcesPanel({ sources, save, busy, t }) {
+	const [draft, setDraft] = useState(sources);
+	const [newName, setNewName] = useState("");
+	const [newUrl, setNewUrl] = useState("");
+
+	useEffect(() => {
+		setDraft(sources);
+	}, [sources]);
+
+	const setEnabled = (index, enabled) => {
+		setDraft((current) => current.map((s, i) => (i === index ? { ...s, enabled } : s)));
+	};
+	const removeAt = (index) => {
+		setDraft((current) => current.filter((_, i) => i !== index));
+	};
+	const addSource = () => {
+		const url = newUrl.trim();
+		if (!url || !/^https?:\/\//.test(url)) return;
+		const type = /^https?:\/\/github\.com\//.test(url) ? "github" : "registry";
+		setDraft((current) => [...current, { name: newName.trim() || url, url, enabled: true, official: false, type }]);
+		setNewName("");
+		setNewUrl("");
+	};
+	const resetDefaults = () => {
+		setDraft([
+			{ name: "官方源 (npm)", url: "https://registry.npmjs.org", enabled: true, official: true, type: "registry" },
+			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: true, official: true, type: "github" },
+			{ name: "npmmirror 镜像", url: "https://registry.npmmirror.com", enabled: false, official: false, type: "registry" }
+		]);
+	};
+
+	return (
+		<div style={{
+			border: "1px solid var(--dsw-alias-border-l2)",
+			background: "var(--dsw-alias-bg-layer-2)",
+			borderRadius: 8,
+			padding: "10px 12px",
+			display: "flex",
+			flexDirection: "column",
+			gap: 8
+		}}>
+			<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("sourcesTitle")}</span>
+				<button type="button" onClick={resetDefaults} style={linkButtonStyle}>{t("resetSources")}</button>
+			</div>
+			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("sourcesHint")}</p>
+			{draft.length === 0 ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{t("noSources")}</p> : null}
+			<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+				{draft.map((source, index) => (
+					<li key={index} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+						<label style={{ display: "inline-flex", alignItems: "center", gap: 4, flex: "none", cursor: "pointer" }}>
+							<input type="checkbox" checked={source.enabled} onChange={(e) => setEnabled(index, e.currentTarget.checked)} />
+							{t("enabled")}
+						</label>
+						<span style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 180 }} title={source.name}>
+							{source.name}
+							{source.official ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("official")}</em> : null}
+							{source.type === "github" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-label-tertiary)", marginLeft: 4 }}>GitHub</em> : null}
+						</span>
+						<code style={{ flex: "1 1 auto", fontFamily: "var(--ds-font-family-code)", fontSize: 11, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</code>
+						<button type="button" onClick={() => removeAt(index)} style={linkButtonStyle} disabled={busy}>{t("remove")}</button>
+					</li>
+				))}
+			</ul>
+			<div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+				<input value={newName} placeholder={t("sourceName")} onChange={(e) => setNewName(e.currentTarget.value)}
+					style={inputStyle} />
+				<input value={newUrl} placeholder={t("sourceUrl")} onChange={(e) => setNewUrl(e.currentTarget.value)}
+					style={{ ...inputStyle, flex: "1 1 220px" }} />
+				<button type="button" onClick={addSource} style={buttonStyle}>{t("addSource")}</button>
+			</div>
+			<div style={{ display: "flex", justifyContent: "flex-end" }}>
+				<button type="button" onClick={() => save(draft)} disabled={busy}
+					style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
+					{t("saveSources")}
+				</button>
+			</div>
+		</div>
 	);
 }
 
@@ -292,13 +515,36 @@ const buttonStyle = {
 	fontSize: 12
 };
 
+const linkButtonStyle = {
+	border: "none",
+	background: "none",
+	color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+	font: "inherit",
+	fontSize: 12,
+	cursor: "pointer",
+	padding: "2px 4px"
+};
+
+const inputStyle = {
+	boxSizing: "border-box",
+	height: 30,
+	border: "1px solid var(--dsw-alias-border-l2)",
+	background: "var(--dsw-alias-bg-layer-1)",
+	color: "var(--dsw-alias-label-primary)",
+	borderRadius: 6,
+	padding: "0 10px",
+	fontSize: 12,
+	font: "inherit",
+	flex: "1 1 140px"
+};
+
 /** 本地化文案。 */
 const zh = {
 	tab: "插件管理",
 	title: "插件管理",
 	profile: "当前配置",
 	search: "搜索插件名称/简介/包名",
-	refresh: "刷新并重新检测版本",
+	refresh: "检查更新并刷新状态",
 	loading: "正在读取插件…",
 	error: "暂时无法读取插件。",
 	retry: "重试",
@@ -315,7 +561,27 @@ const zh = {
 	statusEnabled: "启用",
 	enableEntry: "启用",
 	disableEntry: "停用",
-	versionUnknown: "版本未知"
+	versionUnknown: "版本未知",
+	update: "更新",
+	updateAll: "全部更新",
+	upToDate: "已是最新版本",
+	notManaged: "随安装更新",
+	updateAvailable: "可更新",
+	expandAll: "全部展开",
+	collapseAll: "全部收起",
+	sources: "更新源",
+	sourcesTitle: "更新源配置",
+	sourcesHint: "版本检查与更新从启用的源获取；官方 npm 源与 GitHub 官方仓库已预填。GitHub 源适用于仓库根 package.json 的 name 匹配包名、并以 GitHub Releases 发版的插件。可添加私有/镜像 registry。",
+	sourcesSaved: "更新源已保存，正在重新检查版本…",
+	resetSources: "恢复默认源",
+	addSource: "添加",
+	remove: "删除",
+	sourceName: "源名称",
+	sourceUrl: "源地址 (https://…)",
+	saveSources: "保存更新源",
+	official: "官方",
+	enabled: "启用",
+	noSources: "没有启用的更新源，版本检查不可用。"
 };
 
 const en = {
@@ -323,7 +589,7 @@ const en = {
 	title: "Plugin manager",
 	profile: "Active profile",
 	search: "Search by name, description or package",
-	refresh: "Refresh and re-check versions",
+	refresh: "Check updates and refresh",
 	loading: "Reading plugins…",
 	error: "Plugins are temporarily unavailable.",
 	retry: "Retry",
@@ -340,7 +606,27 @@ const en = {
 	statusEnabled: "Enabled",
 	enableEntry: "Enable",
 	disableEntry: "Disable",
-	versionUnknown: "version unknown"
+	versionUnknown: "version unknown",
+	update: "Update",
+	updateAll: "Update all",
+	upToDate: "Already up to date",
+	notManaged: "ships with install",
+	updateAvailable: "updates",
+	expandAll: "Expand all",
+	collapseAll: "Collapse all",
+	sources: "Sources",
+	sourcesTitle: "Update sources",
+	sourcesHint: "Version checks and updates use the enabled sources; the official npm source and the GitHub official repo are pre-filled. A GitHub source applies to packages whose repo-root package.json name matches and which release via GitHub Releases. Private/mirror registries can be added.",
+	sourcesSaved: "Sources saved; re-checking versions…",
+	resetSources: "Reset to defaults",
+	addSource: "Add",
+	remove: "Remove",
+	sourceName: "Name",
+	sourceUrl: "URL (https://…)",
+	saveSources: "Save sources",
+	official: "official",
+	enabled: "enabled",
+	noSources: "No enabled sources; version checks unavailable."
 };
 
 const inject = [
@@ -363,7 +649,9 @@ async function apply(ctx) {
 		const api = {
 			list: async () => unwrap(await scope.remote.pluginManagerPro.list()),
 			refresh: async () => unwrap(await scope.remote.pluginManagerPro.refresh()),
-			setEnabled: async (entryId, enabled) => unwrap(await scope.remote.pluginManagerPro.setEnabled(entryId, enabled))
+			setEnabled: async (entryId, enabled) => unwrap(await scope.remote.pluginManagerPro.setEnabled(entryId, enabled)),
+			update: async (packageNames) => unwrap(await scope.remote.pluginManagerPro.update(packageNames)),
+			setSources: async (sources) => unwrap(await scope.remote.pluginManagerPro.setSources(sources))
 		};
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",

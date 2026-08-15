@@ -1,8 +1,10 @@
 // test-bundle.mjs — 模拟浏览器端 DSH 客户端模块加载器，验证 bundle 契约
 // 用法: node test-bundle.mjs [path-to-client.js]
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import vm from "node:vm";
 
+const require = createRequire(import.meta.url);
 const file = process.argv[2] ?? "lib/client.js";
 const code = readFileSync(file, "utf8");
 
@@ -43,8 +45,14 @@ if (typeof handoff.factory !== "function") {
 	process.exit(1);
 }
 
-// 执行 factory（模块表 require 只解析 react 存根；渲染期才真正用到）
-const exported = handoff.factory((id) => ({ __stub: id }));
+// 用真实模块解析执行 factory（react 等 external 由宿主模块表提供，本地用 node_modules 模拟）
+const exported = handoff.factory((id) => {
+	try {
+		return require(id);
+	} catch {
+		return { __stub: id };
+	}
+});
 
 if (typeof exported?.apply !== "function") {
 	console.error("FAIL: bundle exports no apply() — got", Object.keys(exported ?? {}));

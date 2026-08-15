@@ -1,4 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
+// namespace import：shell 的 react 是 CJS（module.exports = React，无 default），
+// default 导入会被 esbuild 生成 .default 引用导致运行时崩溃（TabBoundary extends undefined）。
+import * as React from "react";
+const { useEffect, useMemo, useState } = React;
 
 /**
  * 插件管理器 —— 浏览器端 v0.2（打包产物 lib/client.js 由客户端模块系统提供）。
@@ -39,7 +42,7 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [open, setOpen] = useState(new Set(["core"]));
@@ -139,6 +142,14 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) 
 		});
 	};
 
+	/** 一键还原：清空管理器写入的所有开关行（界面崩坏后的自救入口）。 */
+	const resetAll = () => {
+		if (!window.confirm(t("resetConfirm"))) return;
+		run("reset", () => resetToggles()).then((snapshot) => {
+			if (snapshot) setFeedback({ severity: "success", message: t("resetDone") });
+		});
+	};
+
 	const saveSources = (sources) => run("sources", () => setSources(sources)).then((snapshot) => {
 		if (snapshot) setFeedback({ severity: "success", message: t("sourcesSaved") });
 	});
@@ -179,6 +190,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) 
 					</p>
 				</div>
 				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+					<button type="button" onClick={resetAll} disabled={busy !== null}
+						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
+						{t("resetToggles")}
+					</button>
 					{updatable.length > 0 ? (
 						<button type="button" onClick={updateAll} disabled={busy !== null}
 							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
@@ -362,6 +377,19 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) 
 												}}>
 													{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
 												</span>
+												{entry.archived ? (
+													<span title={entry.protectionReason} style={{
+														flex: "none",
+														fontSize: 11,
+														padding: "2px 8px",
+														borderRadius: 999,
+														border: "1px solid var(--dsw-alias-border-l2)",
+														color: "var(--dsw-alias-label-tertiary)",
+														whiteSpace: "nowrap"
+													}}>
+														{t("archived")}
+													</span>
+												) : null}
 												{canUpdate ? (
 													<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
 														style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
@@ -369,6 +397,9 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) 
 													</button>
 												) : entry.needsUpdate === true && !entry.managed ? (
 													<span title={entry.moduleName} style={{ flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("notManaged")}</span>
+												) : null}
+												{entry.protected ? (
+													<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
 												) : null}
 												<label
 													title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
@@ -420,6 +451,32 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, t }) 
 			</div>
 		</section>
 	);
+}
+
+/** 组件级错误边界：渲染异常只影响本 tab，不拖垮整个设置页。 */
+class TabBoundary extends React.Component {
+	constructor(props) {
+		super(props);
+		this.state = { error: null };
+	}
+	static getDerivedStateFromError(error) {
+		return { error };
+	}
+	render() {
+		if (this.state.error !== null) {
+			return (
+				<p role="alert" style={{ color: "var(--dsw-alias-state-error-primary)", fontSize: 13, margin: 0 }}>
+					插件管理器渲染出错：{String(this.state.error)}。请刷新页面后重试。
+				</p>
+			);
+		}
+		return this.props.children;
+	}
+}
+
+/** 以错误边界包裹的 tab（注册进设置区的是这个组件）。 */
+function SafeTab(props) {
+	return React.createElement(TabBoundary, null, React.createElement(PluginManagerTab, props));
 }
 
 /** 更新源管理面板。 */
@@ -581,7 +638,11 @@ const zh = {
 	saveSources: "保存更新源",
 	official: "官方",
 	enabled: "启用",
-	noSources: "没有启用的更新源，版本检查不可用。"
+	noSources: "没有启用的更新源，版本检查不可用。",
+	resetToggles: "重置开关",
+	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
+	resetDone: "已还原所有开关状态。",
+	archived: "架构保留"
 };
 
 const en = {
@@ -626,7 +687,11 @@ const en = {
 	saveSources: "Save sources",
 	official: "official",
 	enabled: "enabled",
-	noSources: "No enabled sources; version checks unavailable."
+	noSources: "No enabled sources; version checks unavailable.",
+	resetToggles: "Reset toggles",
+	resetConfirm: "Reset every plugin toggle changed by this manager? (Only manager-owned rows are cleared; your own config is untouched.)",
+	resetDone: "All toggles have been reset.",
+	archived: "archived"
 };
 
 const inject = [
@@ -646,12 +711,18 @@ async function apply(ctx) {
 			if (result.ok) return result.value;
 			throw new Error(`${result.error.code}: ${result.error.message}`);
 		};
+		// 远程调用 30 秒超时：连接异常时给出明确错误而不是永久转圈
+		const withTimeout = (promise, label) => Promise.race([
+			promise,
+			new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}：操作超时（30 秒）`)), 30000))
+		]);
 		const api = {
-			list: async () => unwrap(await scope.remote.pluginManagerPro.list()),
-			refresh: async () => unwrap(await scope.remote.pluginManagerPro.refresh()),
-			setEnabled: async (entryId, enabled) => unwrap(await scope.remote.pluginManagerPro.setEnabled(entryId, enabled)),
-			update: async (packageNames) => unwrap(await scope.remote.pluginManagerPro.update(packageNames)),
-			setSources: async (sources) => unwrap(await scope.remote.pluginManagerPro.setSources(sources))
+			list: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.list(), "读取插件列表")),
+			refresh: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.refresh(), "检查更新")),
+			setEnabled: async (entryId, enabled) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setEnabled(entryId, enabled), "切换插件状态")),
+			update: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.update(packageNames), "更新插件")),
+			setSources: async (sources) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSources(sources), "保存更新源")),
+			resetToggles: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.resetToggles(), "重置开关"))
 		};
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",
@@ -660,7 +731,7 @@ async function apply(ctx) {
 			label: () => t("tab"),
 			locale: NS,
 			inject: () => ({ ...api, t })
-		}, PluginManagerTab));
+		}, SafeTab));
 	});
 	return async () => {
 		await feature.dispose();

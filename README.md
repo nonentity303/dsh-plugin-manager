@@ -8,6 +8,13 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 
 ## 功能特性（v0.2）
 
+### 安全与加固（v0.2.3 / v0.2.4）
+- **架构保留**：web 层刻意禁用、由浏览器端提供的行（tool-fs/tool-bash/tool-subagent 等）标记「架构保留」并禁止开关——防止误启用导致服务端重复注册与界面崩坏
+- **界面必需保护**：ui-layout/ui-sidebar/ui-conversation/ui-theme/ui-tool 等界面骨架插件禁止开关（🔒 标记 + 原因提示）
+- **一键还原**：工具栏「重置开关」一键清空管理器写入的所有行（界面异常后自救入口）
+- **健壮性**：远程调用 30 秒超时（不再永久转圈）；组件级错误边界（渲染异常只影响本 tab）；修复 CJS react 的 `default` 互操作崩溃（TabBoundary extends undefined）
+- **可观测**：宿主操作日志（setEnabled/update/resetToggles 写入 host web 日志）
+
 ### 分类折叠
 插件按**必要程度**收纳成三个可折叠分组：🔴 **必须**（核心基础设施）· 🟡 **推荐** · 🟢 **可选**；分组头部显示启用计数与可更新角标，支持全部展开/收起（搜索时自动展开）。
 

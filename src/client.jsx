@@ -42,11 +42,12 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [open, setOpen] = useState(new Set(["core"]));
 	const [showSources, setShowSources] = useState(false);
+	const [showRescue, setShowRescue] = useState(false);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
@@ -190,6 +191,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					</p>
 				</div>
 				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+					<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
+						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
+						{t("rescue")}
+					</button>
 					<button type="button" onClick={resetAll} disabled={busy !== null}
 						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
 						{t("resetToggles")}
@@ -229,6 +234,19 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
+
+			{/* 救砖面板 */}
+			{showRescue ? <RescuePanel
+				diagnose={diagnose}
+				quarantine={quarantine}
+				repairHarness={repairHarness}
+				restartHarness={restartHarness}
+				uninstallPackages={uninstallPackages}
+				getRescueConfig={getRescueConfig}
+				setRescueConfig={setRescueConfig}
+				managed={snapshot.entries.filter((entry) => entry.managed)}
+				t={t}
+			/> : null}
 
 			<label style={{ display: "flex", position: "relative", alignItems: "center" }}>
 				<span className="srOnly">{t("search")}</span>
@@ -479,6 +497,177 @@ function SafeTab(props) {
 	return React.createElement(TabBoundary, null, React.createElement(PluginManagerTab, props));
 }
 
+/** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置。 */
+function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, managed, t }) {
+	const [issues, setIssues] = useState(null);
+	const [busy, setBusy] = useState(false);
+	const [feedback, setFeedback] = useState(null);
+	const [auto, setAuto] = useState(false);
+
+	useEffect(() => {
+		let current = true;
+		getRescueConfig().then((config) => {
+			if (current) setAuto(config.autoQuarantine === true);
+		}, () => {});
+		runDiagnose();
+		return () => {
+			current = false;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const runDiagnose = async () => {
+		setBusy(true);
+		setFeedback(null);
+		try {
+			const result = await diagnose();
+			setIssues(result.issues ?? []);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runQuarantine = async (entryId) => {
+		setBusy(true);
+		try {
+			const result = await quarantine([entryId]);
+			const item = result.items?.[0];
+			setFeedback({ severity: item?.status === "disabled" ? "success" : "warning", message: item ? `${item.status}${item.message ? `：${item.message}` : ""}` : "完成" });
+			runDiagnose();
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runRepair = async () => {
+		if (!window.confirm(t("rescueRepairConfirm"))) return;
+		setBusy(true);
+		try {
+			const result = await repairHarness();
+			const lines = (result.actions ?? []).map((a) => `· ${a.action}: ${a.detail}`).join("\n");
+			setFeedback({ severity: "success", message: `${t("rescueRepairDone")}\n${lines}\n${t("rescueRestartHint")} ${result.restartCommand}` });
+			runDiagnose();
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runRestart = async () => {
+		if (!window.confirm(t("rescueRestartConfirm"))) return;
+		try {
+			const result = await restartHarness();
+			setFeedback({ severity: "warning", message: result.message });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		}
+	};
+
+	const runUninstall = async (packageName) => {
+		if (!window.confirm(`${t("rescueUninstallConfirm")} ${packageName}`)) return;
+		setBusy(true);
+		try {
+			const result = await uninstallPackages([packageName]);
+			const item = result.items?.[0];
+			setFeedback({ severity: item?.status === "removed" ? "success" : "warning", message: item ? item.message ?? item.status : "完成" });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const saveAuto = async (enabled) => {
+		setBusy(true);
+		try {
+			await setRescueConfig({ autoQuarantine: enabled });
+			setAuto(enabled);
+			setFeedback({ severity: "success", message: t("rescueAutoSaved") });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div style={{
+			border: "1px solid var(--dsw-alias-state-error-primary)",
+			background: "color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent)",
+			borderRadius: 8,
+			padding: "10px 12px",
+			display: "flex",
+			flexDirection: "column",
+			gap: 8
+		}}>
+			<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
+				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" }}>🛟 {t("rescueTitle")}</span>
+				<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
+			</div>
+			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueHint")}</p>
+
+			{issues === null ? null : issues.length === 0 ? (
+				<p className="ok-note" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-success-primary, #22c55e)" }}>{t("rescueClean")}</p>
+			) : (
+				<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+					{issues.map((issue) => (
+						<div key={issue.entryId} style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 8, padding: "8px 10px" }}>
+							<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+								<b style={{ fontSize: 13, color: "var(--dsw-alias-state-error-primary)" }}>{issue.configId}</b>
+								<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{issue.moduleName} · {issue.phase}</span>
+								<span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+									{issue.suggestion === "disable" ? (
+										<button type="button" onClick={() => runQuarantine(issue.entryId)} disabled={busy}
+											style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
+											{t("rescueDisable")}
+										</button>
+									) : <span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("rescueProtected")}</span>}
+									{issue.canUninstall ? (
+										<button type="button" onClick={() => runUninstall(issue.moduleName)} disabled={busy} style={buttonStyle}>{t("rescueUninstall")}</button>
+									) : null}
+								</span>
+							</div>
+							{issue.error ? <pre style={{ margin: "6px 0 0", fontSize: 11, color: "var(--dsw-alias-label-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 80, overflow: "auto" }}>{issue.error}</pre> : null}
+						</div>
+					))}
+				</div>
+			)}
+
+			<div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+				<button type="button" onClick={runRepair} disabled={busy} style={{ ...buttonStyle, background: "var(--dsw-alias-state-error-primary)", color: "#fff", fontWeight: 600 }}>{t("rescueRepair")}</button>
+				<button type="button" onClick={runRestart} disabled={busy} style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>{t("rescueRestart")}</button>
+				<label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, cursor: "pointer", marginLeft: 8 }}>
+					<input type="checkbox" checked={auto} disabled={busy} onChange={(e) => saveAuto(e.currentTarget.checked)} />
+					{t("rescueAuto")}
+				</label>
+			</div>
+
+			{managed.length > 0 ? (
+				<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+					<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("rescueUninstallList")}</span>
+					<div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+						{managed.map((entry) => (
+							<span key={entry.packageName} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 999, padding: "2px 8px", fontSize: 11 }}>
+								{entry.configId}
+								<button type="button" onClick={() => runUninstall(entry.packageName)} disabled={busy} style={linkButtonStyle}>{t("rescueUninstall")}</button>
+							</span>
+						))}
+					</div>
+				</div>
+			) : null}
+
+			{feedback ? (
+				<p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p>
+			) : null}
+		</div>
+	);
+}
+
 /** 更新源管理面板。 */
 function SourcesPanel({ sources, save, busy, t }) {
 	const [draft, setDraft] = useState(sources);
@@ -642,7 +831,25 @@ const zh = {
 	resetToggles: "重置开关",
 	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
 	resetDone: "已还原所有开关状态。",
-	archived: "架构保留"
+	archived: "架构保留",
+	rescue: "救砖",
+	rescueTitle: "救援中心",
+	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
+	rescueDiagnose: "运行诊断",
+	rescueClean: "✓ 未发现加载失败或运行期错误。",
+	rescueDisable: "禁用此插件",
+	rescueUninstall: "卸载",
+	rescueProtected: "救援保护条目",
+	rescueRepair: "一键修复引擎",
+	rescueRepairConfirm: "确认执行修复？将重置管理器开关、隔离全部失败插件并清空缓存。",
+	rescueRepairDone: "✓ 修复完成",
+	rescueRestartHint: "重启命令：",
+	rescueRestart: "重启引擎",
+	rescueRestartConfirm: "确认重启 dsh web 引擎？当前页面将断连，约 3-5 秒后恢复（请刷新页面）。",
+	rescueAuto: "失败插件自动隔离",
+	rescueAutoSaved: "自动隔离设置已保存。",
+	rescueUninstallList: "可卸载的 profile 依赖：",
+	rescueUninstallConfirm: "确认卸载"
 };
 
 const en = {
@@ -691,7 +898,25 @@ const en = {
 	resetToggles: "Reset toggles",
 	resetConfirm: "Reset every plugin toggle changed by this manager? (Only manager-owned rows are cleared; your own config is untouched.)",
 	resetDone: "All toggles have been reset.",
-	archived: "archived"
+	archived: "archived",
+	rescue: "Rescue",
+	rescueTitle: "Rescue center",
+	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🛟 button, bottom right).",
+	rescueDiagnose: "Diagnose",
+	rescueClean: "✓ No failing plugins found.",
+	rescueDisable: "Disable",
+	rescueUninstall: "Uninstall",
+	rescueProtected: "protected",
+	rescueRepair: "Repair harness",
+	rescueRepairConfirm: "Run repair? This resets manager toggles, quarantines every failing plugin and clears caches.",
+	rescueRepairDone: "✓ Repair done",
+	rescueRestartHint: "Restart command:",
+	rescueRestart: "Restart engine",
+	rescueRestartConfirm: "Restart the dsh web engine? This page will disconnect and return in ~3-5s (refresh then).",
+	rescueAuto: "Auto-quarantine failing plugins",
+	rescueAutoSaved: "Auto-quarantine setting saved.",
+	rescueUninstallList: "Uninstallable profile dependencies:",
+	rescueUninstallConfirm: "Uninstall"
 };
 
 const inject = [
@@ -722,7 +947,14 @@ async function apply(ctx) {
 			setEnabled: async (entryId, enabled) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setEnabled(entryId, enabled), "切换插件状态")),
 			update: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.update(packageNames), "更新插件")),
 			setSources: async (sources) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSources(sources), "保存更新源")),
-			resetToggles: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.resetToggles(), "重置开关"))
+			resetToggles: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.resetToggles(), "重置开关")),
+			diagnose: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.diagnose(), "诊断")),
+			quarantine: async (entryIds) => unwrap(await withTimeout(scope.remote.pluginManagerPro.quarantine(entryIds), "隔离插件")),
+			repairHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.repairHarness(), "修复引擎")),
+			restartHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.restartHarness(), "重启引擎")),
+			uninstallPackages: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames), "卸载插件")),
+			getRescueConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getRescueConfig(), "读取救援配置")),
+			setRescueConfig: async (config) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setRescueConfig(config), "保存救援配置"))
 		};
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",
@@ -733,7 +965,21 @@ async function apply(ctx) {
 			inject: () => ({ ...api, t })
 		}, SafeTab));
 	});
+	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页
+	let rescueBall = null;
+	if (typeof document !== "undefined" && document.body !== null) {
+		rescueBall = document.createElement("button");
+		rescueBall.textContent = "🛟";
+		rescueBall.title = "DSH 救援中心（设置页不可用时的救砖入口）";
+		rescueBall.setAttribute("aria-label", "DSH 救援中心");
+		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;";
+		rescueBall.addEventListener("click", () => {
+			window.open("/rescue", "_blank");
+		});
+		document.body.appendChild(rescueBall);
+	}
 	return async () => {
+		if (rescueBall !== null && rescueBall.parentNode !== null) rescueBall.parentNode.removeChild(rescueBall);
 		await feature.dispose();
 		disposeLocale();
 		await disposeRemote();

@@ -1,7 +1,7 @@
 {
   "name": "@dsh-local/plugin-manager",
-  "version": "0.2.4",
-  "description": "本地插件管理器：分类折叠、红黄绿状态、可配置更新源（npm/GitHub）的一键更新",
+  "version": "0.3.1",
+  "description": "本地插件管理器：分类折叠、更新源一键更新、救砖（诊断/隔离/修复/重启/卸载）",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -62,6 +62,7 @@
     },
     "client": {
       "platform": "web",
+      "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",

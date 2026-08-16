@@ -8,6 +8,17 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 
 ## 功能特性（v0.2）
 
+### 🛟 救砖（v0.3）
+- **独立救援页 `/rescue`**：完全自包含的 HTML，直连宿主网关，**不依赖任何客户端插件/设置页**——即使 UI 全坏也能诊断与恢复
+- **浮动救援球**：右下角 🛟 按钮（客户端运行时存活但设置页损坏时仍可进入救援页）
+- **诊断**：扫描加载失败/运行期错误的插件（`diagnose`）
+- **隔离**：一键禁用问题插件（`quarantine`，救援保护条目如 timer/webserver/管理器自身不可禁用）
+- **一键修复**：重置管理器开关 → 隔离全部失败插件 → 清空缓存（`repairHarness`）
+- **重启引擎**：宿主自重启（过渡脚本 2 秒后拉起新实例，`restartHarness`）
+- **卸载**：移除 profile 依赖并从 bundles 列表剔除（`uninstallPackages`，需重启生效）
+- **自动隔离**：可选——加载失败的插件自动禁用（`setRescueConfig`，默认关闭）
+- **加载优先级**：客户端 bundle `immediately: true`（启动清单中立即加载）；宿主仅依赖 loader 基础服务
+
 ### 安全与加固（v0.2.3 / v0.2.4）
 - **架构保留**：web 层刻意禁用、由浏览器端提供的行（tool-fs/tool-bash/tool-subagent 等）标记「架构保留」并禁止开关——防止误启用导致服务端重复注册与界面崩坏
 - **界面必需保护**：ui-layout/ui-sidebar/ui-conversation/ui-theme/ui-tool 等界面骨架插件禁止开关（🔒 标记 + 原因提示）

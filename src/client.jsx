@@ -1519,7 +1519,8 @@ async function apply(ctx) {
 		]);
 		const api = {
 			list: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.list(), "读取插件列表")),
-			refresh: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.refresh(), "检查更新")),
+			// 全量刷新 = 165 包 × 所有源，放宽到 4 分钟（网络正常约 20-30s）
+			refresh: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.refresh(), "检查更新", 240000)),
 			setEnabled: async (entryId, enabled) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setEnabled(entryId, enabled), "切换插件状态")),
 			update: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.update(packageNames), "更新插件")),
 			setSources: async (sources) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSources(sources), "保存更新源")),

@@ -2,7 +2,9 @@
 
 DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 → 插件」中提供可视化的插件管理页。
 
-![badge](https://img.shields.io/badge/dsh-0.1.0--rc.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/badge/version-0.5.1-orange)
+![badge](https://img.shields.io/badge/dsh-0.1.0--rc.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
+
+> 社区/本地插件，非 DeepSeek Harness 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager)
 
 > 社区/本地插件，非 DeepSeek Harness 官方包。
 
@@ -39,10 +41,13 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 ## 安装
 
 ```sh
-# 1) 安装 tarball 到 web profile
-dsh plugin --profile web add ./dsh-local-plugin-manager-0.5.1.tgz
+# 方式一：npm 一键安装（推荐）
+dsh plugin --profile web add dsh-plugin-manager-pro
 
-# 2) 重启 web 生效
+# 方式二：tarball 安装（离线/自建）
+# dsh plugin --profile web add ./dsh-plugin-manager-pro-0.5.2.tgz
+
+# 重启 web 生效
 dsh web
 ```
 
@@ -103,4 +108,4 @@ A local plugin manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-
 
 **Rescue (v0.3/v0.5):** standalone `/rescue` page (no UI dependencies), floating 🛟 button, diagnose/quarantine/one-click repair/engine restart/uninstall, optional auto-quarantine, and **pre-boot verify/fix** — the desktop shortcut doubles as a rescue launcher that quarantines broken bundles before boot.
 
-Install: `dsh plugin --profile web add <tarball>` → restart `dsh web` → Settings → Plugins → Plugin manager.
+Install: `dsh plugin --profile web add dsh-plugin-manager-pro` → restart `dsh web` → Settings → Plugins → Plugin manager.

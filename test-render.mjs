@@ -45,13 +45,14 @@ const { PluginManagerTab, marketFilterItems } = exportsObj;
 if (typeof PluginManagerTab !== "function") throw new Error("no PluginManagerTab export");
 if (typeof marketFilterItems !== "function") throw new Error("no marketFilterItems export");
 
-// ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态；e1/e2 架构自带，e3-e5 用户安装）
+// ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态；e1/e2 架构自带，e3-e6 用户安装）
 const entries = [
 	{ entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent", description: "Agent 核心", necessity: "core", enabled: true, phase: "active", error: null, protected: true, protectionReason: "必需", archived: false, origin: "builtin", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.6", updateSource: "官方源 (npm)", needsUpdate: false, managed: false },
 	{ entryId: "e2", configId: "ui-theme", moduleName: "@deepseek-ai/dsh-client-ui-theme", packageName: "@deepseek-ai/dsh-client-ui-theme", description: "主题", necessity: "recommended", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "builtin", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.9", updateSource: "官方源 (npm)", needsUpdate: true, managed: false },
 	{ entryId: "e3", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod", description: "社区插件", necessity: "optional", enabled: false, phase: null, error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.2.0", updateSource: "官方源 (npm)", needsUpdate: true, managed: true },
 	{ entryId: "e4", configId: "broken-mod", moduleName: "broken-mod", packageName: "broken-mod", description: "坏插件", necessity: "recommended", enabled: false, phase: "failed", error: "boom", protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.0.0", updateSource: "官方源 (npm)", needsUpdate: false, managed: true },
-	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "0.1.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
+	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "0.1.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true },
+	{ entryId: "e6", configId: "vision-router", moduleName: "dsh-vision-router", packageName: "dsh-vision-router", description: "视觉路由（自带配置）", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.3.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
 ];
 const makeSnapshot = (entriesMut) => ({
 	profileName: "web",
@@ -358,6 +359,46 @@ try {
 	process.exitCode = 1;
 }
 
-if (!renderError && !failError && !marketError && !marketError2) {
+// ---- 9. 插件自带配置入口：行标记 + 折叠区渲染 + 卡片错误边界
+const root5 = document.createElement("div");
+document.body.appendChild(root5);
+const root5Instance = createRoot(root5);
+let configCardsError = null;
+try {
+	const configCards = [
+		{ id: "vision-router", label: "视觉路由", render: () => React.createElement("div", null, "VR-CONFIG-CARD") },
+		{ id: "broken-card", label: "坏卡片", render: () => { throw new Error("boom-card"); } }
+	];
+	await act(async () => {
+		root5Instance.render(React.createElement(PluginManagerTab, { ...api, t, configCards }));
+	});
+	await settle();
+	const text5 = () => root5.textContent;
+	// 行标记：展开 optional 分组（jsdom 无法触发受控 input 的 onChange，不用搜索），vision-router 行应有 configEntry 按钮
+	const optionalHeader5 = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
+	if (!optionalHeader5) throw new Error("optional section header missing");
+	await act(async () => {
+		optionalHeader5.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (!text5().includes("configEntry")) throw new Error("config button missing on vision-router row");
+	// 折叠区：点击 header 展开，正常卡片渲染 + 坏卡片被边界兜底
+	const cardsHeader = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.includes("configCards"));
+	if (!cardsHeader) throw new Error("config cards section header missing");
+	await act(async () => {
+		cardsHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(30);
+	if (!text5().includes("VR-CONFIG-CARD")) throw new Error("plugin config card not rendered");
+	if (!text5().includes("configCardFailed") || !text5().includes("boom-card")) {
+		throw new Error("broken card should be caught by boundary");
+	}
+	console.log("RESULT: PASS - config card entry (row button + section + error boundary)");
+} catch (error) {
+	configCardsError = error;
+	console.error("CONFIG-CARDS ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

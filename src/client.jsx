@@ -42,7 +42,7 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, configCards, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [originFilter, setOriginFilter] = useState("all");
@@ -50,6 +50,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const [showSources, setShowSources] = useState(false);
 	const [showRescue, setShowRescue] = useState(false);
 	const [showMarket, setShowMarket] = useState(false);
+	const [showConfigCards, setShowConfigCards] = useState(false);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
@@ -99,6 +100,25 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		}
 		return { builtin, user };
 	}, [state]);
+
+	/** 条目 -> 自带配置卡片（vision-router 等大 mod 的 settings.plugin.item 注册）。 */
+	const cardForEntry = useMemo(() => {
+		const lookup = new Map();
+		if (state.status !== "ready") return lookup;
+		const cards = configCards ?? [];
+		for (const entry of state.snapshot.entries) {
+			const configId = entry.configId.toLocaleLowerCase();
+			const pkg = (entry.packageName ?? "").toLocaleLowerCase();
+			for (const card of cards) {
+				const id = String(card.id ?? "").toLocaleLowerCase();
+				if (id !== "" && (configId === id || pkg.includes(id) || id.includes(configId))) {
+					lookup.set(entry.entryId, card);
+					break;
+				}
+			}
+		}
+		return lookup;
+	}, [configCards, state]);
 
 	const updatable = useMemo(() => {
 		if (state.status !== "ready") return [];
@@ -494,6 +514,12 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 														</p>
 													) : null}
 												</div>
+												{cardForEntry.has(entry.entryId) ? (
+													<button type="button" onClick={() => setShowConfigCards(true)} title={t("configEntryHint")}
+														style={{ ...buttonStyle, flex: "none", fontSize: 11, fontWeight: 600, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)" }}>
+														⚙ {t("configEntry")}
+													</button>
+												) : null}
 												{entry.origin === "user" ? (
 													<span title={t("originUserHint")} style={{
 														flex: "none",
@@ -597,6 +623,32 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					);
 				})}
 			</div>
+
+			{/* 插件自带配置入口（settings.plugin.item 注册卡片：vision-router 等大 mod） */}
+			{(configCards ?? []).length > 0 ? (
+				<section style={{
+					border: "1px solid var(--dsw-alias-border-l2)",
+					background: "var(--dsw-alias-bg-layer-3)",
+					borderRadius: 8,
+					overflow: "hidden"
+				}}>
+					<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", userSelect: "none" }} onClick={() => setShowConfigCards((v) => !v)}>
+						<span aria-hidden="true" style={{ fontSize: 13 }}>⚙</span>
+						<span style={{ fontSize: 13, fontWeight: 600 }}>{t("configCards")}</span>
+						<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{configCards.length}</span>
+						<span style={{ marginLeft: "auto", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
+							{showConfigCards ? "▾" : "▸"}
+						</span>
+					</header>
+					{showConfigCards ? (
+						<div style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
+							{configCards.map((card) => (
+								<ConfigCardBoundary key={card.id} card={card} t={t} />
+							))}
+						</div>
+					) : null}
+				</section>
+			) : null}
 		</section>
 	);
 }
@@ -1130,6 +1182,36 @@ function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
 	);
 }
 
+/** 卡片渲染子组件：让第三方 render() 的异常发生在「边界之下」，才能被边界捕获。 */
+function ConfigCardInner({ card }) {
+	return card.render();
+}
+
+/** 插件自带配置卡片：独立错误边界——第三方卡片崩溃不影响管理器本体。 */
+class ConfigCardBoundary extends React.Component {
+	constructor(props) {
+		super(props);
+		this.state = { error: null };
+	}
+	static getDerivedStateFromError(error) {
+		return { error };
+	}
+	render() {
+		if (this.state.error !== null) {
+			return (
+				<div style={{ border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>
+					⚠ {this.props.t("configCardFailed")}: {this.props.card.label}（{String(this.state.error.message ?? this.state.error).slice(0, 140)}）
+				</div>
+			);
+		}
+		return (
+			<div style={{ border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, overflow: "hidden", background: "var(--dsw-alias-bg-layer-1)" }}>
+				<ConfigCardInner card={this.props.card} />
+			</div>
+		);
+	}
+}
+
 const chipStyle = {
 	height: 26,
 	fontSize: 11.5,
@@ -1286,6 +1368,10 @@ const zh = {
 	originBuiltin: "架构自带",
 	originUser: "用户安装",
 	originUserHint: "用户/agent 安装：dsh plugin add 或插件市场安装",
+	configCards: "插件自带配置",
+	configEntry: "配置",
+	configEntryHint: "打开该插件的自带配置面板（由插件自身提供）",
+	configCardFailed: "配置卡片加载失败",
 	necessityCore: "必须",
 	necessityRecommended: "推荐",
 	necessityOptional: "可选",
@@ -1400,6 +1486,10 @@ const en = {
 	originBuiltin: "Built-in",
 	originUser: "User-installed",
 	originUserHint: "Installed by you or an agent via `dsh plugin add` or the plugin market",
+	configCards: "Plugin-provided config",
+	configEntry: "Config",
+	configEntryHint: "Open this plugin's own config panel (provided by the plugin itself)",
+	configCardFailed: "Config card failed to load",
 	necessityCore: "Essential",
 	necessityRecommended: "Recommended",
 	necessityOptional: "Optional",
@@ -1542,13 +1632,36 @@ async function apply(ctx) {
 			// 市场安装走 pnpm，可能下载 + 编译数分钟：超时放宽到 4 分钟
 			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000))
 		};
+		// 插件自带配置入口：读取 settings.plugin.item 注册（vision-router 等大 mod 的配置卡片）。
+		// 每个卡片独立错误边界，崩溃不影响管理器本体。
+		const configCards = [];
+		try {
+			for (const entry of scope.slots.entries("settings.plugin.item") ?? []) {
+				const id = entry?.options?.id ?? "";
+				const component = entry?.component;
+				if (id === "" || typeof component !== "function") continue;
+				let label = id;
+				try {
+					const l = entry?.options?.label;
+					if (typeof l === "function") label = String(l() ?? id);
+				} catch { /* 保留 id */ }
+				configCards.push({
+					id,
+					label,
+					render: () => React.createElement(component, {
+						...(typeof entry?.inject === "function" ? entry.inject() : {}),
+						t
+					})
+				});
+			}
+		} catch { /* slots 不可用时退化为无配置卡片 */ }
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",
 			id: "all",
 			order: 10,
 			label: () => t("tab"),
 			locale: NS,
-			inject: () => ({ ...api, t })
+			inject: () => ({ ...api, t, configCards })
 		}, SafeTab));
 	});
 	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页

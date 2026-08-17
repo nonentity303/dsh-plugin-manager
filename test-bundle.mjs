@@ -222,3 +222,52 @@ if (introChecks.length > 0) {
 	process.exit(1);
 }
 console.log("README-INTRO OK: readmeIntro zh>description>readme priority + missing");
+
+// ---- 跨平台：npm 全局根候选（win/linux/mac）+ host 无 require + 下载器平台分支
+const { npmGlobalRootsFor } = await import("./lib/platform.js");
+const platformChecks = [];
+// join() 在 Windows 上输出 "\"，统一规范化为 "/" 再比较
+const norm = (paths) => paths.map((p) => p.split(/[\\/]/).join("/"));
+const winRoots = norm(npmGlobalRootsFor("win32", { APPDATA: "C:\\Users\\x\\AppData\\Roaming" }, "C:\\Users\\x", null, null));
+if (JSON.stringify(winRoots) !== JSON.stringify(["C:/Users/x/AppData/Roaming/npm/node_modules"])) {
+	platformChecks.push(`win32 roots wrong: ${JSON.stringify(winRoots)}`);
+}
+const linuxRoots = norm(npmGlobalRootsFor("linux", {}, "/home/u", "/probe/root", ["/home/u/.nvm/versions/node/v22.0.0"]));
+const linuxExpect = [
+	"/probe/root",
+	"/home/u/.npm-global/node_modules",
+	"/home/u/.local/lib/node_modules",
+	"/usr/local/lib/node_modules",
+	"/usr/lib/node_modules",
+	"/home/u/.nvm/versions/node/v22.0.0/lib/node_modules"
+];
+if (JSON.stringify(linuxRoots) !== JSON.stringify(linuxExpect)) {
+	platformChecks.push(`linux roots wrong: ${JSON.stringify(linuxRoots)}`);
+}
+const dedup = norm(npmGlobalRootsFor("linux", {}, "/home/u", "/probe", ["/probe"]));
+if (new Set(dedup).size !== dedup.length) platformChecks.push(`linux roots must be deduped: ${JSON.stringify(dedup)}`);
+if (norm(npmGlobalRootsFor("win32", {}, "C:\\h", null, null)).length !== 0) {
+	platformChecks.push("win32 without APPDATA should be empty");
+}
+if (platformChecks.length > 0) {
+	console.error("PLATFORM FAIL:\n - " + platformChecks.join("\n - "));
+	process.exit(1);
+}
+console.log("PLATFORM OK: npm global roots win/linux/dedup");
+
+// host bundle 是 ESM：方法体内不得再出现 require（除 restartHarness 桥接模板 1 处）
+const indexSrc = readRescue(new URL("./lib/index.js", import.meta.url), "utf8");
+const codeOnly = indexSrc.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n");
+const requireUses = (codeOnly.match(/require\(/g) || []).length;
+if (requireUses !== 1) {
+	console.error(`HOST-REQUIRE FAIL: expected exactly 1 require( (restart bridge), got ${requireUses}`);
+	process.exit(1);
+}
+console.log("HOST-REQUIRE OK: no stray require() in host code");
+// downloader 外部工具检测必须是跨平台分支
+const dlSrc = readRescue(new URL("./lib/downloader.js", import.meta.url), "utf8");
+if (!/process\.platform === "win32" \? "where" : "which"/.test(dlSrc)) {
+	console.error("DOWNLOADER-PLATFORM FAIL: detectExternal must branch where/which by platform");
+	process.exit(1);
+}
+console.log("DOWNLOADER-PLATFORM OK: aria2c detection branches where/which");

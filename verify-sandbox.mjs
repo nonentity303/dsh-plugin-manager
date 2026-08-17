@@ -38,6 +38,18 @@ const diagnose = await post("pluginManagerPro/diagnose", {});
 ok(diagnose.ok, "diagnose ok (rescue wire)");
 const vp = await post("pluginManagerPro/verifyProfile", {});
 ok(vp.ok && vp.value.ok === true, `verifyProfile ok (v0.6.4 fix) ${vp.ok ? JSON.stringify(vp.value.issues) : ""}`);
+// fixProfile 不应误清空 patch（v0.6.6：修掉了 fixProfile 里的 require("yaml") 崩溃）
+const { readFileSync: readPatch, writeFileSync: writePatch } = await import("node:fs");
+let patchBefore = "";
+try { patchBefore = readPatch("C:\\Users\\35129\\.dsh\\profiles\\web-test\\cordis.patch.yml", "utf8"); } catch {}
+const fp = await post("pluginManagerPro/fixProfile", {});
+let patchAfter = "";
+try { patchAfter = readPatch("C:\\Users\\35129\\.dsh\\profiles\\web-test\\cordis.patch.yml", "utf8"); } catch {}
+ok(fp.ok && fp.value.actions.every((a) => a.action !== "restore-patch"), `fixProfile keeps patch (actions=${fp.ok ? JSON.stringify(fp.value.actions) : ""})`);
+ok(patchBefore === patchAfter, "patch file unchanged after fixProfile");
+// checkDownloads 不应崩溃（v0.6.6：修掉了 require("node:fs")）
+const cd = await post("pluginManagerPro/checkDownloads", {});
+ok(cd.ok, "checkDownloads ok (no require crash)");
 const rescuePage = await fetch(`http://127.0.0.1:${PORT}/rescue`);
 ok(rescuePage.status === 200 && (await rescuePage.text()).includes("rescue"), "GET /rescue 200 with content");
 // toggle persistence: pick a non-protected entry, flip, flip back, check patch file

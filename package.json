@@ -1,6 +1,6 @@
 {
   "name": "@dsh-local/plugin-manager",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "本地插件管理器：分类折叠、更新源一键更新（npm/GitHub/插件超市）、浏览器下载优先、下载目录自动安装、救砖与启动前自检",
   "keywords": [
     "deepseek-harness",

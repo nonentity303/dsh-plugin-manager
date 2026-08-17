@@ -66,3 +66,53 @@ console.log("CONTRACT OK:");
 console.log("  id      =", handoff.id);
 console.log("  inject  =", JSON.stringify(exported.inject));
 console.log("  exports =", Object.keys(exported).join(", "));
+
+// ---- 远端契约（TYPERT_REMOTE）：marketCatalog / marketInstall
+const { TYPERT_REMOTE } = await import("./lib/remote.js");
+const methods = new Map(TYPERT_REMOTE.descriptors.map((d) => [d.method, d]));
+const failures = [];
+if (methods.has("marketSearch")) failures.push("legacy marketSearch descriptor still present");
+
+const catalogDesc = methods.get("marketCatalog");
+if (!catalogDesc) {
+	failures.push("no marketCatalog descriptor");
+} else {
+	const catalogFixture = {
+		source: "live",
+		updated: "2025-06-01",
+		count: 2,
+		categories: { market: { zh: "市场", en: "Market" } },
+		items: [
+			{ name: "dsh-market", owner: "dsh-market", url: "https://github.com/dsh-market/dsh-market", npm: "dshmarket", category: "market", description: { zh: "可视化市场", en: "Visual market" }, stars: 12, added: "2025-06-01" },
+			{ name: "owner/repo", owner: "owner", url: "https://github.com/owner/repo", npm: null, category: "github", description: null, stars: null, added: null }
+		]
+	};
+	try {
+		catalogDesc.result.schema.parse(catalogFixture);
+	} catch (error) {
+		failures.push("marketCatalog schema rejects fixture: " + error.message);
+	}
+}
+
+const installDesc = methods.get("marketInstall");
+if (!installDesc) {
+	failures.push("no marketInstall descriptor");
+} else {
+	const targetFixture = { name: "dsh-market", npm: "dshmarket", url: "https://github.com/dsh-market/dsh-market" };
+	try {
+		installDesc.parameters[0].codec.schema.parse(targetFixture);
+	} catch (error) {
+		failures.push("marketInstall target schema rejects fixture: " + error.message);
+	}
+	const resultFixture = { status: "dry-run", packageName: "dshmarket", url: "https://registry.npmjs.org/dshmarket", method: "npm", message: "ok" };
+	try {
+		installDesc.result.schema.parse(resultFixture);
+	} catch (error) {
+		failures.push("marketInstall result schema rejects fixture: " + error.message);
+	}
+}
+if (failures.length > 0) {
+	console.error("MARKET CONTRACT FAIL:\n - " + failures.join("\n - "));
+	process.exit(1);
+}
+console.log("MARKET CONTRACT OK: marketCatalog/marketInstall schemas accept fixtures");

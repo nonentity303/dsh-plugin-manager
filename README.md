@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 
 > 社区/本地插件，非 DeepSeek Harness 官方包。
 
-## 功能总览（v0.5.1）
+## 功能总览（v0.6.1）
 
 ### 📋 插件列表
 - **分类折叠**：按必要程度收纳为 🔴 必须 / 🟡 推荐 / 🟢 可选 三个可折叠分组（头部显示启用计数与可更新角标，搜索自动展开）
@@ -20,6 +20,13 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 - **下载优先级**：① 浏览器原生下载（隐藏 iframe 触发，NDM 等扩展可捕获）→ ② 扩展下载软件（NDM/比特彗星等）→ ③ 内置下载器兜底（HTTP 直链 / aria2c / P2P magnet·torrent）
 - **下载目录自动安装**：任何方式下载的 `.tgz` 放入 `$DSH_HOME\downloads` → 管理器自动拾取 `pnpm add` 安装（更新时自动轮询 2 分钟）
 - 每行「更新」按钮 = 浏览器下载优先；「内置」小按钮 = 内置下载器
+
+### 🛒 插件市场（v0.6）
+- **dshfind 精选目录**：数据来自 awesome-dsh-plugin 官方收录池（1140+ 插件、14 个分类、本地化描述/星标/收录日期），host 10 分钟缓存；在线不可用时自动兜底 GitHub `topic:dsh-plugin` 搜索
+- **本地即时过滤**：目录一次拉全量，搜索（名称/仓库/npm/描述）/ 分类 chips / 排序（星标·收录时间）/ 分页全部客户端本地完成，零网络往返
+- **一键安装**：带 npm 包名的条目优先 **npm registry 直装**（预构建产物最可靠），GitHub 仓库走内置下载器（release .tgz → codeload）；两步确认防误触；已装条目显示 ✓ 徽标
+- **装后防砖校验**：安装后自动验证 dsh 清单（`dsh.bundle` / `dsh.client`），缺失则自动卸载并提示，避免污染下次启动
+- **pnpm 陷阱恢复**：hoist 漂移自动重建 modules 重试一次；`minimumReleaseAge` 新发布保护自动带 `--config.minimumReleaseAge=0` 重试一次
 
 ### 🛟 救砖
 - **独立救援页 `/rescue`**：自包含 HTML，直连宿主网关，不依赖任何客户端插件/设置页——UI 全坏仍可诊断与恢复
@@ -105,6 +112,8 @@ MIT。补丁持久化机制借鉴 [hrhgit/deepseek-harness-plugin-manager](https
 A local plugin manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness): a "Plugin manager" tab under **Settings → Plugins** with collapsible necessity groups (🔴 essential / 🟡 recommended / 🟢 optional), status colors (red = error/check, yellow = update, grey = disabled, green = enabled), Chinese descriptions, version/source columns, and enable/disable toggles with UI-critical & architecture rows locked.
 
 **Updates (v0.5):** configurable sources (official npm, **dshfind market**, GitHub repos, mirrors) drive version checks; download priority = browser native download (hidden iframe; NDM-style extensions can capture) → external downloaders (NDM/BitComet) → built-in fallback (HTTP/aria2c/P2P magnet·torrent). Anything downloaded into `$DSH_HOME\downloads` is auto-installed.
+
+**Market (v0.6):** a lightweight plugin market tab over the awesome-dsh-plugin curated catalog (1140+ plugins, 14 categories, localized descriptions, stars, added dates; 10-min host cache, GitHub `topic:dsh-plugin` search fallback). The catalog loads once, then search / category chips / sort (stars · added) / pagination all filter locally with zero network round-trips. One-click install prefers the **npm registry** when the entry declares an npm name (prebuilt), otherwise the built-in GitHub downloader (release .tgz → codeload). Two-step confirm, ✓ installed badges, post-install dsh-manifest validation (auto-removes packages that would brick the next boot), and pnpm trap recovery (hoist drift rebuild, `minimumReleaseAge` bypass).
 
 **Rescue (v0.3/v0.5):** standalone `/rescue` page (no UI dependencies), floating 🛟 button, diagnose/quarantine/one-click repair/engine restart/uninstall, optional auto-quarantine, and **pre-boot verify/fix** — the desktop shortcut doubles as a rescue launcher that quarantines broken bundles before boot.
 

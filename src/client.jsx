@@ -42,12 +42,13 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [open, setOpen] = useState(new Set(["core"]));
 	const [showSources, setShowSources] = useState(false);
 	const [showRescue, setShowRescue] = useState(false);
+	const [showMarket, setShowMarket] = useState(false);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
@@ -247,6 +248,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					</p>
 				</div>
 				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+					<button type="button" onClick={() => setShowMarket((v) => !v)} disabled={busy !== null}
+						style={{ ...buttonStyle, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", fontWeight: showMarket ? 600 : 400 }}>
+						{t("market")}
+					</button>
 					<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
 						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
 						{t("rescue")}
@@ -290,6 +295,9 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
+
+			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装） */}
+			{showMarket ? <MarketPanel marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
 
 			{/* 救砖面板 */}
 			{showRescue ? <RescuePanel
@@ -815,6 +823,274 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 	);
 }
 
+/** 市场目录模块级缓存：切换面板/重进设置页时秒开，挂载时后台刷新。 */
+let marketCatalogCache = null;
+
+const MARKET_PAGE_SIZE = 20;
+
+/** 面板语言（zh / en，用于本地化描述与分类名）。 */
+function marketLang() {
+	try {
+		const nav = typeof window !== "undefined" && window.navigator ? window.navigator : null;
+		return ((nav && (nav.language || nav.userLanguage)) || "zh").toLowerCase().startsWith("zh") ? "zh" : "en";
+	} catch {
+		return "zh";
+	}
+}
+
+/** 条目是否已安装：npm 包名 / 目录名 / 仓库名 任一命中 profile 依赖或本次会话刚装。 */
+function entryInstalled(item, installedNames, justInstalled) {
+	if (justInstalled.has(item.name)) return true;
+	if (typeof item.npm === "string" && (installedNames.has(item.npm) || justInstalled.has(item.npm))) return true;
+	if (installedNames.has(item.name)) return true;
+	const repo = /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\/tree\/.+)?\/?$/.exec(item.url || "");
+	if (repo !== null && installedNames.has(repo[1].split("/")[1])) return true;
+	return false;
+}
+
+/** 纯函数：目录过滤（分类/搜索：名称/仓库/npm/全部语言描述）+ 排序（stars/收录时间）。测试直接调用。 */
+function marketFilterItems(catalog, query, category, sortBy) {
+	if (!catalog) return [];
+	const q = query.trim().toLocaleLowerCase();
+	const filtered = catalog.items.filter((item) => {
+		if (category !== "all" && item.category !== category) return false;
+		if (!q) return true;
+		if (item.name.toLocaleLowerCase().includes(q)) return true;
+		if (item.owner.toLocaleLowerCase().includes(q)) return true;
+		if (typeof item.npm === "string" && item.npm.toLocaleLowerCase().includes(q)) return true;
+		const desc = item.description ? Object.values(item.description).filter(Boolean).join(" ") : "";
+		return desc.toLocaleLowerCase().includes(q);
+	});
+	return [...filtered].sort((a, b) => {
+		if (sortBy === "added") return String(b.added || "").localeCompare(String(a.added || ""));
+		return (b.stars ?? -1) - (a.stars ?? -1);
+	});
+}
+
+/** 插件市场面板：dshfind 精选目录一次拉全量，搜索/分类/排序/分页全部本地瞬时完成。 */
+function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
+	const [catalog, setCatalog] = useState(marketCatalogCache);
+	const [loadError, setLoadError] = useState(null);
+	const [reloadTick, setReloadTick] = useState(0);
+	const [query, setQuery] = useState("");
+	const [category, setCategory] = useState("all");
+	const [sortBy, setSortBy] = useState("stars");
+	const [page, setPage] = useState(1);
+	const [confirmEntry, setConfirmEntry] = useState(null);
+	const [installing, setInstalling] = useState(null);
+	const [justInstalled, setJustInstalled] = useState(() => new Set());
+	const [feedback, setFeedback] = useState(null);
+
+	const lang = marketLang();
+	const installedNames = useMemo(() => {
+		const names = new Set();
+		for (const entry of entries || []) {
+			if (entry.packageName) names.add(entry.packageName);
+		}
+		return names;
+	}, [entries]);
+
+	// 拉取目录（模块缓存命中则直接渲染，仍以远程为准）
+	useEffect(() => {
+		let current = true;
+		if (marketCatalogCache !== null) return;
+		marketCatalog().then((result) => {
+			if (!current) return;
+			marketCatalogCache = result;
+			setCatalog(result);
+			setLoadError(null);
+		}, (error) => {
+			if (current) setLoadError(error instanceof Error ? error.message : String(error));
+		});
+		return () => {
+			current = false;
+		};
+	}, [marketCatalog, reloadTick]);
+
+	const visible = useMemo(() => marketFilterItems(catalog, query, category, sortBy), [catalog, query, category, sortBy]);
+
+	useEffect(() => {
+		setPage(1);
+	}, [query, category, sortBy]);
+
+	const shown = visible.slice(0, page * MARKET_PAGE_SIZE);
+	const hasMore = shown.length < visible.length;
+
+	const refreshCatalog = () => {
+		marketCatalogCache = null;
+		setCatalog(null);
+		setLoadError(null);
+		setReloadTick((v) => v + 1);
+	};
+
+	const install = async (item) => {
+		setInstalling(item.name);
+		setFeedback(null);
+		try {
+			const result = await marketInstall({ name: item.name, npm: item.npm, url: item.url }, false);
+			const severity = result.status === "installed" ? "success" : result.status === "already-installed" ? "warning" : "error";
+			setFeedback({ severity, message: result.message ?? result.status });
+			if (result.status === "installed") {
+				setJustInstalled((prev) => {
+					const next = new Set(prev);
+					next.add(result.packageName ?? item.name);
+					next.add(item.name);
+					return next;
+				});
+				setConfirmEntry(null);
+			}
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setInstalling(null);
+		}
+	};
+
+	const cats = catalog?.categories ? Object.keys(catalog.categories) : [];
+	const catLabel = (id) => {
+		const meta = catalog?.categories?.[id];
+		return meta ? meta[lang] || meta.en || id : id;
+	};
+	const sourceLabel = {
+		live: t("marketSourceLive"),
+		cache: t("marketSourceCache"),
+		"github-fallback": t("marketSourceFallback"),
+		error: t("marketSourceError")
+	}[catalog?.source] ?? catalog?.source;
+
+	return (
+		<div style={{
+			border: "1px solid var(--dsw-alias-border-l2)",
+			background: "var(--dsw-alias-bg-layer-2)",
+			borderRadius: 8,
+			padding: "10px 12px",
+			display: "flex",
+			flexDirection: "column",
+			gap: 8
+		}}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("marketTitle")}</span>
+				{catalog ? (
+					<span className="muted" style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }} title={catalog.updated ?? ""}>
+						{sourceLabel} · {catalog.count} {t("marketPlugins")}
+						{catalog.updated ? ` · ${t("marketUpdated")} ${catalog.updated.slice(0, 10)}` : ""}
+					</span>
+				) : null}
+				<input
+					type="search"
+					value={query}
+					placeholder={t("marketSearch")}
+					onChange={(e) => setQuery(e.currentTarget.value)}
+					style={{
+						boxSizing: "border-box",
+						flex: "1 1 200px",
+						height: 30,
+						border: "1px solid var(--dsw-alias-border-l2)",
+						background: "var(--dsw-alias-bg-layer-1)",
+						color: "var(--dsw-alias-label-primary)",
+						borderRadius: 6,
+						padding: "0 10px",
+						fontSize: 12,
+						font: "inherit"
+					}}
+				/>
+				<select
+					value={sortBy}
+					onChange={(e) => setSortBy(e.currentTarget.value)}
+					style={{ height: 30, fontSize: 12, borderRadius: 6, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)" }}
+					aria-label={t("marketSort")}
+				>
+					<option value="stars">{t("marketSortStars")}</option>
+					<option value="added">{t("marketSortAdded")}</option>
+				</select>
+				<button type="button" onClick={refreshCatalog} disabled={busy} title={t("marketRefresh")} style={{ ...buttonStyle, width: 30, height: 30, display: "grid", placeItems: "center" }}>↻</button>
+			</div>
+			{catalog ? (
+				<div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+					<button type="button" onClick={() => setCategory("all")}
+						style={{ ...chipStyle, ...(category === "all" ? chipOnStyle : null) }}>{t("marketAll")}</button>
+					{cats.map((id) => (
+						<button key={id} type="button" onClick={() => setCategory(id)}
+							style={{ ...chipStyle, ...(category === id ? chipOnStyle : null) }}>{catLabel(id)}</button>
+					))}
+				</div>
+			) : null}
+			<p className="muted" style={{ margin: 0, fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketHint")}</p>
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{loadError ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>
+					{t("marketLoadFail")}: {loadError}
+					<button type="button" onClick={refreshCatalog} style={{ ...buttonStyle, marginLeft: 8 }}>{t("marketRetry")}</button>
+				</p>
+			) : null}
+			{catalog === null && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketLoading")}</p> : null}
+			{catalog !== null && visible.length === 0 && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketEmpty")}</p> : null}
+			{shown.length > 0 ? (
+				<div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 420, overflow: "auto" }}>
+					{shown.map((item) => {
+						const installed = entryInstalled(item, installedNames, justInstalled);
+						const confirming = confirmEntry === item.name && installing !== item.name;
+						return (
+							<div key={item.url || item.name} style={{ display: "flex", alignItems: "center", gap: 10, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 8, padding: "8px 10px" }}>
+								<div style={{ flex: "1 1 auto", minWidth: 0 }}>
+									<span style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+										<strong style={{ fontSize: 12.5 }}>{item.name}</strong>
+										{item.owner ? <span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{item.owner}</span> : null}
+										{item.stars !== null ? <span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>★ {item.stars}</span> : null}
+										{item.added ? <span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketUpdated")} {item.added.slice(0, 10)}</span> : null}
+										<span style={{ fontSize: 10, color: "var(--dsw-alias-label-tertiary)", border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 4, padding: "0 4px" }}>{catLabel(item.category)}</span>
+									</span>
+									{item.description ? (() => {
+										const desc = item.description[lang] || item.description.en;
+										return desc ? <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{desc}</p> : null;
+									})() : null}
+								</div>
+								{installed ? (
+									<span style={{ fontSize: 11, color: "var(--dsw-alias-state-success-primary, #22c55e)", flex: "none", whiteSpace: "nowrap" }}>✓ {t("marketInstalledBadge")}</span>
+								) : installing === item.name ? (
+									<button type="button" disabled style={{ ...buttonStyle, flex: "none", fontWeight: 600, opacity: 0.6 }}>{t("marketInstalling")}</button>
+								) : confirming ? (
+									<button type="button" onClick={() => install(item)} disabled={busy || installing !== null}
+										style={{ ...buttonStyle, flex: "none", fontWeight: 700, color: "#fff", background: "var(--dsw-alias-state-error-primary, #d64541)", borderColor: "var(--dsw-alias-state-error-primary, #d64541)" }}>
+										{t("marketConfirmInstall")}
+									</button>
+								) : (
+									<button type="button" onClick={() => setConfirmEntry(item.name)} disabled={busy || installing !== null}
+										style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)" }}>
+										{t("marketInstall")}
+									</button>
+								)}
+							</div>
+						);
+					})}
+				</div>
+			) : null}
+			{hasMore ? (
+				<button type="button" onClick={() => setPage((p) => p + 1)} disabled={busy}
+					style={{ ...buttonStyle, alignSelf: "center" }}>
+					{t("marketMore")}（{visible.length - shown.length}）
+				</button>
+			) : null}
+		</div>
+	);
+}
+
+const chipStyle = {
+	height: 26,
+	fontSize: 11.5,
+	borderRadius: 999,
+	border: "1px solid var(--dsw-alias-border-l2)",
+	background: "var(--dsw-alias-bg-layer-1)",
+	color: "var(--dsw-alias-label-secondary)",
+	padding: "0 12px",
+	cursor: "pointer"
+};
+const chipOnStyle = {
+	borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)",
+	color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+	fontWeight: 600
+};
+
 /** 更新源管理面板。 */
 function SourcesPanel({ sources, save, busy, t }) {
 	const [draft, setDraft] = useState(sources);
@@ -1004,6 +1280,30 @@ const zh = {
 	rescueAutoSaved: "自动隔离设置已保存。",
 	rescueUninstallList: "可卸载的 profile 依赖：",
 	rescueUninstallConfirm: "确认卸载",
+	market: "市场",
+	marketTitle: "插件市场（dshfind 精选目录）",
+	marketSearch: "搜索插件（名称/仓库/描述）…",
+	marketHint: "目录来自 awesome-dsh-plugin 精选收录；带 npm 包名的优先走 npm registry 直装（预构建产物），GitHub 仓库走内置下载器。装完在管理列表可见，重启后生效。",
+	marketLoading: "加载目录中…",
+	marketEmpty: "没有匹配的插件。",
+	marketMore: "加载更多",
+	marketInstall: "安装",
+	marketConfirmInstall: "确认安装？",
+	marketInstalling: "安装中…",
+	marketInstalledBadge: "已安装",
+	marketLoadFail: "目录加载失败",
+	marketRetry: "重试",
+	marketRefresh: "刷新目录",
+	marketAll: "全部",
+	marketSort: "排序",
+	marketSortStars: "按星标",
+	marketSortAdded: "按收录时间",
+	marketPlugins: "个插件",
+	marketUpdated: "收录",
+	marketSourceLive: "在线目录",
+	marketSourceCache: "缓存",
+	marketSourceFallback: "GitHub 兜底",
+	marketSourceError: "目录不可用",
 	verifyTitle: "启动前自检",
 	verifyRun: "运行检查",
 	verifyOk: "✓ profile 配置正常，引擎可以正常启动。",
@@ -1088,6 +1388,30 @@ const en = {
 	rescueAutoSaved: "Auto-quarantine setting saved.",
 	rescueUninstallList: "Uninstallable profile dependencies:",
 	rescueUninstallConfirm: "Uninstall",
+	market: "Market",
+	marketTitle: "Plugin market (dshfind curated catalog)",
+	marketSearch: "Search plugins (name/repo/description)…",
+	marketHint: "Catalog from awesome-dsh-plugin; entries with an npm name install from the npm registry (prebuilt), GitHub repos use the built-in downloader. Installed plugins appear in the management list after restart.",
+	marketLoading: "Loading catalog…",
+	marketEmpty: "No matching plugins.",
+	marketMore: "Load more",
+	marketInstall: "Install",
+	marketConfirmInstall: "Confirm install?",
+	marketInstalling: "Installing…",
+	marketInstalledBadge: "Installed",
+	marketLoadFail: "Failed to load catalog",
+	marketRetry: "Retry",
+	marketRefresh: "Refresh catalog",
+	marketAll: "All",
+	marketSort: "Sort",
+	marketSortStars: "By stars",
+	marketSortAdded: "By added date",
+	marketPlugins: "plugins",
+	marketUpdated: "Added",
+	marketSourceLive: "live catalog",
+	marketSourceCache: "cached",
+	marketSourceFallback: "GitHub fallback",
+	marketSourceError: "catalog unavailable",
 	verifyTitle: "Pre-boot check",
 	verifyRun: "Run check",
 	verifyOk: "✓ Profile configuration is healthy; the engine can boot.",
@@ -1121,10 +1445,10 @@ async function apply(ctx) {
 			if (result.ok) return result.value;
 			throw new Error(`${result.error.code}: ${result.error.message}`);
 		};
-		// 远程调用 30 秒超时：连接异常时给出明确错误而不是永久转圈
-		const withTimeout = (promise, label) => Promise.race([
+		// 远程调用超时：连接异常时给出明确错误而不是永久转圈
+		const withTimeout = (promise, label, ms = 30000) => Promise.race([
 			promise,
-			new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}：操作超时（30 秒）`)), 30000))
+			new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}：操作超时（${Math.round(ms / 1000)} 秒）`)), ms))
 		]);
 		const api = {
 			list: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.list(), "读取插件列表")),
@@ -1145,7 +1469,10 @@ async function apply(ctx) {
 			resolveDownloadUrl: async (packageName) => unwrap(await withTimeout(scope.remote.pluginManagerPro.resolveDownloadUrl(packageName), "解析下载链接")),
 			verifyProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.verifyProfile(), "启动前自检")),
 			fixProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.fixProfile(), "修复引擎配置")),
-			updateBrowser: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.updateBrowser(packageNames), "解析下载链接"))
+			updateBrowser: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.updateBrowser(packageNames), "解析下载链接")),
+			marketCatalog: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketCatalog(), "加载插件市场", 20000)),
+			// 市场安装走 pnpm，可能下载 + 编译数分钟：超时放宽到 4 分钟
+			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000))
 		};
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",
@@ -1177,4 +1504,4 @@ async function apply(ctx) {
 	};
 }
 
-export { PluginManagerTab, apply, inject };
+export { PluginManagerTab, apply, inject, marketFilterItems, entryInstalled };

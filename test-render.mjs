@@ -28,7 +28,8 @@ const sandbox = {
 			load: (h) => {
 				handoff = h;
 			}
-		}
+		},
+		navigator: { language: "en-US" }
 	},
 	console,
 	URL,
@@ -40,8 +41,9 @@ const code = readFileSync("lib/client.js", "utf8");
 vm.runInContext(code, sandbox, { filename: "lib/client.js" });
 if (!handoff) throw new Error("bundle did not register");
 const exportsObj = handoff.factory((id) => require(id));
-const { PluginManagerTab } = exportsObj;
+const { PluginManagerTab, marketFilterItems } = exportsObj;
 if (typeof PluginManagerTab !== "function") throw new Error("no PluginManagerTab export");
+if (typeof marketFilterItems !== "function") throw new Error("no marketFilterItems export");
 
 // ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态）
 const entries = [
@@ -167,6 +169,161 @@ if (!failError) {
 	}
 }
 
-if (!renderError && !failError) {
+// ---- 7. 插件市场：目录加载失败 -> 显示错误 + 重试按钮（先于成功用例，确保模块缓存未命中）
+const marketCatalogFixture = {
+	source: "live",
+	updated: "2025-06-01",
+	count: 3,
+	categories: { market: { zh: "市场", en: "Market" }, theme: { zh: "主题", en: "Theme" }, utility: { zh: "工具", en: "Utility" } },
+	items: [
+		{ name: "dsh-market", owner: "dsh-market", url: "https://github.com/dsh-market/dsh-market", npm: "dshmarket", category: "market", description: { zh: "可视化插件市场", en: "Visual plugin market" }, stars: 128, added: "2025-05-01" },
+		{ name: "dsh-theme-zen", owner: "zen", url: "https://github.com/zen/dsh-theme-zen", npm: "dsh-theme-zen", category: "theme", description: { en: "A calm theme" }, stars: 5, added: "2025-06-01" },
+		{ name: "community-mod", owner: "comm", url: "https://github.com/comm/community-mod", npm: "community-mod", category: "utility", description: { en: "Community module" }, stars: 42, added: "2024-01-01" }
+	]
+};
+const findButton = (container, text) => {
+	for (const btn of container.querySelectorAll("button")) {
+		if (btn.textContent.trim() === text) return btn;
+	}
+	return null;
+};
+const settle = async (ms = 30) => {
+	await new Promise((resolve) => setTimeout(resolve, ms));
+	await act(async () => {});
+};
+
+const root3 = document.createElement("div");
+document.body.appendChild(root3);
+const root3Instance = createRoot(root3);
+let marketError = null;
+try {
+	const apiFailCatalog = {
+		...api,
+		marketCatalog: async () => {
+			throw new Error("offline");
+		},
+		marketInstall: async () => ({ status: "failed", packageName: null, url: null, method: null, message: "n/a" })
+	};
+	await act(async () => {
+		root3Instance.render(React.createElement(PluginManagerTab, { ...apiFailCatalog, t }));
+	});
+	await settle();
+	const marketBtn = findButton(root3, "market");
+	if (!marketBtn) throw new Error("market section button not found");
+	await act(async () => {
+		marketBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(50);
+	const text3 = root3.textContent;
+	if (!text3.includes("marketLoadFail") || !text3.includes("offline")) {
+		throw new Error("market load failure feedback not rendered: " + text3.slice(0, 300));
+	}
+	console.log("RESULT: PASS - market catalog failure shows error + retry");
+} catch (error) {
+	marketError = error;
+	console.error("MARKET FAILURE-PATH ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+// ---- 8. 插件市场：目录渲染 / 搜索过滤 / 分类 chips / 已装徽标 / 两步安装
+const root4 = document.createElement("div");
+document.body.appendChild(root4);
+const root4Instance = createRoot(root4);
+const marketCalls = [];
+let marketError2 = null;
+try {
+	const apiMarket = {
+		...api,
+		marketCatalog: async () => marketCatalogFixture,
+		marketInstall: async (target, dryRun) => {
+			marketCalls.push({ target, dryRun });
+			return { status: "installed", packageName: target.npm ?? target.name, url: target.url, method: target.npm ? "npm" : "github", message: "installed ok" };
+		}
+	};
+	await act(async () => {
+		root4Instance.render(React.createElement(PluginManagerTab, { ...apiMarket, t }));
+	});
+	await settle();
+	await act(async () => {
+		findButton(root4, "market").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(60);
+
+	const text = () => root4.textContent;
+	// 目录条目渲染（含本地化描述 en）
+	if (!text().includes("dsh-market") || !text().includes("Visual plugin market")) {
+		throw new Error("catalog items not rendered: " + text().slice(0, 400));
+	}
+	// community-mod 已装（entries 里有 packageName=community-mod）-> 徽标
+	if (!text().includes("marketInstalledBadge")) {
+		throw new Error("installed badge missing: " + text().slice(0, 400));
+	}
+	console.log("RESULT: PASS - catalog renders with installed badge");
+
+	// 搜索/分类/排序为纯函数（jsdom 无法可靠模拟 React 受控 input 事件，逻辑直测）
+	const filter = (q, cat, sort) => marketFilterItems(marketCatalogFixture, q, cat, sort).map((i) => i.name);
+	const byStars = filter("", "all", "stars");
+	if (JSON.stringify(byStars) !== JSON.stringify(["dsh-market", "community-mod", "dsh-theme-zen"])) {
+		throw new Error("sort by stars wrong: " + JSON.stringify(byStars));
+	}
+	const byAdded = filter("", "all", "added");
+	if (JSON.stringify(byAdded) !== JSON.stringify(["dsh-theme-zen", "dsh-market", "community-mod"])) {
+		throw new Error("sort by added wrong: " + JSON.stringify(byAdded));
+	}
+	const byZen = filter("zen", "all", "stars");
+	if (JSON.stringify(byZen) !== JSON.stringify(["dsh-theme-zen"])) {
+		throw new Error("search by name wrong: " + JSON.stringify(byZen));
+	}
+	const byNpm = filter("dshmarket", "all", "stars");
+	if (JSON.stringify(byNpm) !== JSON.stringify(["dsh-market"])) {
+		throw new Error("search by npm name wrong: " + JSON.stringify(byNpm));
+	}
+	const byDesc = filter("calm", "all", "stars");
+	if (JSON.stringify(byDesc) !== JSON.stringify(["dsh-theme-zen"])) {
+		throw new Error("search by description wrong: " + JSON.stringify(byDesc));
+	}
+	const byCat = filter("", "market", "stars");
+	if (JSON.stringify(byCat) !== JSON.stringify(["dsh-market"])) {
+		throw new Error("category filter wrong: " + JSON.stringify(byCat));
+	}
+	console.log("RESULT: PASS - filter/sort pure functions (search/category/stars/added)");
+
+	// 分类 chips（click 可驱动）
+	await act(async () => {
+		findButton(root4, "Market").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (!text().includes("dsh-market") || text().includes("dsh-theme-zen")) {
+		throw new Error("category chip filter failed: " + text().slice(0, 400));
+	}
+	await act(async () => {
+		findButton(root4, "marketAll").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (!text().includes("dsh-theme-zen")) throw new Error("category reset failed");
+	console.log("RESULT: PASS - category chips filter locally");
+
+	// 两步安装：安装 -> 确认 -> 调 marketInstall -> 徽标出现
+	await act(async () => {
+		findButton(root4, "marketInstall").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (!text().includes("marketConfirmInstall")) throw new Error("confirm state not armed");
+	await act(async () => {
+		findButton(root4, "marketConfirmInstall").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(50);
+	if (marketCalls.length !== 1) throw new Error(`marketInstall not called exactly once: ${marketCalls.length}`);
+	if (marketCalls[0].target.npm !== "dshmarket" || marketCalls[0].dryRun !== false) {
+		throw new Error("marketInstall target wrong: " + JSON.stringify(marketCalls[0]));
+	}
+	if (!text().includes("installed ok")) throw new Error("install feedback missing");
+	const badgeCount = (text().match(/marketInstalledBadge/g) || []).length;
+	if (badgeCount !== 2) throw new Error(`expected 2 installed badges, got ${badgeCount}`);
+	console.log("RESULT: PASS - two-step install calls host and marks installed");
+} catch (error) {
+	marketError2 = error;
+	console.error("MARKET RENDER ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2) {
 	console.log("ALL RENDER TESTS PASSED");
 }

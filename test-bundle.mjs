@@ -271,3 +271,44 @@ if (!/process\.platform === "win32" \? "where" : "which"/.test(dlSrc)) {
 	process.exit(1);
 }
 console.log("DOWNLOADER-PLATFORM OK: aria2c detection branches where/which");
+
+// ---- 更新源聚合：取最高版本 + 并列随机（官方源权重一致，不偏列表顺序）
+const { aggregateLatest } = await import("./lib/aggregate.js");
+const { compareVersions } = await import("./lib/compare-versions.js");
+const aggregateChecks = [];
+// 版本比较
+if (compareVersions("1.2.0", "1.2.0-rc.1") !== 1) aggregateChecks.push("compareVersions: release > prerelease");
+if (compareVersions("0.1.0-rc.9", "0.1.0-rc.6") !== 1) aggregateChecks.push("compareVersions: rc order");
+if (compareVersions("1.0.0", "1.0.0") !== 0) aggregateChecks.push("compareVersions: equal");
+// 取最高版本
+const higher = aggregateLatest([
+	{ version: "1.0.0", sourceName: "npm" },
+	{ version: "1.2.0", sourceName: "github" },
+	{ version: null, sourceName: "dshfind" }
+]);
+if (higher.version !== "1.2.0" || higher.sourceName !== "github") {
+	aggregateChecks.push(`aggregate takes highest (got ${JSON.stringify(higher)})`);
+}
+// 全 null
+const none = aggregateLatest([{ version: null, sourceName: "a" }, { version: null, sourceName: "b" }]);
+if (none.version !== null) aggregateChecks.push("aggregate all-null -> null");
+// 并列：多次调用应覆盖所有并列源（证明不偏 npm）
+const tieEntries = [
+	{ version: "1.2.0", sourceName: "npm" },
+	{ version: "1.2.0", sourceName: "github" },
+	{ version: "1.2.0", sourceName: "dshfind" }
+];
+const seenSources = new Set();
+for (let i = 0; i < 120; i++) {
+	const pick = aggregateLatest(tieEntries);
+	if (pick.version !== "1.2.0") { aggregateChecks.push("tie pick wrong version"); break; }
+	seenSources.add(pick.sourceName);
+}
+if (seenSources.size !== 3) {
+	aggregateChecks.push(`tie should distribute across sources (saw ${[...seenSources].join(",")})`);
+}
+if (aggregateChecks.length > 0) {
+	console.error("AGGREGATE FAIL:\n - " + aggregateChecks.join("\n - "));
+	process.exit(1);
+}
+console.log("AGGREGATE OK: highest version + tie distribution across sources");

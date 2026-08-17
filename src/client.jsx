@@ -224,6 +224,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 
 	const saveSources = (sources) => run("sources", () => setSources(sources)).then((snapshot) => {
 		if (snapshot) setFeedback({ severity: "success", message: t("sourcesSaved") });
+		// host 保存后已在后台并行重检所有源；延迟 400ms 让"已保存"反馈先渲染，再刷新列表
+		setTimeout(() => refreshAll(), 400);
 	});
 
 	const toggleSection = (key) => {

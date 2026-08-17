@@ -4,3 +4,8 @@ lib/client.js.map
 .origin-verify.json
 .origin-verify.log
 .restart-verify.ps1
+.restart-engine.log
+.engine.out.log
+.engine.err.log
+.recovery-verify.json
+.restart-engine.ps1

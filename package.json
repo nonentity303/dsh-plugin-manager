@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "dsh-plugin-manager-pro",
-  "version": "0.6.1",
-  "description": "本地插件管理器：分类折叠、更新源一键更新（npm/GitHub/插件超市）、浏览器下载优先、下载目录自动安装、插件市场（dshfind 精选目录）、救砖与启动前自检",
+  "version": "0.6.2",
+  "description": "鏈湴鎻掍欢绠＄悊鍣細鍒嗙被鎶樺彔銆佹洿鏂版簮涓€閿洿鏂帮紙npm/GitHub/鎻掍欢瓒呭競锛夈€佹祻瑙堝櫒涓嬭浇浼樺厛銆佷笅杞界洰褰曡嚜鍔ㄥ畨瑁呫€佹彃浠跺競鍦猴紙dshfind 绮鹃€夌洰褰曪級銆佹晳鐮栦笌鍚姩鍓嶈嚜妫€",
   "author": "nonentity303",
   "repository": {
     "type": "git",
@@ -83,3 +83,4 @@
     }
   }
 }
+

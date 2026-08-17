@@ -116,3 +116,42 @@ if (failures.length > 0) {
 	process.exit(1);
 }
 console.log("MARKET CONTRACT OK: marketCatalog/marketInstall schemas accept fixtures");
+
+// ---- entry.origin 契约：快照条目必须携带来源（builtin=架构自带 / user=用户安装）
+const listDesc = methods.get("list");
+if (!listDesc) {
+	console.error("FAIL: no list descriptor");
+	process.exit(1);
+}
+const originFixture = {
+	profileName: "web",
+	entries: [
+		{
+			entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent",
+			description: "Agent", necessity: "core", enabled: true, phase: "active", error: null,
+			protected: true, protectionReason: "x", archived: false, origin: "builtin",
+			installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
+		},
+		{
+			entryId: "e2", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod",
+			description: "M", necessity: "optional", enabled: false, phase: null, error: null,
+			protected: false, protectionReason: null, archived: false, origin: "user",
+			installedVersion: null, latestVersion: null, updateSource: null, needsUpdate: null, managed: true
+		}
+	],
+	sources: []
+};
+try {
+	listDesc.result.schema.parse(originFixture);
+} catch (error) {
+	console.error("FAIL: entry schema rejects origin fixture: " + error.message);
+	process.exit(1);
+}
+const withoutOrigin = { ...originFixture, entries: [originFixture.entries[0]] };
+delete withoutOrigin.entries[0].origin;
+try {
+	listDesc.result.schema.parse(withoutOrigin);
+	console.error("FAIL: entry schema accepts an entry WITHOUT origin (contract should require it)");
+	process.exit(1);
+} catch { /* expected rejection */ }
+console.log("ORIGIN CONTRACT OK: entry.origin required (builtin|user)");

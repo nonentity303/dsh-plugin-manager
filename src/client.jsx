@@ -45,6 +45,7 @@ function statusOf(entry) {
 function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
+	const [originFilter, setOriginFilter] = useState("all");
 	const [open, setOpen] = useState(new Set(["core"]));
 	const [showSources, setShowSources] = useState(false);
 	const [showRescue, setShowRescue] = useState(false);
@@ -75,6 +76,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		if (state.status !== "ready") return [];
 		const normalized = query.trim().toLocaleLowerCase();
 		const filtered = state.snapshot.entries.filter((entry) => {
+			if (originFilter !== "all" && entry.origin !== originFilter) return false;
 			if (!normalized) return true;
 			return entry.configId.toLocaleLowerCase().includes(normalized)
 				|| entry.description.toLocaleLowerCase().includes(normalized)
@@ -84,7 +86,19 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			key,
 			entries: filtered.filter((entry) => entry.necessity === key)
 		})).filter((section) => section.entries.length > 0);
-	}, [query, state]);
+	}, [query, originFilter, state]);
+
+	/** 来源统计（chips 数量）。 */
+	const originCounts = useMemo(() => {
+		if (state.status !== "ready") return { builtin: 0, user: 0 };
+		let builtin = 0;
+		let user = 0;
+		for (const entry of state.snapshot.entries) {
+			if (entry.origin === "user") user += 1;
+			else builtin += 1;
+		}
+		return { builtin, user };
+	}, [state]);
 
 	const updatable = useMemo(() => {
 		if (state.status !== "ready") return [];
@@ -291,6 +305,15 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 						{t(meta.key)}
 					</span>
 				))}
+				<span style={{ fontWeight: 600, margin: "0 2px 0 10px" }}>{t("legendOrigin")}:</span>
+				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-label-tertiary)", display: "inline-block" }} />
+					{t("originBuiltin")}
+				</span>
+				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-state-business-primary, #4f8cff)", display: "inline-block" }} />
+					{t("originUser")}
+				</span>
 			</div>
 
 			{/* 更新源面板 */}
@@ -337,6 +360,23 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					}}
 				/>
 			</label>
+
+			{/* 来源筛选：架构自带 vs 用户/agent 安装 */}
+			<div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+				<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)", fontWeight: 600 }}>{t("originLegend")}:</span>
+				<button type="button" onClick={() => setOriginFilter("all")}
+					style={{ ...chipStyle, ...(originFilter === "all" ? chipOnStyle : null) }}>
+					{t("originAll")} ({state.snapshot.entries.length})
+				</button>
+				<button type="button" onClick={() => setOriginFilter("builtin")}
+					style={{ ...chipStyle, ...(originFilter === "builtin" ? chipOnStyle : null) }}>
+					{t("originBuiltin")} ({originCounts.builtin})
+				</button>
+				<button type="button" onClick={() => setOriginFilter("user")}
+					style={{ ...chipStyle, ...(originFilter === "user" ? chipOnStyle : null) }}>
+					{t("originUser")} ({originCounts.user})
+				</button>
+			</div>
 
 			{snapshot.entries.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("empty")}</p> : null}
 			{snapshot.entries.length > 0 && sections.length === 0 ? <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("emptySearch")}</p> : null}
@@ -452,6 +492,19 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 														</p>
 													) : null}
 												</div>
+												{entry.origin === "user" ? (
+													<span title={t("originUserHint")} style={{
+														flex: "none",
+														fontSize: 11,
+														padding: "2px 8px",
+														borderRadius: 999,
+														border: "1px solid var(--dsw-alias-state-business-primary, #4f8cff)",
+														color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+														whiteSpace: "nowrap"
+													}}>
+														{t("originUser")}
+													</span>
+												) : null}
 												<span style={{
 													flex: "none",
 													fontSize: 11,
@@ -1225,6 +1278,12 @@ const zh = {
 	emptySearch: "没有匹配的插件。",
 	legendNecessity: "必要程度",
 	legendStatus: "启用状态",
+	legendOrigin: "来源",
+	originLegend: "来源",
+	originAll: "全部",
+	originBuiltin: "架构自带",
+	originUser: "用户安装",
+	originUserHint: "用户/agent 安装：dsh plugin add 或插件市场安装",
 	necessityCore: "必须",
 	necessityRecommended: "推荐",
 	necessityOptional: "可选",
@@ -1333,6 +1392,12 @@ const en = {
 	emptySearch: "No matching plugins.",
 	legendNecessity: "Necessity",
 	legendStatus: "Status",
+	legendOrigin: "Origin",
+	originLegend: "Origin",
+	originAll: "All",
+	originBuiltin: "Built-in",
+	originUser: "User-installed",
+	originUserHint: "Installed by you or an agent via `dsh plugin add` or the plugin market",
 	necessityCore: "Essential",
 	necessityRecommended: "Recommended",
 	necessityOptional: "Optional",

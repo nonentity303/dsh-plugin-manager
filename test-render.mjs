@@ -45,13 +45,13 @@ const { PluginManagerTab, marketFilterItems } = exportsObj;
 if (typeof PluginManagerTab !== "function") throw new Error("no PluginManagerTab export");
 if (typeof marketFilterItems !== "function") throw new Error("no marketFilterItems export");
 
-// ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态）
+// ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态；e1/e2 架构自带，e3-e5 用户安装）
 const entries = [
-	{ entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent", description: "Agent 核心", necessity: "core", enabled: true, phase: "active", error: null, protected: true, protectionReason: "必需", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.6", updateSource: "官方源 (npm)", needsUpdate: false, managed: false },
-	{ entryId: "e2", configId: "ui-theme", moduleName: "@deepseek-ai/dsh-client-ui-theme", packageName: "@deepseek-ai/dsh-client-ui-theme", description: "主题", necessity: "recommended", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.9", updateSource: "官方源 (npm)", needsUpdate: true, managed: false },
-	{ entryId: "e3", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod", description: "社区插件", necessity: "optional", enabled: false, phase: null, error: null, protected: false, protectionReason: null, installedVersion: "1.0.0", latestVersion: "1.2.0", updateSource: "官方源 (npm)", needsUpdate: true, managed: true },
-	{ entryId: "e4", configId: "broken-mod", moduleName: "broken-mod", packageName: "broken-mod", description: "坏插件", necessity: "recommended", enabled: false, phase: "failed", error: "boom", protected: false, protectionReason: null, installedVersion: "1.0.0", latestVersion: "1.0.0", updateSource: "官方源 (npm)", needsUpdate: false, managed: true },
-	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, installedVersion: "0.1.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
+	{ entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent", description: "Agent 核心", necessity: "core", enabled: true, phase: "active", error: null, protected: true, protectionReason: "必需", archived: false, origin: "builtin", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.6", updateSource: "官方源 (npm)", needsUpdate: false, managed: false },
+	{ entryId: "e2", configId: "ui-theme", moduleName: "@deepseek-ai/dsh-client-ui-theme", packageName: "@deepseek-ai/dsh-client-ui-theme", description: "主题", necessity: "recommended", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "builtin", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.9", updateSource: "官方源 (npm)", needsUpdate: true, managed: false },
+	{ entryId: "e3", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod", description: "社区插件", necessity: "optional", enabled: false, phase: null, error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.2.0", updateSource: "官方源 (npm)", needsUpdate: true, managed: true },
+	{ entryId: "e4", configId: "broken-mod", moduleName: "broken-mod", packageName: "broken-mod", description: "坏插件", necessity: "recommended", enabled: false, phase: "failed", error: "boom", protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.0.0", updateSource: "官方源 (npm)", needsUpdate: false, managed: true },
+	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "0.1.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
 ];
 const makeSnapshot = (entriesMut) => ({
 	profileName: "web",
@@ -98,6 +98,40 @@ try {
 		root.render(React.createElement(PluginManagerTab, { ...api, t }));
 	});
 	console.log("initial render OK; list calls:", calls.list);
+
+	// 来源筛选：用户安装 chips（展开 recommended/optional 后断言）
+	const rootEl = document.getElementById("root");
+	const findBtnByText = (text) => Array.from(rootEl.querySelectorAll("button")).find((b) => b.textContent.includes(text));
+	const findHeader = (text) => Array.from(rootEl.querySelectorAll("header")).find((h) => h.textContent.startsWith(text));
+	const originUserChip = findBtnByText("originUser");
+	if (!originUserChip) throw new Error("origin user chip not found");
+	await act(async () => {
+		originUserChip.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (rootEl.textContent.includes("agent")) throw new Error("builtin entry still visible after originUser filter");
+	await act(async () => {
+		findHeader("necessityRecommended").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		findHeader("necessityOptional").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	const textAfterUser = rootEl.textContent;
+	if (!textAfterUser.includes("broken-mod") || !textAfterUser.includes("community-mod")) {
+		throw new Error("user entries missing after originUser filter: " + textAfterUser.slice(0, 300));
+	}
+	if (!textAfterUser.includes("originUser")) throw new Error("user badge not rendered on rows");
+	// 架构自带
+	await act(async () => {
+		findBtnByText("originBuiltin").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	const textAfterBuiltin = rootEl.textContent;
+	if (!textAfterBuiltin.includes("agent") || textAfterBuiltin.includes("community-mod")) {
+		throw new Error("builtin filter wrong: " + textAfterBuiltin.slice(0, 300));
+	}
+	// 全部
+	await act(async () => {
+		findBtnByText("originAll").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	if (!rootEl.textContent.includes("community-mod")) throw new Error("originAll reset failed");
+	console.log("RESULT: PASS - origin filter (user/builtin/all) + user badges");
 
 	// 搜索
 	const searchInput = document.querySelector('input[type="search"]');

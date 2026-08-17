@@ -8,6 +8,12 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 
 ## 功能特性（v0.2）
 
+### 📥 更新与下载（v0.4 / v0.5）
+- **更新源扩展**：npm registry · **插件超市 dshfind**（GitHub dsh-plugin topic 聚合，默认启用）· GitHub 仓库 · 任意自定义 registry
+- **下载优先级**：① **浏览器原生下载**（隐藏 iframe 触发浏览器下载进程，NDM 等扩展可捕获）② 扩展下载软件（NDM/比特彗星等，下载到下载目录）③ 内置下载器兜底（HTTP 直链 / aria2c / P2P magnet·torrent）
+- **下载目录自动安装**：任何工具下载的 `.tgz` 放到 `$DSH_HOME\downloads` → 管理器自动拾取 `pnpm add` 安装（更新时自动轮询 2 分钟）
+- 每行更新按钮 = 浏览器下载优先；「内置」小按钮 = 内置下载器
+
 ### 🛟 救砖（v0.3）
 - **独立救援页 `/rescue`**：完全自包含的 HTML，直连宿主网关，**不依赖任何客户端插件/设置页**——即使 UI 全坏也能诊断与恢复
 - **浮动救援球**：右下角 🛟 按钮（客户端运行时存活但设置页损坏时仍可进入救援页）
@@ -17,6 +23,7 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 - **重启引擎**：宿主自重启（过渡脚本 2 秒后拉起新实例，`restartHarness`）
 - **卸载**：移除 profile 依赖并从 bundles 列表剔除（`uninstallPackages`，需重启生效）
 - **自动隔离**：可选——加载失败的插件自动禁用（`setRescueConfig`，默认关闭）
+- **启动前自检（v0.5）**：`verifyProfile` / `fixProfile` 检查 bundles 可解析性与 patch 文件——**损坏的 bundle 会让引擎在启动阶段失败**（此时应用内救砖不可达），管理器提供启动前检查与一键隔离修复；桌面快捷方式「DeepSeek Harness Web UI」已升级为救援启动（双击 = 启动前自检 + 正常启动）
 - **加载优先级**：客户端 bundle `immediately: true`（启动清单中立即加载）；宿主仅依赖 loader 基础服务
 
 ### 安全与加固（v0.2.3 / v0.2.4）

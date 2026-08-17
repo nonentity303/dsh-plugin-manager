@@ -42,7 +42,7 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [open, setOpen] = useState(new Set(["core"]));
@@ -118,7 +118,63 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		else if (restart) setFeedback({ severity: "warning", message: restart });
 	});
 
-	const updateOne = (entry) => run(`update:${entry.packageName}`, () => update([entry.packageName])).then((receipt) => {
+	/** 触发浏览器原生下载（隐藏 iframe，交给浏览器下载进程 / NDM 扩展捕获）。 */
+	const triggerBrowserDownload = (url) => {
+		try {
+			const iframe = document.createElement("iframe");
+			iframe.style.display = "none";
+			iframe.src = url;
+			document.body.appendChild(iframe);
+			setTimeout(() => {
+				if (iframe.parentNode !== null) iframe.parentNode.removeChild(iframe);
+			}, 60000);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	/** 轮询下载目录（浏览器/NDM 落盘后自动安装）。 */
+	const pollDownloads = (durationMs = 120000) => new Promise((resolve) => {
+		const started = Date.now();
+		const timer = setInterval(async () => {
+			try {
+				const result = await checkDownloads();
+				if ((result.installed ?? []).length > 0) {
+					clearInterval(timer);
+					resolve(result);
+					return;
+				}
+			} catch {
+				// 继续轮询
+			}
+			if (Date.now() - started > durationMs) {
+				clearInterval(timer);
+				resolve(null);
+			}
+		}, 5000);
+	});
+
+	/** 更新（默认：浏览器下载优先 → 落盘自动安装）。 */
+	const updateOne = (entry) => run(`update:${entry.packageName}`, () => updateBrowser([entry.packageName])).then(async (receipt) => {
+		if (!receipt || receipt.items.length === 0) return;
+		const item = receipt.items[0];
+		if (item.status === "need-download" && item.url) {
+			setFeedback({ severity: "warning", message: `${item.packageName} → ${item.latestVersion}：已触发浏览器下载${item.url.startsWith("magnet:") ? "（P2P 磁力链接，浏览器可能无法直接处理，可用 NDM/比特彗星导入）" : ""}。下载完成后管理器自动安装（${t("dlDir")}：见救砖面板）。若浏览器未开始下载，请点击「内置下载」。` });
+			triggerBrowserDownload(item.url);
+			const result = await pollDownloads();
+			if (result !== null) {
+				setFeedback({ severity: "success", message: `${item.packageName}: ${t("dlInstalled")} ${result.installed.join(", ")}。重启 profile 后生效。` });
+			}
+			return;
+		}
+		if (item.status === "up-to-date") setFeedback({ severity: "success", message: `${item.packageName}: ${t("upToDate")}` });
+		else if (item.status === "failed") setFeedback({ severity: "error", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "not-managed") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
+	});
+
+	/** 更新（内置下载器兜底）。 */
+	const updateOneInternal = (entry) => run(`update:${entry.packageName}`, () => update([entry.packageName])).then((receipt) => {
 		if (!receipt || receipt.items.length === 0) return;
 		const item = receipt.items[0];
 		if (item.status === "updated") setFeedback({ severity: "success", message: `${item.packageName}: ${item.message}` });
@@ -244,6 +300,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 				uninstallPackages={uninstallPackages}
 				getRescueConfig={getRescueConfig}
 				setRescueConfig={setRescueConfig}
+				getDownloadConfig={getDownloadConfig}
+				checkDownloads={checkDownloads}
+				verifyProfile={verifyProfile}
+				fixProfile={fixProfile}
 				managed={snapshot.entries.filter((entry) => entry.managed)}
 				t={t}
 			/> : null}
@@ -409,10 +469,17 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 													</span>
 												) : null}
 												{canUpdate ? (
-													<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
-														style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
-														{t("update")}
-													</button>
+													<>
+														<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
+															style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
+															{t("update")}
+														</button>
+														<button type="button" onClick={() => updateOneInternal(entry)} disabled={busy !== null}
+															title={t("updateInternalHint")}
+															style={{ ...buttonStyle, flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
+															{t("updateInternal")}
+														</button>
+													</>
 												) : entry.needsUpdate === true && !entry.managed ? (
 													<span title={entry.moduleName} style={{ flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("notManaged")}</span>
 												) : null}
@@ -497,17 +564,22 @@ function SafeTab(props) {
 	return React.createElement(TabBoundary, null, React.createElement(PluginManagerTab, props));
 }
 
-/** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置。 */
-function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, managed, t }) {
+/** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
+function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
 	const [issues, setIssues] = useState(null);
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState(null);
 	const [auto, setAuto] = useState(false);
+	const [dlDir, setDlDir] = useState(null);
+	const [verify, setVerify] = useState(null);
 
 	useEffect(() => {
 		let current = true;
 		getRescueConfig().then((config) => {
 			if (current) setAuto(config.autoQuarantine === true);
+		}, () => {});
+		getDownloadConfig().then((config) => {
+			if (current) setDlDir(config.dir ?? null);
 		}, () => {});
 		runDiagnose();
 		return () => {
@@ -595,6 +667,50 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		}
 	};
 
+	const runVerify = async () => {
+		setBusy(true);
+		try {
+			const result = await verifyProfile();
+			setVerify(result);
+			setFeedback(result.ok
+				? { severity: "success", message: t("verifyOk") }
+				: { severity: "error", message: `${t("verifyBad")} ${(result.issues ?? []).map((i) => `${i.name}: ${i.reason}`).join("；")}` });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runFixProfile = async () => {
+		if (!window.confirm(t("fixProfileConfirm"))) return;
+		setBusy(true);
+		try {
+			const result = await fixProfile();
+			setFeedback({ severity: result.ok ? "success" : "error", message: `${result.message ?? ""} ${(result.actions ?? []).map((a) => `${a.action}: ${a.detail}`).join("；")}` });
+			runVerify();
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const runCheckDownloads = async () => {
+		setBusy(true);
+		try {
+			const result = await checkDownloads();
+			const parts = [];
+			if ((result.installed ?? []).length > 0) parts.push(`${t("dlInstalled")} ${result.installed.join(", ")}`);
+			if ((result.failed ?? []).length > 0) parts.push(`${t("dlFailed")} ${result.failed.map((f) => `${f.name}: ${f.message}`).join("；")}`);
+			setFeedback({ severity: parts.length === 0 ? "success" : (result.failed?.length > 0 ? "warning" : "success"), message: parts.join("；") || t("dlEmpty") });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
 	return (
 		<div style={{
 			border: "1px solid var(--dsw-alias-state-error-primary)",
@@ -647,6 +763,37 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 				</label>
 			</div>
 
+			{/* 启动前自检（坏 bundle 会让引擎起不来 —— 自动化救砖） */}
+			<div style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+					<span style={{ fontSize: 12, fontWeight: 600 }}>{t("verifyTitle")}</span>
+					<button type="button" onClick={runVerify} disabled={busy} style={buttonStyle}>{t("verifyRun")}</button>
+					<button type="button" onClick={runFixProfile} disabled={busy} style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>{t("fixProfile")}</button>
+				</div>
+				{verify !== null && !verify.ok ? (
+					<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+						{(verify.issues ?? []).map((issue, i) => (
+							<p key={i} style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>
+								⚠ {issue.name}: {issue.reason}
+							</p>
+						))}
+					</div>
+				) : null}
+				<p style={{ margin: 0, fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: "16px" }}>{t("verifyHint")}</p>
+			</div>
+
+			{/* 下载目录（浏览器/NDM/aria2 下载到该目录后自动安装） */}
+			<div style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+					<span style={{ fontSize: 12, fontWeight: 600 }}>{t("dlTitle")}</span>
+					<button type="button" onClick={runCheckDownloads} disabled={busy} style={buttonStyle}>{t("dlCheck")}</button>
+				</div>
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)" }}>
+					{t("dlDir")}: <code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{dlDir ?? "…"}</code>
+				</p>
+				<p style={{ margin: 0, fontSize: 11, color: "var(--dsw-alias-label-tertiary)", lineHeight: "16px" }}>{t("dlHint")}</p>
+			</div>
+
 			{managed.length > 0 ? (
 				<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
 					<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("rescueUninstallList")}</span>
@@ -687,7 +834,9 @@ function SourcesPanel({ sources, save, busy, t }) {
 	const addSource = () => {
 		const url = newUrl.trim();
 		if (!url || !/^https?:\/\//.test(url)) return;
-		const type = /^https?:\/\/github\.com\//.test(url) ? "github" : "registry";
+		let type = "registry";
+		if (/^https?:\/\/github\.com\//.test(url)) type = "github";
+		else if (/dshfind\.com/.test(url)) type = "dshfind";
 		setDraft((current) => [...current, { name: newName.trim() || url, url, enabled: true, official: false, type }]);
 		setNewName("");
 		setNewUrl("");
@@ -695,7 +844,8 @@ function SourcesPanel({ sources, save, busy, t }) {
 	const resetDefaults = () => {
 		setDraft([
 			{ name: "官方源 (npm)", url: "https://registry.npmjs.org", enabled: true, official: true, type: "registry" },
-			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: true, official: true, type: "github" },
+			{ name: "插件超市 (dshfind)", url: "https://dshfind.com/zh/plugins", enabled: true, official: false, type: "dshfind" },
+			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: false, official: true, type: "github" },
 			{ name: "npmmirror 镜像", url: "https://registry.npmmirror.com", enabled: false, official: false, type: "registry" }
 		]);
 	};
@@ -727,6 +877,7 @@ function SourcesPanel({ sources, save, busy, t }) {
 							{source.name}
 							{source.official ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("official")}</em> : null}
 							{source.type === "github" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-label-tertiary)", marginLeft: 4 }}>GitHub</em> : null}
+							{source.type === "dshfind" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-warning-primary)", marginLeft: 4 }}>{t("dshfind")}</em> : null}
 						</span>
 						<code style={{ flex: "1 1 auto", fontFamily: "var(--ds-font-family-code)", fontSize: 11, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</code>
 						<button type="button" onClick={() => removeAt(index)} style={linkButtonStyle} disabled={busy}>{t("remove")}</button>
@@ -809,6 +960,8 @@ const zh = {
 	disableEntry: "停用",
 	versionUnknown: "版本未知",
 	update: "更新",
+	updateInternal: "内置",
+	updateInternalHint: "使用管理器内置下载器（HTTP/P2P/aria2），不走浏览器下载",
 	updateAll: "全部更新",
 	upToDate: "已是最新版本",
 	notManaged: "随安装更新",
@@ -828,6 +981,7 @@ const zh = {
 	official: "官方",
 	enabled: "启用",
 	noSources: "没有启用的更新源，版本检查不可用。",
+	dshfind: "超市",
 	resetToggles: "重置开关",
 	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
 	resetDone: "已还原所有开关状态。",
@@ -849,7 +1003,21 @@ const zh = {
 	rescueAuto: "失败插件自动隔离",
 	rescueAutoSaved: "自动隔离设置已保存。",
 	rescueUninstallList: "可卸载的 profile 依赖：",
-	rescueUninstallConfirm: "确认卸载"
+	rescueUninstallConfirm: "确认卸载",
+	verifyTitle: "启动前自检",
+	verifyRun: "运行检查",
+	verifyOk: "✓ profile 配置正常，引擎可以正常启动。",
+	verifyBad: "⚠ 发现问题（引擎可能无法启动）：",
+	verifyHint: "损坏的 bundle（包未安装/未声明 dsh.bundle）或无法解析的 cordis.patch.yml 会让引擎在启动阶段失败——这是救砖的首要修复目标；双击桌面快捷方式启动时也会自动执行同样的检查。",
+	fixProfile: "修复引擎配置",
+	fixProfileConfirm: "确认执行？将备份并隔离损坏的 bundle、还原损坏的补丁文件。",
+	dlTitle: "下载目录（自动安装）",
+	dlCheck: "检查下载",
+	dlDir: "下载目录",
+	dlHint: "用浏览器 / NDM / aria2 等任意方式把插件包（.tgz）下载到该目录，点击「检查下载」或重启后自动安装。NDM 扩展可直接捕获下载到此目录。",
+	dlInstalled: "已安装：",
+	dlFailed: "失败：",
+	dlEmpty: "目录中没有待安装的新插件包。"
 };
 
 const en = {
@@ -876,6 +1044,8 @@ const en = {
 	disableEntry: "Disable",
 	versionUnknown: "version unknown",
 	update: "Update",
+	updateInternal: "Built-in",
+	updateInternalHint: "Use the manager's built-in downloader (HTTP/P2P/aria2) instead of the browser",
 	updateAll: "Update all",
 	upToDate: "Already up to date",
 	notManaged: "ships with install",
@@ -895,6 +1065,7 @@ const en = {
 	official: "official",
 	enabled: "enabled",
 	noSources: "No enabled sources; version checks unavailable.",
+	dshfind: "market",
 	resetToggles: "Reset toggles",
 	resetConfirm: "Reset every plugin toggle changed by this manager? (Only manager-owned rows are cleared; your own config is untouched.)",
 	resetDone: "All toggles have been reset.",
@@ -916,7 +1087,21 @@ const en = {
 	rescueAuto: "Auto-quarantine failing plugins",
 	rescueAutoSaved: "Auto-quarantine setting saved.",
 	rescueUninstallList: "Uninstallable profile dependencies:",
-	rescueUninstallConfirm: "Uninstall"
+	rescueUninstallConfirm: "Uninstall",
+	verifyTitle: "Pre-boot check",
+	verifyRun: "Run check",
+	verifyOk: "✓ Profile configuration is healthy; the engine can boot.",
+	verifyBad: "⚠ Issues found (the engine may fail to boot):",
+	verifyHint: "Broken bundles (uninstalled / no dsh.bundle) or an unparsable cordis.patch.yml fail the engine during boot — the primary rescue target. The desktop shortcut runs the same check on double-click.",
+	fixProfile: "Fix engine config",
+	fixProfileConfirm: "Run fix? Broken bundles will be backed up and removed from the profile; a corrupt patch file will be restored.",
+	dlTitle: "Download folder (auto-install)",
+	dlCheck: "Check folder",
+	dlDir: "Download folder",
+	dlHint: "Download plugin packages (.tgz) into this folder with any tool (browser / NDM / aria2), then click \"Check folder\" or restart — they are installed automatically. The NDM extension can capture downloads there.",
+	dlInstalled: "Installed:",
+	dlFailed: "Failed:",
+	dlEmpty: "No new packages waiting in the download folder."
 };
 
 const inject = [
@@ -954,7 +1139,13 @@ async function apply(ctx) {
 			restartHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.restartHarness(), "重启引擎")),
 			uninstallPackages: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames), "卸载插件")),
 			getRescueConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getRescueConfig(), "读取救援配置")),
-			setRescueConfig: async (config) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setRescueConfig(config), "保存救援配置"))
+			setRescueConfig: async (config) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setRescueConfig(config), "保存救援配置")),
+			getDownloadConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getDownloadConfig(), "读取下载目录")),
+			checkDownloads: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.checkDownloads(), "检查下载目录")),
+			resolveDownloadUrl: async (packageName) => unwrap(await withTimeout(scope.remote.pluginManagerPro.resolveDownloadUrl(packageName), "解析下载链接")),
+			verifyProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.verifyProfile(), "启动前自检")),
+			fixProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.fixProfile(), "修复引擎配置")),
+			updateBrowser: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.updateBrowser(packageNames), "解析下载链接"))
 		};
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",

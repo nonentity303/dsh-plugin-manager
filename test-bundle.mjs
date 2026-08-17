@@ -155,3 +155,17 @@ try {
 	process.exit(1);
 } catch { /* expected rejection */ }
 console.log("ORIGIN CONTRACT OK: entry.origin required (builtin|user)");
+
+// ---- rescue 页 wire 格式回归：method 必须传完整命名空间端点且原样透传（勿拼接）
+const { readFileSync: readRescue } = await import("node:fs");
+const rescueSrc = readRescue(new URL("./lib/rescue.js", import.meta.url), "utf8");
+const rescueChecks = [];
+if (!/const BASE = "\/api";/.test(rescueSrc)) rescueChecks.push("rescue BASE should be /api");
+if (!/fetch\(BASE \+ "\/" \+ method/.test(rescueSrc)) rescueChecks.push("rescue fetch must keep BASE + '/' + method");
+const fullNameCalls = (rescueSrc.match(/rpc\("pluginManagerPro\//g) || []).length;
+if (fullNameCalls < 10) rescueChecks.push(`rescue page should call methods with full namespace (found ${fullNameCalls})`);
+if (rescueChecks.length > 0) {
+	console.error("RESCUE WIRE REGRESSION:\n - " + rescueChecks.join("\n - "));
+	process.exit(1);
+}
+console.log("RESCUE WIRE OK: full-namespace rpc calls, passthrough method");

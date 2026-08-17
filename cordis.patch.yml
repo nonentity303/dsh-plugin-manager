@@ -5,4 +5,4 @@
 
 - insert:
     - id: plugin-manager-pro
-      name: '@dsh-local/plugin-manager'
+      name: 'dsh-plugin-manager-pro'

@@ -36,8 +36,8 @@ if (!handoff) {
 	console.error("FAIL: bundle did not call window.__ModuleLoader__.load");
 	process.exit(1);
 }
-if (handoff.id !== "@dsh-local/plugin-manager") {
-	console.error(`FAIL: registered id ${handoff.id}, expected @dsh-local/plugin-manager`);
+if (handoff.id !== "dsh-plugin-manager-pro") {
+	console.error(`FAIL: registered id ${handoff.id}, expected dsh-plugin-manager-pro`);
 	process.exit(1);
 }
 if (typeof handoff.factory !== "function") {

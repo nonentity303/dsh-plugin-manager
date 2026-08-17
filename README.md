@@ -1,4 +1,4 @@
-# @dsh-local/plugin-manager
+# dsh-plugin-manager-pro
 
 DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 → 插件」中提供可视化的插件管理页。
 
@@ -51,13 +51,13 @@ dsh web
 卸载：
 
 ```sh
-dsh plugin --profile web remove @dsh-local/plugin-manager
+dsh plugin --profile web remove dsh-plugin-manager-pro
 ```
 
 ## 工作原理
 
 - **宿主端**（`lib/index.js`）：读取 Cordis Loader 实时状态（启用/运行期阶段/错误），经 Typert 网关暴露远程方法（list/refresh/setSources/setEnabled/resetToggles/update/updateBrowser/diagnose/quarantine/repairHarness/restartHarness/uninstallPackages/getRescueConfig/setRescueConfig/getDownloadConfig/checkDownloads/resolveDownloadUrl/verifyProfile/fixProfile）
-- **开关持久化**：写入 profile 的 `cordis.patch.yml`（带 `Managed by @dsh-local/plugin-manager` 注释的行，不触碰用户自有补丁），Loader 热重载应用；运行期无法收敛返回「重启后生效」。机制借鉴 MIT 项目 [hrhgit/deepseek-harness-plugin-manager](https://github.com/hrhgit/deepseek-harness-plugin-manager)
+- **开关持久化**：写入 profile 的 `cordis.patch.yml`（带 `Managed by dsh-plugin-manager-pro` 注释的行，不触碰用户自有补丁），Loader 热重载应用；运行期无法收敛返回「重启后生效」。机制借鉴 MIT 项目 [hrhgit/deepseek-harness-plugin-manager](https://github.com/hrhgit/deepseek-harness-plugin-manager)
 - **更新源**：registry（pnpm `--registry`）/ github / dshfind（GitHub search topic:dsh-plugin 聚合，缓存 1 小时）——版本取最高可用源
 - **下载器**（`lib/downloader.js`）：HTTP 直链 fetch 流式；magnet/.torrent 优先外部下载器（aria2c）→ 内置 webtorrent（可选）→ 提示用 NDM/比特彗星手动导入
 - **下载目录**：`$DSH_HOME\downloads` 轮询拾取 `.tgz` 自动安装

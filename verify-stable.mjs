@@ -30,6 +30,11 @@ if (list.ok) {
     const e = entries.find((x) => x.configId === id);
     ok(e !== undefined && e.phase === "active", `entry ${id} active (phase=${e && e.phase})`);
   }
+  // README 简介提取：用户 mod 不应再是"（无简介）"
+  for (const id of ["dsh-market", "better-sidebar", "office", "dsh-doc-reader"]) {
+    const e = entries.find((x) => x.configId === id);
+    if (e) ok(e.description !== "（无简介）" && e.description.length > 8, `entry ${id} has readme intro (${e.description.slice(0, 40)})`);
+  }
   const broken = entries.filter((e) => e.phase === "failed");
   ok(broken.length === 0, `no failed entries (${broken.length})`);
 }

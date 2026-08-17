@@ -169,3 +169,56 @@ if (rescueChecks.length > 0) {
 	process.exit(1);
 }
 console.log("RESCUE WIRE OK: full-namespace rpc calls, passthrough method");
+
+// ---- readme-intro 提取：标题/徽章/空行/链接/代码/截断 + 缓存 + zh 优先
+const { extractIntro, readmeIntro } = await import("./lib/readme-intro.js");
+const introChecks = [];
+const sample = [
+	"# dsh-market",
+	"",
+	"![logo](https://example.com/logo.png)",
+	"",
+	"Visual plugin market inside **DeepSeek Harness**: browse, search, and one-click install community plugins.",
+	"",
+	"## Features",
+	"- list"
+].join("\n");
+const extracted = extractIntro(sample);
+if (!extracted.startsWith("Visual plugin market inside DeepSeek Harness: browse, search, and one-click") || !extracted.endsWith("…")) {
+	introChecks.push(`extractIntro picks first real paragraph (got: ${JSON.stringify(extracted)})`);
+}
+const truncated = extractIntro("x\n\n" + "字".repeat(200));
+if (truncated.length > 84 || !truncated.endsWith("…")) introChecks.push(`extractIntro truncates to 80+ellipsis (got ${JSON.stringify(truncated)})`);
+if (extractIntro("# only a title\n\n") !== null) introChecks.push("extractIntro returns null when only titles");
+if (extractIntro("") !== null) introChecks.push("extractIntro returns null for empty");
+const zhSample = "# demo\n\n中文简介：这是一个演示插件，用于测试。\n\n## Install";
+const zhIntro = extractIntro(zhSample);
+if (zhIntro !== "中文简介：这是一个演示插件，用于测试。") introChecks.push(`extractIntro keeps zh text (got ${JSON.stringify(zhIntro)})`);
+if (introChecks.length > 0) {
+	console.error("README-INTRO FAIL:\n - " + introChecks.join("\n - "));
+	process.exit(1);
+}
+console.log("README-INTRO OK: extractIntro picks/truncates/zh");
+
+// readmeIntro 端到端：临时目录 + README.zh.md / README.md / package.json 优先级
+const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+const { tmpdir } = await import("node:os");
+const { join: joinPath } = await import("node:path");
+const tmp = mkdtempSync(joinPath(tmpdir(), "pm-intro-"));
+const pkgDir = joinPath(tmp, "node_modules", "demo-mod");
+mkdirSync(pkgDir, { recursive: true });
+writeFileSync(joinPath(pkgDir, "package.json"), JSON.stringify({ name: "demo-mod", description: "package desc fallback" }), "utf8");
+const nmRoot = joinPath(tmp, "node_modules");
+const viaPkg = readmeIntro("demo-mod", [nmRoot]);
+if (viaPkg !== "package desc fallback") introChecks.push(`readmeIntro uses package.json description (got ${JSON.stringify(viaPkg)})`);
+writeFileSync(joinPath(pkgDir, "README.md"), "# demo\n\nEnglish first paragraph about the plugin.\n", "utf8");
+writeFileSync(joinPath(pkgDir, "README.zh.md"), "# demo\n\n中文第一段简介。\n", "utf8");
+const viaZh = readmeIntro("demo-mod", [nmRoot]);
+if (viaZh !== "中文第一段简介。") introChecks.push(`readmeIntro prefers README.zh.md (got ${JSON.stringify(viaZh)})`);
+const missing = readmeIntro("no-such-pkg", [nmRoot]);
+if (missing !== null) introChecks.push(`readmeIntro returns null for missing pkg (got ${JSON.stringify(missing)})`);
+if (introChecks.length > 0) {
+	console.error("README-INTRO FAIL:\n - " + introChecks.join("\n - "));
+	process.exit(1);
+}
+console.log("README-INTRO OK: readmeIntro zh>description>readme priority + missing");

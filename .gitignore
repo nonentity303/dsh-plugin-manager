@@ -9,3 +9,5 @@ lib/client.js.map
 .engine.err.log
 .recovery-verify.json
 .restart-engine.ps1
+.sandbox-verify.json
+.stable-verify.json

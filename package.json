@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-manager-pro",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "本地插件管理器：分类折叠（必要程度×来源）、更新源一键更新（npm/GitHub/插件超市）、浏览器下载优先、下载目录自动安装、插件市场（dshfind 精选目录）、README 简介提取、救砖与启动前自检；独立救砖工具链（3081 rescue-daemon / open-boot 浏览器触发自启 / dsh-boot 启动序列）；跨平台（Windows/macOS/Linux）",
   "author": "nonentity303",
   "repository": {

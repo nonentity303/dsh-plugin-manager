@@ -38,13 +38,27 @@ DeepSeek Harness（DSH）本地插件管理器 —— 在 Web 界面「设置 �
 - **启动前自检**：`verifyProfile` / `fixProfile`——损坏的 bundle 会让引擎在启动阶段失败，管理器提供启动前检查与一键隔离修复；**桌面快捷方式已升级为救援启动**（双击 = 自检 + 启动）
 - **加载优先级**：客户端 `immediately: true`；宿主仅依赖 loader 基础服务
 
+### 🧰 独立救砖工具链（v0.7）
+
+> 解决"救砖页与主引擎绑死"的单点故障：主引擎启动失败时，`/rescue`（由主引擎注册）会随之瘫痪。
+> 以下工具**独立于主进程**运行，主引擎挂了依然可用。零新依赖（纯 Node + 项目已有 yaml）。
+
+| 工具 | 用途 | 用法 |
+|---|---|---|
+| `bin/rescue-daemon.mjs` | **独立救砖守护**（默认端口 **3081**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎 | `node bin/rescue-daemon.mjs --profile <dir>` |
+| `bin/open-boot.mjs` | **浏览器访问即自检启动**：打开 `http://127.0.0.1:3081/` → 自动 自检→修复→启动 → 跳转 3080。设为浏览器主页即可"打开即启动" | `node bin/open-boot.mjs --profile <dir>` |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 供 watchdog 调用；退出码 0=就绪 / 1=启动失败 / 2=修复未完成 | `node bin/dsh-boot.mjs [--repair-only]` / 双击 `dsh-boot.cmd` |
+
+- **公共模块**：`lib/preflight.mjs`（standalone 自检/修复：bundle 解析性 + patch 可解析性检查、坏 bundle 以 `disabled: true` 写入 patch 隔离、损坏补丁备份后重建，与 host 内 `verifyProfile/fixProfile` 同源逻辑）、`lib/enginectl.mjs`（引擎探测/拉起/停止/PID 管理）
+- **故障排查**：引擎起不来 → ① 浏览器开 `http://127.0.0.1:3081/` 用救援页"运行检查→修复→启动"；② 或命令行 `node bin/dsh-boot.mjs --repair-only` 看隔离列表；③ 或双击 `bin/dsh-boot.cmd` 一键自检+启动
+
 ### 🧰 其他
 - 远程调用超时（全量刷新放宽到 4 分钟）、组件级错误边界、宿主操作日志、中英文界面、搜索
 
 ## 环境要求
 
 - Windows 10/11 · macOS · Linux（v0.6.6 起跨平台；脚本层如桌面救援快捷方式为 Windows 专属，macOS/Linux 直接 `dsh web` 启动即可）
-- Node.js ≥ 22.19 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
+- Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
 
 ## 安装
 

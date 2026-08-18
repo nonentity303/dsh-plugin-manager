@@ -51,6 +51,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const [showRescue, setShowRescue] = useState(false);
 	const [showMarket, setShowMarket] = useState(false);
 	const [showConfigCards, setShowConfigCards] = useState(false);
+	const [highlightCard, setHighlightCard] = useState(null);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
@@ -101,7 +102,9 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		return { builtin, user };
 	}, [state]);
 
-	/** 条目 -> 自带配置卡片（vision-router 等大 mod 的 settings.plugin.item 注册）。 */
+	/** 条目 -> 自带配置卡片（vision-router 等大 mod 的 settings.plugin.item 注册）。
+	 *  匹配规则：configId 全等、packageName 全等或末尾匹配（@scope/pkg-name = card id）。
+	 *  不再使用 id.includes(configId)，避免 "session-title" 错误匹配 "session" 等假阳性。 */
 	const cardForEntry = useMemo(() => {
 		const lookup = new Map();
 		if (state.status !== "ready") return lookup;
@@ -111,10 +114,13 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			const pkg = (entry.packageName ?? "").toLocaleLowerCase();
 			for (const card of cards) {
 				const id = String(card.id ?? "").toLocaleLowerCase();
-				if (id !== "" && (configId === id || pkg.includes(id) || id.includes(configId))) {
-					lookup.set(entry.entryId, card);
-					break;
-				}
+				if (id === "") continue;
+				// 1) configId 全等（如 card id "vision-router" == entry configId "vision-router"）
+				if (configId === id) { lookup.set(entry.entryId, card); break; }
+				// 2) packageName 全等（如 card id "dsh-vision-router" == pkg "dsh-vision-router"）
+				if (pkg === id) { lookup.set(entry.entryId, card); break; }
+				// 3) packageName 末尾匹配（如 card id "vision-router" == pkg "dsh-vision-router" 末尾）
+				if (pkg.endsWith("/" + id) || pkg.endsWith("-" + id)) { lookup.set(entry.entryId, card); break; }
 			}
 		}
 		return lookup;

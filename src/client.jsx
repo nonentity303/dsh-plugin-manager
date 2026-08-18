@@ -88,7 +88,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			key,
 			entries: filtered.filter((entry) => entry.necessity === key)
 		})).filter((section) => section.entries.length > 0);
-	}, [query, originFilter, state]);
+	}, [query, originFilter, state.snapshot?.entries]);
 
 	/** 来源统计（chips 数量）。 */
 	const originCounts = useMemo(() => {
@@ -100,7 +100,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			else builtin += 1;
 		}
 		return { builtin, user };
-	}, [state]);
+	}, [state.snapshot?.entries]);
 
 	/** 条目 -> 自带配置卡片（vision-router 等大 mod 的 settings.plugin.item 注册）。
 	 *  匹配规则：configId 全等、packageName 全等或末尾匹配（@scope/pkg-name = card id）。
@@ -124,14 +124,19 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			}
 		}
 		return lookup;
-	}, [configCards, state]);
+	}, [configCards, state.snapshot?.entries]);
 
 	const updatable = useMemo(() => {
 		if (state.status !== "ready") return [];
 		return state.snapshot.entries.filter((entry) => entry.needsUpdate === true && entry.managed);
-	}, [state]);
+	}, [state.snapshot?.entries]);
 
 	const run = async (key, operation) => {
+		// 保存滚动位置：防止 setState 触发的重渲染导致父容器滚动重置到右上角
+		// 使用 typeof 检查确保非浏览器环境不崩溃（与文件内其他同类检查一致）
+		const scrollY = typeof window !== "undefined" && typeof document !== "undefined"
+			? window.scrollY ?? window.pageYOffset ?? document.documentElement?.scrollTop ?? 0
+			: 0;
 		setBusy(key);
 		setFeedback(null);
 		try {
@@ -140,9 +145,12 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			// { ..., snapshot } 收据结构 —— 统一取快照。
 			const snapshot = result?.snapshot ?? result;
 			setState({ status: "ready", snapshot });
+			// 恢复滚动位置（setState 批量更新，用 requestAnimationFrame 确保在 layout 之后）
+			requestAnimationFrame(() => window.scrollTo(0, scrollY));
 			return result;
 		} catch (error) {
 			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+			requestAnimationFrame(() => window.scrollTo(0, scrollY));
 			return null;
 		} finally {
 			setBusy(null);

@@ -131,6 +131,11 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		return state.snapshot.entries.filter((entry) => entry.needsUpdate === true && entry.managed);
 	}, [state.snapshot?.entries]);
 
+	const restoreScroll = (scrollY) => {
+		if (typeof requestAnimationFrame === "undefined" || typeof window === "undefined" || typeof window.scrollTo !== "function") return;
+		requestAnimationFrame(() => window.scrollTo(0, scrollY));
+	};
+
 	const run = async (key, operation) => {
 		// 保存滚动位置：防止 setState 触发的重渲染导致父容器滚动重置到右上角
 		// 使用 typeof 检查确保非浏览器环境不崩溃（与文件内其他同类检查一致）
@@ -146,11 +151,11 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			const snapshot = result?.snapshot ?? result;
 			setState({ status: "ready", snapshot });
 			// 恢复滚动位置（setState 批量更新，用 requestAnimationFrame 确保在 layout 之后）
-			requestAnimationFrame(() => window.scrollTo(0, scrollY));
+			restoreScroll(scrollY);
 			return result;
 		} catch (error) {
 			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
-			requestAnimationFrame(() => window.scrollTo(0, scrollY));
+			restoreScroll(scrollY);
 			return null;
 		} finally {
 			setBusy(null);

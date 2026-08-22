@@ -594,20 +594,35 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 												{entry.protected ? (
 													<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
 												) : null}
+												{entry.mountConflictReason ? (
+													<span title={entry.mountConflictReason} style={{
+														flex: "none",
+														fontSize: 11,
+														fontWeight: 600,
+														padding: "2px 8px",
+														borderRadius: 999,
+														border: "1px solid var(--dsw-alias-state-warning-primary, #f59e0b)",
+														color: "var(--dsw-alias-state-warning-primary, #f59e0b)",
+														whiteSpace: "nowrap",
+														cursor: "help"
+													}}>
+														{t("mountConflict")}
+													</span>
+												) : null}
 												<label
-													title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+													title={entry.protected ? entry.protectionReason : entry.mountConflictReason ? entry.mountConflictReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
 													style={{
 														flex: "none",
 														display: "inline-flex",
 														alignItems: "center",
-														cursor: entry.protected || running ? "not-allowed" : "pointer",
-														opacity: entry.protected ? 0.55 : 1
+														cursor: entry.protected || entry.mountConflictReason || running ? "not-allowed" : "pointer",
+														opacity: entry.protected || entry.mountConflictReason ? 0.55 : 1
 													}}
 												>
 													<input
 														type="checkbox"
 														checked={entry.enabled}
-														disabled={entry.protected || running}
+														disabled={entry.protected || entry.mountConflictReason !== null || running}
 														aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
 														onChange={() => toggle(entry)}
 														style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
@@ -1400,6 +1415,7 @@ const zh = {
 	statusEnabled: "启用",
 	enableEntry: "启用",
 	disableEntry: "停用",
+	mountConflict: "防重复挂载",
 	versionUnknown: "版本未知",
 	update: "更新",
 	updateInternal: "内置",
@@ -1518,6 +1534,7 @@ const en = {
 	statusEnabled: "Enabled",
 	enableEntry: "Enable",
 	disableEntry: "Disable",
+	mountConflict: "Duplicate mount",
 	versionUnknown: "version unknown",
 	update: "Update",
 	updateInternal: "Built-in",

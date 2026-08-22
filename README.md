@@ -111,6 +111,7 @@ dsh plugin --profile web remove dsh-plugin-manager-pro
 - **浏览器端**（`src/client.jsx` → `lib/client.js`）：`window.__ModuleLoader__.load({id, factory})` 契约注册，设置页 tab + 浮动救援球；`run()` 统一处理操作与**滚动位置恢复**（禁用/启用不跳页）
 - **独立救砖**（`lib/preflight.mjs` + `lib/enginectl.mjs`）：纯 Node 自检/修复 + 引擎生命周期，被三个 bin 工具复用；与 host 方法同源逻辑
 - **受保护条目**：管理器自身、loader 基础设施、webserver/connection/client-runtime 等禁开关；救砖时 RESCUE_NEVER 集合同样不可触碰
+- **防重复挂载保护**：同一包被多个 bundle 挂载（如 `dsh-remote` 内置 `dsh-better-sidebar` 又装了独立包）时，bundle 自带的 `!!js disabled` 守卫会自动停用其一。管理器识别带守卫/同包已启用挂载的行：UI 标注「防重复挂载」并锁定开关，`setEnabled` 拒绝覆盖守卫的启用写入（避免下次启动时重复注册 `/sidebar/api` 等路由导致整树失败）
 
 ---
 
@@ -139,6 +140,7 @@ npm pack           # 产出安装用 tarball
 | 桌面快捷方式双击没反应 | v0.7.1 修复：`web.pid` 陈旧（svchost）误判"已运行"导致拒绝启动——现在只认 node 进程 |
 | 浏览器报 `waiting for service: remote.xxx` | 客户端 inject 不能包含自身挂载的 remote（死锁）；inject 只保留 `["slots","locale","remote"]` |
 | P2P 磁力链接无法下载 | 安装 aria2c（自动启用）或装 webtorrent，或用 NDM/比特彗星手动导入 |
+| 插件实际已加载（侧边栏/功能正常）但管理器显示"未启用" | 同一包被多个 bundle 挂载（如 `dsh-remote` 内置 `dsh-better-sidebar`，又装了独立 `dsh-better-sidebar`）：防重复挂载守卫自动停用其一，功能由另一条目提供。管理器会标「防重复挂载」并锁定该行开关；如需切换提供方，先停用另一方，或从 `dsh.profile.bundles` 移除重复的独立包 |
 
 ## 许可证
 

@@ -204,6 +204,42 @@ if (!failError) {
 	}
 }
 
+// ---- 6.5 防重复挂载：同包双挂载行应显示徽标且开关禁用（守卫自动停用条目）
+const root7 = document.createElement("div");
+document.body.appendChild(root7);
+const root7Instance = createRoot(root7);
+let mountConflictError = null;
+try {
+	const conflictEntries = [
+		...entries,
+		{ entryId: "e7", configId: "better-sidebar", moduleName: "dsh-better-sidebar", packageName: "dsh-better-sidebar", description: "侧边栏", necessity: "recommended", enabled: false, phase: null, error: null, protected: false, protectionReason: null, archived: false, guarded: true, duplicateOf: "e8", mountConflictReason: "防重复挂载守卫自动停用：e8 正在提供 dsh-better-sidebar。", origin: "user", installedVersion: "0.13.1", latestVersion: null, updateSource: null, needsUpdate: null, managed: true },
+		{ entryId: "e8", configId: "dsh-remote-sidebar", moduleName: "dsh-better-sidebar", packageName: "dsh-better-sidebar", description: "侧边栏（dsh-remote 内置）", necessity: "recommended", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, guarded: false, duplicateOf: null, mountConflictReason: null, origin: "user", installedVersion: "0.13.1", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
+	];
+	await act(async () => {
+		root7Instance.render(React.createElement(PluginManagerTab, { ...api, t, list: async () => makeSnapshot(conflictEntries) }));
+	});
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	await act(async () => {});
+	// 展开 recommended 分组（e7/e8 都在其中）
+	const recommendedHeader7 = Array.from(root7.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityRecommended"));
+	if (!recommendedHeader7) throw new Error("recommended section header missing");
+	await act(async () => {
+		recommendedHeader7.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	await act(async () => {});
+	const text7 = root7.textContent;
+	if (!text7.includes("mountConflict")) throw new Error("conflict badge missing: " + text7.slice(0, 300));
+	const conflictCheckbox = Array.from(root7.querySelectorAll('input[type="checkbox"]'))
+		.find((c) => (c.getAttribute("aria-label") || "").startsWith("better-sidebar:"));
+	if (!conflictCheckbox || !conflictCheckbox.disabled) throw new Error("conflict row toggle should be disabled");
+	console.log("RESULT: PASS - duplicate-mount row renders badge and locks toggle");
+} catch (error) {
+	mountConflictError = error;
+	console.error("MOUNT-CONFLICT ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
 // ---- 7. 插件市场：目录加载失败 -> 显示错误 + 重试按钮（先于成功用例，确保模块缓存未命中）
 const marketCatalogFixture = {
 	source: "live",
@@ -399,6 +435,6 @@ try {
 	process.exitCode = 1;
 }
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError) {
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !mountConflictError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

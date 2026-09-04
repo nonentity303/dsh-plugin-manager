@@ -21,16 +21,17 @@
 
 ## 2. 🌐 除管理器外的全部 mod 改为联网更新
 
-**问题**：本机插件多为 `file:` 安装（vendor tgz），旧版本直接判为「本地包，无法更新」。
+**问题**：插件多为 `file:` 安装（vendor tgz），旧版本直接判为「本地包，无法更新」。
 
 **修复**：`file:` 安装包（vendor tgz / 目录）纳入联网更新（registry 直装 / GitHub 下载 / 浏览器下载）；
 仅两类保持原样——**插件管理器自身**（请用 `dsh plugin add` 安装新版）与
 `link:/workspace:` 开发链接（避免破坏本地开发引用）。
 
-## 3. 运维
+## 3. 参考部署
 
-- 3081 独立入口（open-boot）已在本机常驻 + 开机自启（HKCU Run `DSHWebFront`）；
-  桌面快捷方式「DeepSeek Harness Web UI」指向 `dsh-web-rescue.ps1`（自检→隔离→启动）。
+- **独立入口常驻**：把 `node bin/open-boot.mjs` 设为开机自启（或放入系统服务/计划任务），浏览器主页指向
+  `http://127.0.0.1:3081/` 即可"打开即自检启动"；Windows 桌面快捷方式可指向 `dsh-web-rescue.ps1` 等同理。
+- **一键自检启动**：`node bin/dsh-boot.mjs`（或双击 `dsh-boot.cmd`），退出码 0=就绪 / 1=启动失败 / 2=修复未完成。
 
 ## 测试
 

@@ -79,7 +79,7 @@
 
 ## 环境要求
 
-- Windows 10/11 · macOS · Linux（脚本层如桌面救援入口为 Windows 专属，macOS/Linux 直接 `dsh web` 启动）
+- Windows 10/11 · macOS · Linux（部分辅助配置脚本如系统级自启/入口为平台专属，跨平台下直接 `dsh web` 启动且 `/rescue` 与三个 bin 工具均可用）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
 
 ## 安装
@@ -89,7 +89,7 @@
 dsh plugin --profile web add dsh-plugin-manager-pro
 
 # 方式二：GitHub Release tarball（离线/自建，走 Release 页下载最新版）
-dsh plugin --profile web add ./dsh-plugin-manager-pro-0.7.3.tgz
+dsh plugin --profile web add ./dsh-plugin-manager-pro-<latest>.tgz
 
 # 重启 web 生效
 dsh web
@@ -148,8 +148,8 @@ npm pack           # 产出安装用 tarball
 | 启动器报 `The argument 'stdio' is invalid` | v0.7.2 已修复（spawn 改用数字 fd）；升级救砖工具链 |
 | `dsh plugin add` 报 "Already up to date" 不更新 | pnpm 按版本号缓存 tarball；**修改后必须升版本号**再 add |
 | 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/` 独立救援 → 运行检查 → 修复 → 启动；或双击 `dsh-boot.cmd` |
-| 救砖页自检总报"patch 解析失败" | 已修复：注释开头的合法 patch 不再被误判损坏（~/.dsh/scripts/dsh-web-rescue.ps1） |
-| 桌面快捷方式双击没反应 | v0.7.1 修复：`web.pid` 陈旧（svchost）误判"已运行"导致拒绝启动——现在只认 node 进程 |
+| 救砖页自检总报"patch 解析失败" | 已修复：注释开头的合法 patch 不再被误判损坏；升级插件即可 |
+| 修复 `cordis.patch.yml` 被误判、日志误报 | 自检逻辑与宿主 `verifyProfile` 同源（`lib/preflight.mjs`），升级后回溯修复均为可逆备份 |
 | 浏览器报 `waiting for service: remote.xxx` | 客户端 inject 不能包含自身挂载的 remote（死锁）；inject 只保留 `["slots","locale","remote"]` |
 | P2P 磁力链接无法下载 | 安装 aria2c（自动启用）或装 webtorrent，或用 NDM/比特彗星手动导入 |
 

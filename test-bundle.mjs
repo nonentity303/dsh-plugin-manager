@@ -129,13 +129,13 @@ const originFixture = {
 		{
 			entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent",
 			description: "Agent", necessity: "core", enabled: true, phase: "active", error: null,
-			protected: true, protectionReason: "x", archived: false, origin: "builtin",
+			protected: true, protectionReason: "x", archived: false, origin: "builtin", source: "npm", sourceOverride: null,
 			installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
 		},
 		{
 			entryId: "e2", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod",
 			description: "M", necessity: "optional", enabled: false, phase: null, error: null,
-			protected: false, protectionReason: null, archived: false, origin: "user",
+			protected: false, protectionReason: null, archived: false, origin: "user", source: "github", sourceOverride: "github",
 			installedVersion: null, latestVersion: null, updateSource: null, needsUpdate: null, managed: true
 		}
 	],
@@ -155,6 +155,143 @@ try {
 	process.exit(1);
 } catch { /* expected rejection */ }
 console.log("ORIGIN CONTRACT OK: entry.origin required (builtin|user)");
+
+// ---- v0.8 契约：事务化卸载 / 影响预览 / 操作历史/撤销 / 来源覆盖 / 场景方案 ----
+const v08Checks = [];
+// 独立快照：避免复用上方被负向用例 mutate 过的 originFixture
+const v08Snapshot = {
+	profileName: "web",
+	entries: [{
+		entryId: "e1", configId: "agent", moduleName: "@deepseek-ai/dsh-agent", packageName: "@deepseek-ai/dsh-agent",
+		description: "A", necessity: "core", enabled: true, phase: "active", error: null,
+		protected: true, protectionReason: "x", archived: false, origin: "builtin", source: "npm", sourceOverride: null,
+		installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
+	}],
+	sources: []
+};
+
+// uninstallPackages：options 参数 + 新结果形态
+const uninstallDesc = methods.get("uninstallPackages");
+if (!uninstallDesc) {
+	v08Checks.push("no uninstallPackages descriptor");
+} else {
+	if (uninstallDesc.parameters.length !== 2) v08Checks.push("uninstallPackages should take (packageNames, options)");
+	try {
+		uninstallDesc.parameters[1].codec.schema.parse({ cascade: true });
+	} catch (error) {
+		v08Checks.push("uninstallPackages options schema rejects {cascade}: " + error.message);
+	}
+	const itemFixture = {
+		packageName: "community-mod", status: "removed", message: "ok",
+		affectedEntries: ["community-mod"], removedPatchRows: 2, dependentPackages: [], verifyOk: true, residuals: [], backupPath: null
+	};
+	try {
+		uninstallDesc.result.schema.parse({ items: [itemFixture], snapshot: v08Snapshot });
+	} catch (error) {
+		v08Checks.push("uninstallPackages result schema rejects transactional item: " + error.message);
+	}
+	const rolledBack = { ...itemFixture, status: "rolled-back", verifyOk: false, backupPath: "/x" };
+	try {
+		uninstallDesc.result.schema.parse({ items: [rolledBack], snapshot: v08Snapshot });
+	} catch (error) {
+		v08Checks.push("uninstallPackages result schema rejects rolled-back item: " + error.message);
+	}
+}
+
+// uninstallPreview
+const previewDesc = methods.get("uninstallPreview");
+if (!previewDesc) {
+	v08Checks.push("no uninstallPreview descriptor");
+} else {
+	const previewFixture = {
+		packages: [{
+			packageName: "community-mod", spec: "^1.0.0", inBundles: true, patchRows: 2,
+			affectedEntries: [{ configId: "community-mod", moduleName: "community-mod", enabled: true }],
+			dependents: [{ packageName: "dep-mod", type: "dependencies", spec: "^1.0.0" }],
+			canUninstall: true
+		}]
+	};
+	try {
+		previewDesc.result.schema.parse(previewFixture);
+	} catch (error) {
+		v08Checks.push("uninstallPreview schema rejects fixture: " + error.message);
+	}
+}
+
+// operationHistory + undoOperation
+const historyDesc = methods.get("operationHistory");
+if (!historyDesc) {
+	v08Checks.push("no operationHistory descriptor");
+} else {
+	const historyFixture = {
+		operations: [{
+			id: "h1", at: "2026-08-01T00:00:00.000Z", action: "uninstall", label: "卸载 community-mod", detail: null,
+			result: "ok", undone: false,
+			undo: { type: "restore-files", manifest: "/b.json", patch: "/p.yml", packageName: "community-mod", spec: "^1.0.0", changes: [] }
+		}, {
+			id: "h2", at: "2026-08-02T00:00:00.000Z", action: "setEnabled", label: "x → 停用", detail: "运行期未收敛，重启后生效",
+			result: "ok", undone: true,
+			undo: { type: "patch-state", manifest: null, patch: null, packageName: null, spec: null, changes: [{ configId: "c", moduleName: "m", enabled: true }] }
+		}]
+	};
+	try {
+		historyDesc.result.schema.parse(historyFixture);
+	} catch (error) {
+		v08Checks.push("operationHistory schema rejects fixture: " + error.message);
+	}
+}
+const undoDesc = methods.get("undoOperation");
+if (!undoDesc) {
+	v08Checks.push("no undoOperation descriptor");
+} else {
+	const undoFixture = { ok: true, message: "已撤销「卸载 community-mod」。", snapshot: v08Snapshot };
+	try {
+		undoDesc.result.schema.parse(undoFixture);
+	} catch (error) {
+		v08Checks.push("undoOperation schema rejects fixture: " + error.message);
+	}
+}
+
+// setSourceOverride 返回快照
+const sourceDesc = methods.get("setSourceOverride");
+if (!sourceDesc) v08Checks.push("no setSourceOverride descriptor");
+
+// 场景方案
+for (const name of ["scenarioList", "scenarioSave", "scenarioUpdate", "scenarioDelete", "scenarioApply"]) {
+	if (!methods.has(name)) v08Checks.push(`no ${name} descriptor`);
+}
+const scenarioDesc = methods.get("scenarioList");
+if (scenarioDesc) {
+	const scenarioFixture = {
+		scenarios: [{
+			id: "s1", name: "写作", createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+			states: { "web": true, "verbose": false }, counts: { enabled: 1, disabled: 1 }
+		}]
+	};
+	try {
+		scenarioDesc.result.schema.parse(scenarioFixture);
+	} catch (error) {
+		v08Checks.push("scenarioList schema rejects fixture: " + error.message);
+	}
+}
+const applyDesc = methods.get("scenarioApply");
+if (applyDesc) {
+	const applyFixture = {
+		items: [{ configId: "web", moduleName: "web", enabled: true, current: false, changed: true, protected: false, reason: null, status: "changed" }],
+		scenarios: [],
+		snapshot: v08Snapshot
+	};
+	try {
+		applyDesc.result.schema.parse(applyFixture);
+	} catch (error) {
+		v08Checks.push("scenarioApply schema rejects fixture: " + error.message);
+	}
+}
+if (v08Checks.length > 0) {
+	console.error("V0.8 CONTRACT FAIL:\n - " + v08Checks.join("\n - "));
+	process.exit(1);
+}
+console.log("V0.8 CONTRACT OK: uninstall-preview/transaction/undo/source-override/scenarios");
 
 // ---- rescue 页 wire 格式回归：method 必须传完整命名空间端点且原样透传（勿拼接）
 const { readFileSync: readRescue } = await import("node:fs");

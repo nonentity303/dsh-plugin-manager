@@ -42,7 +42,7 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, configCards, t }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, configCards, t }) {
 	const [request, setRequest] = useState(0);
 	const [query, setQuery] = useState("");
 	const [originFilter, setOriginFilter] = useState("all");
@@ -50,7 +50,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const [showSources, setShowSources] = useState(false);
 	const [showRescue, setShowRescue] = useState(false);
 	const [showMarket, setShowMarket] = useState(false);
+	const [showScenarios, setShowScenarios] = useState(false);
+	const [showHistory, setShowHistory] = useState(false);
 	const [showConfigCards, setShowConfigCards] = useState(false);
+	const [uninstallTarget, setUninstallTarget] = useState(null);
 	const [highlightCard, setHighlightCard] = useState(null);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
@@ -163,6 +166,14 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	};
 
 	const refreshAll = () => run("refresh", () => refresh());
+
+	/** 来源人工修正：选择 auto=恢复自动判定，否则写入侧车持久化。 */
+	const changeSource = (entry, value) => {
+		const label = value === "auto" ? null : value;
+		run(`source:${entry.packageName}`, () => setSourceOverride(entry.packageName, label)).then((snapshot) => {
+			if (snapshot) setFeedback({ severity: "success", message: `${entry.packageName} 来源已保存。` });
+		});
+	};
 
 	const toggle = (entry) => run(`entry:${entry.entryId}`, () => setEnabled(entry.entryId, !entry.enabled)).then((receipt) => {
 		if (!receipt) return;
@@ -324,6 +335,14 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
 						{t("sources")}
 					</button>
+					<button type="button" onClick={() => setShowScenarios((v) => !v)} disabled={busy !== null}
+						style={{ ...buttonStyle, fontWeight: showScenarios ? 600 : 400 }}>
+						{t("scenarios")}
+					</button>
+					<button type="button" onClick={() => setShowHistory((v) => !v)} disabled={busy !== null}
+						style={{ ...buttonStyle, fontWeight: showHistory ? 600 : 400 }}>
+						{t("history")}
+					</button>
 					<button type="button" aria-label={t("refresh")} title={t("refresh")} onClick={refreshAll} disabled={busy !== null} style={{ ...buttonStyle, width: 32, height: 32, display: "grid", placeItems: "center" }}>
 						{busy === "refresh" ? "…" : "↻"}
 					</button>
@@ -357,11 +376,39 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 				</span>
 			</div>
 
+			{/* 事务化卸载流程（行内「卸载」按钮触发：影响预览 → 确认 → 执行 → 报告） */}
+			{uninstallTarget !== null ? (
+				<UninstallFlow
+					packageName={uninstallTarget}
+					preview={uninstallPreview}
+					uninstall={uninstallPackages}
+					t={t}
+					onDone={(changed) => {
+						setUninstallTarget(null);
+						if (changed) setRequest((value) => value + 1);
+					}}
+				/>
+			) : null}
+
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
 
 			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装） */}
 			{showMarket ? <MarketPanel marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
+
+			{/* 场景方案（保存/应用插件组合，切换前预览） */}
+			{showScenarios ? <ScenarioPanel
+				scenarioList={scenarioList}
+				scenarioSave={scenarioSave}
+				scenarioUpdate={scenarioUpdate}
+				scenarioDelete={scenarioDelete}
+				scenarioApply={scenarioApply}
+				onSnapshot={(snapshot) => setState({ status: "ready", snapshot })}
+				t={t}
+			/> : null}
+
+			{/* 操作历史（最近 20 次操作 + 一键撤销） */}
+			{showHistory ? <HistoryPanel operationHistory={operationHistory} undoOperation={undoOperation} onSnapshot={(snapshot) => setState({ status: "ready", snapshot })} t={t} /> : null}
 
 			{/* 救砖面板 */}
 			{showRescue ? <RescuePanel
@@ -370,13 +417,15 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 				repairHarness={repairHarness}
 				restartHarness={restartHarness}
 				uninstallPackages={uninstallPackages}
+				uninstallPreview={uninstallPreview}
 				getRescueConfig={getRescueConfig}
 				setRescueConfig={setRescueConfig}
 				getDownloadConfig={getDownloadConfig}
 				checkDownloads={checkDownloads}
 				verifyProfile={verifyProfile}
 				fixProfile={fixProfile}
-				managed={snapshot.entries.filter((entry) => entry.managed)}
+				// v0.8：所有用户安装包（含 file: vendor tgz）都支持事务化卸载
+				managed={snapshot.entries.filter((entry) => entry.origin === "user")}
 				t={t}
 			/> : null}
 
@@ -539,100 +588,134 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 														⚙ {t("configEntry")}
 													</button>
 												) : null}
-												{entry.origin === "user" ? (
-													<span title={t("originUserHint")} style={{
-														flex: "none",
-														fontSize: 11,
-														padding: "2px 8px",
-														borderRadius: 999,
-														border: "1px solid var(--dsw-alias-state-business-primary, #4f8cff)",
-														color: "var(--dsw-alias-state-business-primary, #4f8cff)",
-														whiteSpace: "nowrap"
-													}}>
-														{t("originUser")}
-													</span>
-												) : null}
-												<span style={{
-													flex: "none",
-													fontSize: 11,
-													fontWeight: 600,
-													padding: "2px 8px",
-													borderRadius: 999,
-													border: `1px solid ${NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow}`,
-													color: NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow
-												}}>
-													{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
-												</span>
-												{entry.archived ? (
-													<span title={entry.protectionReason} style={{
-														flex: "none",
-														fontSize: 11,
-														padding: "2px 8px",
-														borderRadius: 999,
-														border: "1px solid var(--dsw-alias-border-l2)",
-														color: "var(--dsw-alias-label-tertiary)",
-														whiteSpace: "nowrap"
-													}}>
-														{t("archived")}
-													</span>
-												) : null}
-												{canUpdate ? (
-													<>
-														<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
-															style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
-															{t("update")}
-														</button>
-														<button type="button" onClick={() => updateOneInternal(entry)} disabled={busy !== null}
-															title={t("updateInternalHint")}
-															style={{ ...buttonStyle, flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
-															{t("updateInternal")}
-														</button>
-													</>
-												) : entry.needsUpdate === true && !entry.managed ? (
+												{entry.needsUpdate === true && !entry.managed ? (
 													<span title={entry.moduleName} style={{ flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("notManaged")}</span>
 												) : null}
-												{entry.protected ? (
-													<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
-												) : null}
-												<label
-													title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-													style={{
-														flex: "none",
-														display: "inline-flex",
-														alignItems: "center",
-														cursor: entry.protected || running ? "not-allowed" : "pointer",
-														opacity: entry.protected ? 0.55 : 1
-													}}
-												>
-													<input
-														type="checkbox"
-														checked={entry.enabled}
-														disabled={entry.protected || running}
-														aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-														onChange={() => toggle(entry)}
-														style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
-													/>
-													<span aria-hidden="true" style={{
-														position: "relative",
-														width: 36,
-														height: 20,
-														borderRadius: 999,
-														background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
-														transition: "background 120ms ease"
-													}}>
-														<i style={{
-															position: "absolute",
-															top: 2,
-															left: entry.enabled ? 18 : 2,
-															width: 16,
-															height: 16,
-															borderRadius: "50%",
-															background: "#fff",
-															transition: "left 120ms ease"
-														}} />
-													</span>
-													{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
-												</label>
+												{/* 右列两行：行1 = 用户安装 · 必要程度 · 启动开关；行2 = 更新源(来源选择) · 更新按键 · 锁 · 卸载（带外边框；架构自带不显示） */}
+												<div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flex: "none" }}>
+													<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
+														{entry.origin === "user" ? (
+															<span title={t("originUserHint")} style={{
+																flex: "none",
+																fontSize: 11,
+																padding: "2px 8px",
+																borderRadius: 999,
+																border: "1px solid var(--dsw-alias-state-business-primary, #4f8cff)",
+																color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+																whiteSpace: "nowrap"
+															}}>
+																{t("originUser")}
+															</span>
+														) : null}
+														<span style={{
+															flex: "none",
+															fontSize: 11,
+															fontWeight: 600,
+															padding: "2px 8px",
+															borderRadius: 999,
+															border: `1px solid ${NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow}`,
+															color: NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow
+														}}>
+															{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
+														</span>
+														{entry.archived ? (
+															<span title={entry.protectionReason} style={{
+																flex: "none",
+																fontSize: 11,
+																padding: "2px 8px",
+																borderRadius: 999,
+																border: "1px solid var(--dsw-alias-border-l2)",
+																color: "var(--dsw-alias-label-tertiary)",
+																whiteSpace: "nowrap"
+															}}>
+																{t("archived")}
+															</span>
+														) : null}
+														<label
+															title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+															style={{
+																flex: "none",
+																display: "inline-flex",
+																alignItems: "center",
+																cursor: entry.protected || running ? "not-allowed" : "pointer",
+																opacity: entry.protected ? 0.55 : 1
+															}}
+														>
+															<input
+																type="checkbox"
+																checked={entry.enabled}
+																disabled={entry.protected || running}
+																aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+																onChange={() => toggle(entry)}
+																style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+															/>
+															<span aria-hidden="true" style={{
+																position: "relative",
+																width: 36,
+																height: 20,
+																borderRadius: 999,
+																background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
+																transition: "background 120ms ease"
+															}}>
+																<i style={{
+																	position: "absolute",
+																	top: 2,
+																	left: entry.enabled ? 18 : 2,
+																	width: 16,
+																	height: 16,
+																	borderRadius: "50%",
+																	background: "#fff",
+																	transition: "left 120ms ease"
+																}} />
+															</span>
+															{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
+														</label>
+													</div>
+													{entry.origin === "user" || entry.protected ? (
+														<div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
+														{entry.origin === "user" ? (
+															<label title={t("sourceOverrideHint")} style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "var(--dsw-alias-label-tertiary)" }}>
+																<select
+																	value={entry.sourceOverride ?? (entry.source ?? "npm")}
+																	onChange={(e) => changeSource(entry, e.currentTarget.value)}
+																	disabled={busy !== null}
+																	aria-label={`${entry.configId}: ${t("sourceOverrideHint")}`}
+																	style={{ fontSize: 10.5, borderRadius: 5, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-secondary)", padding: "1px 2px", maxWidth: 76, cursor: "pointer" }}
+																>
+																	<option value="auto">{t("sourceAuto")}</option>
+																	<option value="npm">{t("sourceNpm")}</option>
+																	<option value="github">{t("sourceGithub")}</option>
+																	<option value="local">{t("sourceLocal")}</option>
+																	<option value="builtin">{t("sourceBuiltin")}</option>
+																</select>
+															</label>
+														) : null}
+														{canUpdate ? (
+															<>
+																<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
+																	style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
+																	{t("update")}
+																</button>
+																<button type="button" onClick={() => updateOneInternal(entry)} disabled={busy !== null}
+																	title={t("updateInternalHint")}
+																	style={{ ...buttonStyle, flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
+																	{t("updateInternal")}
+																</button>
+															</>
+														) : null}
+														{entry.protected ? (
+															<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
+														) : null}
+														{entry.origin === "user" ? (
+															<button type="button" onClick={() => setUninstallTarget(entry.packageName)} disabled={busy !== null}
+																title={t("uninstallRowHint")}
+																style={{ ...buttonStyle, flex: "none", fontWeight: 600, fontSize: 11, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", whiteSpace: "nowrap" }}>
+																{t("rescueUninstall")}
+															</button>
+														) : null}
+														</div>
+													) : null}
+												</div>
 											</li>
 										);
 									})}
@@ -699,13 +782,14 @@ function SafeTab(props) {
 }
 
 /** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
-function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
+function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
 	const [issues, setIssues] = useState(null);
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState(null);
 	const [auto, setAuto] = useState(false);
 	const [dlDir, setDlDir] = useState(null);
 	const [verify, setVerify] = useState(null);
+	const [uninstallTarget, setUninstallTarget] = useState(null);
 
 	useEffect(() => {
 		let current = true;
@@ -775,17 +859,8 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 	};
 
 	const runUninstall = async (packageName) => {
-		if (!window.confirm(`${t("rescueUninstallConfirm")} ${packageName}`)) return;
-		setBusy(true);
-		try {
-			const result = await uninstallPackages([packageName]);
-			const item = result.items?.[0];
-			setFeedback({ severity: item?.status === "removed" ? "success" : "warning", message: item ? item.message ?? item.status : "完成" });
-		} catch (error) {
-			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
-		} finally {
-			setBusy(false);
-		}
+		// 事务化卸载：先展示影响预览（依赖/条目/开关行），用户确认后执行
+		setUninstallTarget(packageName);
 	};
 
 	const saveAuto = async (enabled) => {
@@ -860,6 +935,19 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 				<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
 			</div>
 			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueHint")}</p>
+
+			{uninstallTarget !== null ? (
+				<UninstallFlow
+					packageName={uninstallTarget}
+					preview={uninstallPreview}
+					uninstall={uninstallPackages}
+					t={t}
+					onDone={(changed) => {
+						setUninstallTarget(null);
+						if (changed) runDiagnose();
+					}}
+				/>
+			) : null}
 
 			{issues === null ? null : issues.length === 0 ? (
 				<p className="ok-note" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-success-primary, #22c55e)" }}>{t("rescueClean")}</p>
@@ -945,6 +1033,321 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 			{feedback ? (
 				<p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p>
 			) : null}
+		</div>
+	);
+}
+
+/** 事务化卸载流程：影响预览 → 确认（可选级联） → 执行 → 卸载报告（自主校验 + 残留）。 */
+function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
+	const [data, setData] = useState(null);
+	const [loadError, setLoadError] = useState(null);
+	const [cascade, setCascade] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [report, setReport] = useState(null);
+
+	useEffect(() => {
+		let current = true;
+		preview([packageName]).then((result) => {
+			if (current) setData(result.packages?.[0] ?? null);
+		}, (error) => {
+			if (current) setLoadError(error instanceof Error ? error.message : String(error));
+		});
+		return () => {
+			current = false;
+		};
+	}, [preview, packageName]);
+
+	const doUninstall = async () => {
+		setBusy(true);
+		setReport(null);
+		try {
+			const result = await uninstall([packageName], { cascade });
+			setReport(result.items?.[0] ?? null);
+		} catch (error) {
+			setReport({ status: "failed", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary)", background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 8%, transparent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)" }}>{t("uninstallTitle")}: {packageName}</span>
+				<button type="button" onClick={() => onDone(false)} disabled={busy} style={linkButtonStyle}>{t("cancel")}</button>
+			</div>
+			{loadError ? <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{t("uninstallPreviewFail")}: {loadError}</p> : null}
+			{data === null && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallPreviewLoading")}</p> : null}
+			{data !== null && !report ? (
+				<>
+					{!data.canUninstall ? (
+						<p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{data.spec === null ? t("uninstallNotManaged") : t("uninstallLocalBlocked")}</p>
+					) : (
+						<>
+							<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)", lineHeight: "18px" }}>{t("uninstallPreviewHint")}</p>
+							<div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+								{data.affectedEntries.length > 0 ? (
+									<p style={{ margin: 0 }}>
+										{t("uninstallAffectedEntries")}: <code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{data.affectedEntries.map((e) => e.configId).join(", ")}</code>
+									</p>
+								) : (
+									<p style={{ margin: 0, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallNoEntries")}</p>
+								)}
+								{data.inBundles ? <p style={{ margin: 0 }}>{t("uninstallBundleRow")}</p> : null}
+								{data.patchRows > 0 ? <p style={{ margin: 0 }}>{t("uninstallPatchRows")}: {data.patchRows}</p> : null}
+								{data.dependents.length > 0 ? (
+									<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary)", borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+										<p style={{ margin: 0, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)" }}>⚠ {t("uninstallDependents")}:</p>
+										{data.dependents.map((d, i) => (
+											<p key={i} style={{ margin: 0, fontSize: 11.5 }}>
+												<code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{d.packageName}</code>
+												<span style={{ color: "var(--dsw-alias-label-tertiary)" }}> ({d.type}: {d.spec})</span>
+											</p>
+										))}
+										<label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer" }}>
+											<input type="checkbox" checked={cascade} disabled={busy} onChange={(e) => setCascade(e.currentTarget.checked)} />
+											{t("uninstallCascade")}（{data.dependents.filter((d) => true).length}）
+										</label>
+									</div>
+								) : null}
+							</div>
+							<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+								<button type="button" onClick={doUninstall} disabled={busy}
+									style={{ ...buttonStyle, background: "var(--dsw-alias-state-error-primary)", color: "#fff", fontWeight: 600 }}>
+									{busy ? t("uninstalling") : t("uninstallConfirm")}
+								</button>
+							</div>
+						</>
+					)}
+				</>
+			) : null}
+			{report !== null ? (
+				<div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+					<p style={{ margin: 0, color: report.status === "removed" ? "var(--dsw-alias-state-success-primary, #22c55e)" : "var(--dsw-alias-state-error-primary)" }}>
+						{report.status === "removed" ? "✓ " : report.status === "rolled-back" ? "↩ " : "✗ "}
+						{t(`uninstallStatus${report.status}`)}: {report.message}
+					</p>
+					{report.status === "removed" ? (
+						<>
+							{report.verifyOk === true ? <p style={{ margin: 0, color: "var(--dsw-alias-state-success-primary, #22c55e)" }}>✓ {t("uninstallVerifyOk")}</p> : null}
+							{report.removedPatchRows > 0 ? <p style={{ margin: 0 }}>{t("uninstallReportRows")}: {report.removedPatchRows}</p> : null}
+							{report.dependentPackages.length > 0 ? <p style={{ margin: 0 }}>{t("uninstallReportCascade")}: {report.dependentPackages.join(", ")}</p> : null}
+							{report.residuals.length > 0 ? <p style={{ margin: 0, color: "var(--dsw-alias-state-warning-primary)" }}>{t("uninstallResiduals")}: {report.residuals.join(", ")}</p> : null}
+						</>
+					) : null}
+					<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+						<button type="button" onClick={() => onDone(report.status === "removed")} style={buttonStyle}>{t("done")}</button>
+					</div>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+/** 操作历史：最近 20 次操作，支持一键撤销。 */
+function HistoryPanel({ operationHistory, undoOperation, onSnapshot, t }) {
+	const [operations, setOperations] = useState(null);
+	const [busy, setBusy] = useState(null);
+	const [feedback, setFeedback] = useState(null);
+	const [tick, setTick] = useState(0);
+
+	useEffect(() => {
+		let current = true;
+		operationHistory().then((result) => {
+			if (current) setOperations(result.operations ?? []);
+		}, (error) => {
+			if (current) setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		});
+		return () => {
+			current = false;
+		};
+	}, [operationHistory, tick]);
+
+	const doUndo = async (id) => {
+		setBusy(id);
+		setFeedback(null);
+		try {
+			const result = await undoOperation(id);
+			setFeedback({ severity: result.ok ? "success" : "warning", message: result.message });
+			if (result.snapshot) onSnapshot(result.snapshot);
+			setTick((v) => v + 1);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-2)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("historyTitle")}</span>
+				<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("historyHint")}</span>
+				<button type="button" onClick={() => setTick((v) => v + 1)} disabled={busy !== null} style={linkButtonStyle}>{t("refresh")}</button>
+			</div>
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{operations === null ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("loading")}</p> : operations.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("historyEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4, maxHeight: 320, overflow: "auto" }}>
+					{operations.map((op) => (
+						<li key={op.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 6, padding: "6px 8px" }}>
+							<span style={{ flex: "1 1 auto", minWidth: 0 }}>
+								<span style={{ fontWeight: 600 }}>{op.label}</span>
+								{op.detail ? <span style={{ color: "var(--dsw-alias-label-tertiary)", marginLeft: 6 }}>{op.detail}</span> : null}
+								<span style={{ display: "block", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary)" }}>
+									{op.at.slice(0, 16).replace("T", " ")} · {op.action}{op.undone ? ` · ${t("historyUndone")}` : ""}
+								</span>
+							</span>
+							{op.undo && !op.undone ? (
+								<button type="button" onClick={() => doUndo(op.id)} disabled={busy !== null}
+									style={{ ...buttonStyle, flex: "none", color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)" }}>
+									{busy === op.id ? "…" : t("historyUndo")}
+								</button>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+/** 场景方案：保存当前插件组合为命名场景，一键应用（应用前展示变更预览）。 */
+function ScenarioPanel({ scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, onSnapshot, t }) {
+	const [scenarios, setScenarios] = useState(null);
+	const [name, setName] = useState("");
+	const [busy, setBusy] = useState(null);
+	const [feedback, setFeedback] = useState(null);
+	const [preview, setPreview] = useState(null);
+	const [previewFor, setPreviewFor] = useState(null);
+	const [applying, setApplying] = useState(null);
+
+	const reload = () => scenarioList().then((result) => setScenarios(result.scenarios ?? []), (error) => setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) }));
+
+	useEffect(() => {
+		reload();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const doSave = async () => {
+		setBusy("save");
+		setFeedback(null);
+		try {
+			const result = await scenarioSave(name.trim());
+			setScenarios(result.scenarios ?? []);
+			setName("");
+			setFeedback({ severity: "success", message: t("scenarioSaved") });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const applyPreview = async (scenario) => {
+		setBusy(`preview:${scenario.id}`);
+		setFeedback(null);
+		setPreviewFor(scenario.id);
+		try {
+			const result = await scenarioApply(scenario.id, true);
+			const changed = (result.items ?? []).filter((i) => i.changed);
+			setPreview(changed.length > 0 ? { scenario: result.scenarios?.find((s) => s.id === scenario.id) ?? scenario, items: changed } : null);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const doApply = async (scenario) => {
+		setApplying(scenario.id);
+		setFeedback(null);
+		try {
+			const result = await scenarioApply(scenario.id, false);
+			const changed = (result.items ?? []).filter((i) => i.status === "changed").length;
+			const skipped = (result.items ?? []).filter((i) => i.status === "skipped").length;
+			setScenarios(result.scenarios ?? []);
+			if (result.snapshot) onSnapshot(result.snapshot);
+			setPreview(null);
+			setPreviewFor(null);
+			setFeedback({ severity: changed > 0 ? "success" : "warning", message: `${t("scenarioApplied")}：${changed} 项切换${skipped > 0 ? `，${skipped} 项被保护跳过` : ""}。${changed > 0 ? t("restartHint") : ""}` });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setApplying(null);
+		}
+	};
+
+	const doDelete = async (scenario) => {
+		if (!window.confirm(`${t("scenarioDeleteConfirm")} ${scenario.name}？`)) return;
+		setBusy(`delete:${scenario.id}`);
+		try {
+			const result = await scenarioDelete(scenario.id);
+			setScenarios(result.scenarios ?? []);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-2)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("scenarioTitle")}</span>
+				<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioHint")}</span>
+			</div>
+			<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+				<input value={name} placeholder={t("scenarioName")} onChange={(e) => setName(e.currentTarget.value)} style={{ ...inputStyle, flex: "1 1 160px" }} />
+				<button type="button" onClick={doSave} disabled={busy !== null || name.trim() === ""} style={buttonStyle}>{t("scenarioSave")}</button>
+			</div>
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{scenarios === null ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("loading")}</p> : scenarios.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+					{scenarios.map((scenario) => (
+						<li key={scenario.id} style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 8, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+							<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+								<b style={{ fontSize: 13 }}>{scenario.name}</b>
+								<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
+									{t("scenarioCounts")}: {scenario.counts?.enabled ?? 0}/{scenario.counts?.disabled ?? 0} · {scenario.updatedAt.slice(0, 10)}
+								</span>
+								<span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+									{previewFor === scenario.id && preview === null && busy === `preview:${scenario.id}` ? (
+										<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioCalculating")}</span>
+									) : (
+										<button type="button" onClick={() => applyPreview(scenario)} disabled={busy !== null} style={buttonStyle}>{t("scenarioApply")}</button>
+									)}
+									<button type="button" onClick={() => scenarioUpdate(scenario.id).then((r) => setScenarios(r.scenarios ?? [])).catch((e) => setFeedback({ severity: "error", message: e.message }))} disabled={busy !== null}
+										title={t("scenarioUpdateHint")} style={buttonStyle}>{t("scenarioUpdate")}</button>
+									<button type="button" onClick={() => doDelete(scenario)} disabled={busy !== null} style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>{t("scenarioDelete")}</button>
+								</span>
+							</div>
+							{previewFor === scenario.id && preview !== null ? (
+								<div style={{ border: "1px dashed var(--dsw-alias-state-warning-primary)", borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+									<p style={{ margin: 0, fontSize: 11.5, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)" }}>{t("scenarioPreviewTitle")}</p>
+									{preview.items.map((item) => (
+										<p key={item.configId} style={{ margin: 0, fontSize: 11.5 }}>
+											<code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{item.configId}</code>
+											{" "}{item.current ? t("statusEnabled") : t("statusDisabled")} → {item.enabled ? t("statusEnabled") : t("statusDisabled")}
+											{item.protected ? <span style={{ color: "var(--dsw-alias-label-tertiary)", marginLeft: 6 }}>🔒 {item.reason ?? ""}</span> : null}
+										</p>
+									))}
+									<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+										<button type="button" onClick={() => doApply(scenario)} disabled={applying !== null}
+											style={{ ...buttonStyle, background: "var(--dsw-alias-state-warning-primary)", color: "#fff", fontWeight: 600 }}>
+											{applying === scenario.id ? t("scenarioApplying") : t("scenarioApplyConfirm")}
+										</button>
+										<button type="button" onClick={() => { setPreview(null); setPreviewFor(null); }} disabled={applying !== null} style={buttonStyle}>{t("cancel")}</button>
+									</div>
+								</div>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
 		</div>
 	);
 }
@@ -1446,6 +1849,66 @@ const zh = {
 	rescueAutoSaved: "自动隔离设置已保存。",
 	rescueUninstallList: "可卸载的 profile 依赖：",
 	rescueUninstallConfirm: "确认卸载",
+	// —— 来源人工修正 ——
+	sourceOverrideHint: "来源标签（自动判定，可手动覆盖并持久化）",
+	sourceAuto: "自动",
+	sourceNpm: "npm",
+	sourceGithub: "GitHub",
+	sourceLocal: "本地",
+	sourceBuiltin: "内置",
+	// —— 事务化卸载 ——
+	uninstallTitle: "卸载影响预览",
+	uninstallRowHint: "卸载该插件",
+	uninstallPreviewLoading: "正在分析影响范围…",
+	uninstallPreviewFail: "影响预览失败",
+	uninstallPreviewHint: "将执行事务化卸载：备份配置 → 删除目标包与补丁行 → 校验 → 异常自动回滚。请确认影响范围：",
+	uninstallAffectedEntries: "将移除的插件条目",
+	uninstallNoEntries: "该包没有注册插件条目（仅移除依赖）。",
+	uninstallBundleRow: "该包在 bundles 清单中（将移除启动声明）。",
+	uninstallPatchRows: "将清理的管理器开关行",
+	uninstallDependents: "以下已安装插件依赖该包，卸载会造成依赖断裂",
+	uninstallCascade: "级联卸载依赖插件",
+	uninstallConfirm: "确认卸载",
+	uninstalling: "卸载中…",
+	uninstallStatusremoved: "已卸载",
+	uninstallStatusrolledback: "已回滚",
+	uninstallStatusfailed: "失败",
+	"uninstallStatusnot-managed": "无法卸载",
+	uninstallVerifyOk: "卸载后自检通过，重启 profile 后生效。",
+	uninstallReportRows: "清理的开关行",
+	uninstallReportCascade: "级联卸载",
+	uninstallResiduals: "残留目录（下次启动自动清理）",
+	uninstallNotManaged: "该包不是本 profile 的依赖，无法卸载。",
+	uninstallLocalBlocked: "本地包请用 dsh plugin --profile <name> remove 卸载。",
+	done: "完成",
+	cancel: "取消",
+	// —— 操作历史 ——
+	history: "历史",
+	historyTitle: "操作历史",
+	historyHint: "最近 20 次操作（卸载/开关/场景/重置），可一键撤销",
+	historyEmpty: "暂无操作记录。",
+	historyUndo: "撤销",
+	historyUndone: "已撤销",
+	// —— 场景方案 ——
+	scenarios: "场景",
+	scenarioTitle: "场景方案",
+	scenarioHint: "保存当前插件启停组合，一键切换（应用前展示变更预览；受保护条目自动跳过）",
+	scenarioName: "场景名称（如：办公 / 写作 / 演示）",
+	scenarioSave: "保存当前状态",
+	scenarioSaved: "场景已保存。",
+	scenarioEmpty: "暂无场景。调整插件开关后点「保存当前状态」创建。",
+	scenarioApply: "应用",
+	scenarioApplyConfirm: "确认切换？",
+	scenarioApplying: "切换中…",
+	scenarioCalculating: "正在计算变更…",
+	scenarioPreviewTitle: "切换预览（该场景会变更以下条目）：",
+	scenarioCounts: "启/停",
+	scenarioUpdate: "更新",
+	scenarioUpdateHint: "用当前状态覆盖此场景",
+	scenarioDelete: "删除",
+	scenarioDeleteConfirm: "确认删除场景",
+	scenarioApplied: "场景已应用",
+	restartHint: "如运行期未收敛，重启 profile 后生效。",
 	market: "市场",
 	marketTitle: "插件市场（dshfind 精选目录）",
 	marketSearch: "搜索插件（名称/仓库/描述）…",
@@ -1564,6 +2027,66 @@ const en = {
 	rescueAutoSaved: "Auto-quarantine setting saved.",
 	rescueUninstallList: "Uninstallable profile dependencies:",
 	rescueUninstallConfirm: "Uninstall",
+	// —— Source override ——
+	sourceOverrideHint: "Source label (auto-detected; can be overridden and persisted)",
+	sourceAuto: "auto",
+	sourceNpm: "npm",
+	sourceGithub: "GitHub",
+	sourceLocal: "local",
+	sourceBuiltin: "built-in",
+	// —— Transactional uninstall ——
+	uninstallTitle: "Uninstall impact preview",
+	uninstallRowHint: "Uninstall this plugin",
+	uninstallPreviewLoading: "Analyzing impact…",
+	uninstallPreviewFail: "Preview failed",
+	uninstallPreviewHint: "Transactional uninstall: backup configs → remove the package and patch rows → verify → automatic rollback on failure. Review the impact:",
+	uninstallAffectedEntries: "Plugin entries to be removed",
+	uninstallNoEntries: "This package registers no plugin entries (dependency only).",
+	uninstallBundleRow: "It is listed in the profile bundles (boot declaration will be removed).",
+	uninstallPatchRows: "Manager patch rows to be cleaned",
+	uninstallDependents: "These installed plugins depend on this package; uninstalling will break them",
+	uninstallCascade: "Cascade-uninstall dependents",
+	uninstallConfirm: "Confirm uninstall",
+	uninstalling: "Uninstalling…",
+	uninstallStatusremoved: "Removed",
+	uninstallStatusrolledback: "Rolled back",
+	uninstallStatusfailed: "Failed",
+	"uninstallStatusnot-managed": "Not managed",
+	uninstallVerifyOk: "Post-uninstall health check passed; it takes effect after a profile restart.",
+	uninstallReportRows: "Patch rows cleaned",
+	uninstallReportCascade: "Cascade removed",
+	uninstallResiduals: "Residual directories (auto-cleaned at next start)",
+	uninstallNotManaged: "This package is not a dependency of this profile; it cannot be uninstalled.",
+	uninstallLocalBlocked: "Local package — use `dsh plugin --profile <name> remove`.",
+	done: "Done",
+	cancel: "Cancel",
+	// —— Operation history ——
+	history: "History",
+	historyTitle: "Operation history",
+	historyHint: "Last 20 operations (uninstall/toggle/scenario/reset), one-click undo",
+	historyEmpty: "No operations yet.",
+	historyUndo: "Undo",
+	historyUndone: "undone",
+	// —— Scenarios ——
+	scenarios: "Scenarios",
+	scenarioTitle: "Scenarios",
+	scenarioHint: "Save the current plugin state as a named scenario and switch with one click (change preview before applying; protected entries are skipped)",
+	scenarioName: "Scenario name (e.g. office / writing / demo)",
+	scenarioSave: "Save current state",
+	scenarioSaved: "Scenario saved.",
+	scenarioEmpty: "No scenarios. Toggle plugins, then click \"Save current state\".",
+	scenarioApply: "Apply",
+	scenarioApplyConfirm: "Confirm switch?",
+	scenarioApplying: "Switching…",
+	scenarioCalculating: "Calculating changes…",
+	scenarioPreviewTitle: "Preview (this scenario changes):",
+	scenarioCounts: "on/off",
+	scenarioUpdate: "Update",
+	scenarioUpdateHint: "Overwrite this scenario with the current state",
+	scenarioDelete: "Delete",
+	scenarioDeleteConfirm: "Delete scenario",
+	scenarioApplied: "Scenario applied",
+	restartHint: "If runtime state does not converge, restart the profile.",
 	market: "Market",
 	marketTitle: "Plugin market (dshfind curated catalog)",
 	marketSearch: "Search plugins (name/repo/description)…",
@@ -1638,7 +2161,16 @@ async function apply(ctx) {
 			quarantine: async (entryIds) => unwrap(await withTimeout(scope.remote.pluginManagerPro.quarantine(entryIds), "隔离插件")),
 			repairHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.repairHarness(), "修复引擎")),
 			restartHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.restartHarness(), "重启引擎")),
-			uninstallPackages: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames), "卸载插件")),
+			uninstallPackages: async (packageNames, options) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames, options ?? { cascade: false }), "卸载插件", 300000)),
+			uninstallPreview: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPreview(packageNames), "卸载影响预览", 60000)),
+			operationHistory: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.operationHistory(), "读取操作历史")),
+			undoOperation: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.undoOperation(id), "撤销操作", 300000)),
+			setSourceOverride: async (packageName, source) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSourceOverride(packageName, source), "保存来源标签")),
+			scenarioList: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioList(), "读取场景方案")),
+			scenarioSave: async (name) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioSave(name), "保存场景")),
+			scenarioUpdate: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioUpdate(id), "更新场景")),
+			scenarioDelete: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioDelete(id), "删除场景")),
+			scenarioApply: async (id, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioApply(id, dryRun), "应用场景")),
 			getRescueConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getRescueConfig(), "读取救援配置")),
 			setRescueConfig: async (config) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setRescueConfig(config), "保存救援配置")),
 			getDownloadConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getDownloadConfig(), "读取下载目录")),

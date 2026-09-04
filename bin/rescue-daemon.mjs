@@ -18,8 +18,8 @@
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { verifyProfile, fixProfile } from "../lib/preflight.mjs";
-import { ENGINE_PORT, probe, readPid, startEngine, stopEngine } from "../lib/enginectl.mjs";
+import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { ENGINE_PORT, probe, readPid, startEngineWithQuarantine, stopEngine } from "../lib/enginectl.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const PID_FILE = ".rescue-daemon.pid";
@@ -60,7 +60,8 @@ async function handleApi(pathname, method, res) {
 	}
 	if (pathname === "/api/start" && method === "POST") {
 		try {
-			json(200, await startEngine({ profileDir: args.profile, dshCmd: args.dsh }));
+			// 带运行期失败条目自动隔离：启动失败 → 解析日志隔离坏条目 → 重试一次
+			json(200, await startEngineWithQuarantine({ profileDir: args.profile, dshCmd: args.dsh, isolateFailedEntries }));
 		} catch (error) {
 			json(500, { ok: false, error: error instanceof Error ? error.message : String(error) });
 		}

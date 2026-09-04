@@ -16,8 +16,8 @@
  */
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { verifyProfile, fixProfile } from "../lib/preflight.mjs";
-import { ENGINE_PORT, probe, startEngine } from "../lib/enginectl.mjs";
+import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { ENGINE_PORT, probe, startEngineWithQuarantine } from "../lib/enginectl.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 
@@ -76,12 +76,18 @@ async function main() {
 		process.exit(0);
 	}
 	log(`③ 启动引擎（${args.dsh} web，等待最长 ${Math.round(args.waitMs / 1000)}s）…`);
-	const result = await startEngine({ profileDir: args.profile, dshCmd: args.dsh, waitMs: args.waitMs });
+	const result = await startEngineWithQuarantine({ profileDir: args.profile, dshCmd: args.dsh, isolateFailedEntries, waitMs: args.waitMs });
 	if (result.ok) {
-		log(`✓ ${result.message}`);
+		if (result.quarantined && result.quarantined.length > 0) {
+			log(`⚠ 运行期失败条目已自动隔离（${result.quarantined.join(", ")}）并重试成功`);
+			log(`✓ ${result.message}`);
+		} else {
+			log(`✓ ${result.message}`);
+		}
 		process.exit(0);
 	}
 	log(`✗ ${result.message}`);
+	if (result.quarantineMessage) log(`  隔离尝试：${result.quarantineMessage}`);
 	if (result.log) log(`  日志：${result.log}`);
 	log("  可打开 http://127.0.0.1:3081/ 使用独立救援中心，或运行 --repair-only 排查");
 	process.exit(1);

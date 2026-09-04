@@ -17,8 +17,8 @@
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { verifyProfile, fixProfile } from "../lib/preflight.mjs";
-import { ENGINE_PORT, probe, startEngine } from "../lib/enginectl.mjs";
+import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { ENGINE_PORT, probe, startEngineWithQuarantine } from "../lib/enginectl.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 
@@ -33,7 +33,7 @@ function parseArgs(argv) {
 	return args;
 }
 
-/** boot 流程：verify → fix → start → 返回结果。 */
+/** boot 流程：verify → fix → start → 失败自动隔离运行期坏条目并重试一次。 */
 async function boot(profileDir, dshCmd) {
 	if (await probe(ENGINE_PORT)) {
 		return { ok: true, alreadyRunning: true, message: `引擎已在 ${ENGINE_PORT} 运行，直接打开主界面。` };
@@ -43,13 +43,15 @@ async function boot(profileDir, dshCmd) {
 	if (!verify.ok && verify.issues.length > 0) {
 		fixed = fixProfile(profileDir);
 	}
-	const start = await startEngine({ profileDir, dshCmd });
+	const start = await startEngineWithQuarantine({ profileDir, dshCmd, isolateFailedEntries });
 	return {
 		ok: start.ok,
 		alreadyRunning: false,
 		verifyOk: verify.ok,
 		issues: verify.issues,
 		fixed,
+		quarantined: start.quarantined,
+		quarantineMessage: start.quarantineMessage,
 		start
 	};
 }
@@ -83,6 +85,7 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + li
 		log("自检：" + (r.verifyOk ? "✓ 配置正常" : "⚠ 发现 " + (r.issues||[]).length + " 个问题"), r.verifyOk ? "ok" : "bad");
 		if (r.fixed) log("修复：" + (r.fixed.message || "完成"), "ok");
 		if (r.start && r.start.ok) { log("✓ " + (r.start.message || "引擎已启动"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${ENGINE_PORT}/", 600); }
+		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.start.message || "重试成功"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${ENGINE_PORT}/", 600); }
 		else { log("✗ 启动失败：" + JSON.stringify(r.start || r), "bad"); document.getElementById("spin").style.display = "none"; }
 	} catch (e) {
 		log("✗ 请求失败：" + e.message, "bad");

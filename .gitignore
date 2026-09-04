@@ -11,3 +11,6 @@ lib/client.js.map
 .restart-engine.ps1
 .sandbox-verify.json
 .stable-verify.json
+.main-engine.*.log
+.v08-engine.*.log
+.v08-e2e.json

@@ -399,6 +399,14 @@ try {
 	process.exitCode = 1;
 }
 
+// ---- 10. 行内卸载按钮：用户安装行有「卸载」，架构自带行没有 ----
+// root5 只展开了 optional 分组 => 可见用户行 e3/e5/e6（3 行），e4 在未展开的 recommended 分组
+const uninstallBtnCount = (root5.textContent.match(/rescueUninstall/g) || []).length;
+if (uninstallBtnCount !== 3) throw new Error(`expected 3 row uninstall buttons (visible user rows e3/e5/e6), got ${uninstallBtnCount}`);
+const agentRow = Array.from(root5.querySelectorAll("li")).find((li) => li.textContent.includes("agent"));
+if (agentRow !== undefined && agentRow.textContent.includes("rescueUninstall")) throw new Error("builtin row should not have uninstall button");
+console.log("RESULT: PASS - row uninstall buttons (user entries only)");
+
 if (!renderError && !failError && !marketError && !marketError2 && !configCardsError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

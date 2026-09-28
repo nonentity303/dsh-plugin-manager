@@ -68,18 +68,55 @@
 
 | 工具 | 用途 | 用法 |
 |---|---|---|
-| `bin/rescue-daemon.mjs` | **独立救砖守护**（端口 **3081**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎 | `node bin/rescue-daemon.mjs --profile <dir>` |
-| `bin/open-boot.mjs` | **网页启动器**：打开 `http://127.0.0.1:3081/` → 自动 自检 → 修复 → 启动 → 跳转 3080。设为浏览器主页即"打开即启动"（无端口争抢，稳定） | `node bin/open-boot.mjs --profile <dir>` |
-| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 供外部调用；退出码 0=就绪 / 1=启动失败 / 2=修复未完成 | 双击 `dsh-boot.cmd` 或 `node bin/dsh-boot.mjs` |
+| `bin/rescue-daemon.mjs` | **独立救砖守护**（默认端口 **3081**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。`stop` 会先校验 PID 与端口归属（可用 `{"force":true}` 强制）。**与 open-boot 抢 3081 时直接报错退出**（不再静默漂移到 3082） | `node bin/rescue-daemon.mjs --profile <dir>` |
+| `bin/open-boot.mjs` | **网页启动器 + 常驻守护**：打开 `http://127.0.0.1:3081/` → 自动 自检 → 修复 → 启动 → 跳转 3080。设为浏览器主页即"打开即启动"（无端口争抢，稳定）。**平时完全隐藏，只有引擎真的需要被拉起时才弹出一个可见的启动窗口显示进度**（`--no-window` 可关闭）。健康判定为 **HTTP 握手 + 身份校验**；`--status` 可随时查启动器/守护/引擎状态 | `node bin/open-boot.mjs --profile <dir>` |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 供外部调用（**只自检+修复，不启动引擎**）；`--pause` 结束时等按键（供可见启动窗口用）；`--help` 查看用法；退出码 0=就绪 / 1=启动失败 / 2=修复未完成。启动即失败（坏命令/端口冲突）会**立即返回**并把日志绝对路径打印出来 | `npx dsh-pm-boot` / `node bin/dsh-boot.mjs`（Windows 双击等价物：`bin\dsh-boot.cmd`，它只是转发到同一个脚本） |
+
+#### 启动器常驻与开机自启
+
+| 命令 | 作用 |
+|---|---|
+| `node bin/open-boot.mjs --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）保证同机只有一个守护，重复启动会自行退出；**只有 HTTP 握手失败**（不是"端口不可用"）才拉起，绝不误杀健康实例。守护会写「状态变化」「心跳」「退出」「未捕获异常」四类日志到 `profile/open-boot-supervisor.log`，重启时若发现上一次没有正常退出记录会明确提示 |
+| `node bin/open-boot.mjs --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
+| `node bin/open-boot.mjs --status` | **状态自检**：启动器（HTTP 握手 + 身份）/ 守护（锁端口归属）/ 引擎（3080 HTTP 握手）/ PID 文件 / cwd / 日志与最后一次心跳；退出码 0=启动器健康。3081 被别的进程占用时会明确报出占用者 pid |
+| `node bin/open-boot.mjs --install-autostart` | **写开机自启**（Windows）：HKCU Run + 生成 `open-boot-autostart.vbs`（登录静默常驻）与 `open-boot-ui.vbs`（确保 3081 后开浏览器，供桌面快捷方式指向）。包装脚本正文**纯 ASCII**（路径在运行时由 `WScript.ScriptFullName` 自解析）并做回读校验，**中文用户名/含空格 profile 路径不会再乱码** |
+| `node bin/open-boot.mjs --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态（含包装脚本是否存在、守护是否存活、3081 上是不是本启动器） |
+| `node bin/open-boot.mjs --help` / `node bin/dsh-boot.mjs --help` | 显示用法（参数不再被静默忽略；无法识别的参数会告警） |
+
+#### 独立救砖工具链（命令入口）
+
+安装后有三个命令可用（`package.json` 的 `bin` 字段；也可用 `npx` 免装调用）：
+
+| 命令 | 作用 |
+|---|---|
+| `npx dsh-pm-launcher --help` | 3081 网页启动器 / 常驻守护：`--supervise`、`--ensure`、`--status`、`--autostart-status`、`--install-autostart`、`--uninstall-autostart` |
+| `npx dsh-pm-boot --repair-only` | 启动序列：verify → 自动隔离坏插件 → 拉起引擎 → 健康等待（HTTP 握手 + 身份指纹） |
+| `npx dsh-pm-rescue --port 3082` | 独立救砖守护（verify/fix/start/stop/status API） |
+
+也可以直接跑包内文件（路径与 cwd 无关）：
+
+```sh
+node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.mjs" --status
+```
+
+开机自启（Windows）只由**包内** `--install-autostart` 写入 `HKCU\...\Run\DSHWebFront`；
+卸载 `dsh plugin --profile web remove dsh-plugin-manager-pro` 之后执行
+`npx dsh-pm-launcher --uninstall-autostart` 清理注册表项与 profile 内的 `open-boot-*.vbs`（否则自启项会指向已删除的包）。
+
+> **健康判定与"停引擎"的安全性（v0.9.0-2）**：引擎/启动器就绪 = **HTTP 握手成功且响应带 dsh 身份指纹**（裸 TCP 监听器一律判不健康）。因此：3080 或 3081 被别的进程占用时，工具会**明确报错并拒绝把端口当"已就绪"**，也不会静默换端口（否则浏览器主页会指向别人的服务）。引擎 `stopEngine()` 前会做三重校验（pid 存活 / 进程镜像为 node·dsh / 端口占用者与记录 pid 一致），校验不过一律拒绝并在救援页给出原因，需要时可在救援页点"强制停止"（或 `POST /api/stop {"force":true}`）。PID 文件（`profile/.rescue-daemon.pid`）是 JSON，含 `app/pid/port/dshCmd/cwd/startedAt`。
+>
+> **工作目录**：引擎与启动器统一使用**稳定 cwd**（默认用户主目录，可用 `--cwd <dir>` 或环境变量 `DSH_ENGINE_CWD` 覆盖）。早期版本会把 cwd 落在 `node_modules/dsh-plugin-manager-pro/bin`，导致插件自我更新/卸载时目录被占用（`ERR_PNPM_EPERM`）。
+
+> ⚠️ **实现注意**：自启包装脚本一律是「wscript → node」，**不使用隐藏 PowerShell**——`powershell -WindowStyle Hidden -Command "Start-Process -WindowStyle Hidden ..."` 这类形态会被部分杀软（如火绒的 AMSI 提供者 `hramsi.dll`）判定为恶意并**直接删除脚本文件**。同理，守护拉起服务进程时刻意**不加 `windowsHide`**：libuv 的 `windowsHide` 会设置 `STARTF_USESHOWWINDOW/SW_HIDE` 并被继承，导致"拉起引擎时弹窗"也变成隐藏窗口。
 
 - **公共模块**：`lib/preflight.mjs`（standalone 自检/修复，与 host 内 `verifyProfile/fixProfile` 同源）、`lib/enginectl.mjs`（引擎探测/拉起/停止/PID 管理）
-- **故障排查**：引擎起不来 → ① 浏览器开 `http://127.0.0.1:3081/` →"运行检查 → 修复 → 启动"；② `node bin/dsh-boot.mjs --repair-only` 看隔离列表；③ 双击 `bin/dsh-boot.cmd`
+- **故障排查**：引擎起不来 → ① 浏览器开 `http://127.0.0.1:3081/` →"运行检查 → 修复 → 启动"；② `npx dsh-pm-boot --repair-only`（或 `node bin/dsh-boot.mjs --repair-only`）看自检与隔离列表；③ `npx dsh-pm-launcher --status` 看启动器/守护/引擎各自的真实状态；④ 需要交互式启动时 `npx dsh-pm-boot`（Windows 也可双击 `bin\dsh-boot.cmd`，失败信息里会带引擎日志绝对路径）
 
 ---
 
 ## 环境要求
 
-- Windows 10/11 · macOS · Linux（部分辅助配置脚本如系统级自启/入口为平台专属，跨平台下直接 `dsh web` 启动且 `/rescue` 与三个 bin 工具均可用）
+- Windows 10/11 · macOS · Linux（`/rescue` 与四个 bin 工具全平台可用；**开机自启管理 `--install-autostart` 目前为 Windows**，macOS/Linux 可用 `--supervise` 自行加入系统自启）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
 
 ## 安装
@@ -97,6 +134,19 @@ dsh web
 
 打开浏览器：**设置 → 插件 → 插件管理**。右下角 🛟 打开救援中心；独立救援页 `http://127.0.0.1:3080/rescue`。
 
+> ### 为什么用 `dsh plugin --profile web add` 而不是在目录里 `npm install`？
+>
+> - 这是 **DSH 引擎的插件**，运行时要用引擎提供的模块（`@deepseek-ai/*`）。`dsh plugin add` 底层是 **pnpm**，
+>   并且 profile 关闭了 `autoInstallPeers` —— 也就是说，引擎自带的那一份会被复用，不会被重复安装。
+> - 引擎自带的 `@deepseek-ai/*`（如 `@deepseek-ai/dsh-typert-protocol`、`@deepseek-ai/dsh-home-paths`）在 npm registry 上
+>   都是**预发布版本**（`-rc.*` / `-alpha.*`），而且版本历史比较杂：例如 `dsh-home-paths` 的 `latest` 标签停在 `0.0.1-rc.3`，
+>   而引擎实际用的是 `0.1.7-rc.2`。用 **npm** 在 profile 或任意干净工程里直接安装本包时，npm 会按它自己的 peer 规则去
+>   registry 解析这些预发布范围；不同 npm 版本表现不一（可能只是告警，也可能直接 `ERESOLVE` 失败）。
+>   **这属于引擎侧包的版本事实，不是本插件的依赖缺陷** —— 本插件自身的运行时依赖只有 `yaml` 与 `zod`。
+> - 0.9.0 起本包**不再声明** `@deepseek-ai/dsh-home-paths`（它只是引擎提供的模块），只保留 `@deepseek-ai/dsh-typert-protocol`
+>   这一个 peer（同样由引擎提供）。若你的 npm 配置对预发布 peer 特别严格，加 `--legacy-peer-deps` 可以绕过。
+> - 结论：**装进 profile 一律用 `dsh plugin … add`**；`npm install` 只适用于开发本仓库时安装 devDependencies（见文末"开发与测试"）。
+
 卸载：
 
 ```sh
@@ -109,8 +159,11 @@ dsh plugin --profile web remove dsh-plugin-manager-pro
 |---|---|
 | 引擎正常，UI 坏了 | `http://127.0.0.1:3080/rescue`（救援页 / 右下角 🛟） |
 | 引擎起不来 | `http://127.0.0.1:3081/`（独立守护）→ 运行检查 → 修复 → 启动 |
-| 想要"打开即启动" | 浏览器主页设为 `http://127.0.0.1:3081/`（open-boot） |
-| 命令行一键自检+启动 | 双击 `dsh-boot.cmd` 或 `node bin/dsh-boot.mjs` |
+| 想要"打开即启动" | 浏览器主页设为 `http://127.0.0.1:3081/`（open-boot）；常驻+开机自启用 `node bin/open-boot.mjs --install-autostart` |
+| 想要 3081 常驻但不想看窗口 | `node bin/open-boot.mjs --supervise`（守护静默；只有拉起引擎时才弹可见窗口，`--no-window` 可连窗口也关掉） |
+| 想知道 3080/3081/4081 到底什么状态 | `node bin/open-boot.mjs --status`（启动器身份 / 守护锁端口归属 / 引擎 HTTP 握手 / PID 文件 / 最后心跳） |
+| 3081 打开的是别人的页面 | 端口被非本工具进程占用：`--status` 会报出占用者 pid；结束它，或用 `--port` 换端口并同步改浏览器主页（工具**不会**静默漂移端口） |
+| 命令行一键自检+启动 | `npx dsh-pm-boot`（启动）或 `npx dsh-pm-boot --repair-only`（只自检+修复）；Windows 双击等价物 `bin\dsh-boot.cmd`；`--help` 看全部参数 |
 
 ---
 
@@ -147,7 +200,7 @@ npm pack           # 产出安装用 tarball
 | 禁用/启用 mod 后页面跳回顶部 | v0.7.2 已修复：`run()` 现在保存并恢复滚动位置；升级后不再跳页 |
 | 启动器报 `The argument 'stdio' is invalid` | v0.7.2 已修复（spawn 改用数字 fd）；升级救砖工具链 |
 | `dsh plugin add` 报 "Already up to date" 不更新 | pnpm 按版本号缓存 tarball；**修改后必须升版本号**再 add |
-| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/` 独立救援 → 运行检查 → 修复 → 启动；或双击 `dsh-boot.cmd` |
+| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/` 独立救援 → 运行检查 → 修复 → 启动；或 `npx dsh-pm-boot --repair-only`（只自检+修复，不启动引擎） |
 | 救砖页自检总报"patch 解析失败" | 已修复：注释开头的合法 patch 不再被误判损坏；升级插件即可 |
 | 修复 `cordis.patch.yml` 被误判、日志误报 | 自检逻辑与宿主 `verifyProfile` 同源（`lib/preflight.mjs`），升级后回溯修复均为可逆备份 |
 | 浏览器报 `waiting for service: remote.xxx` | 客户端 inject 不能包含自身挂载的 remote（死锁）；inject 只保留 `["slots","locale","remote"]` |

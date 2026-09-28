@@ -1,1 +1,0 @@
-Copy-Item "C:\Users\35129\Documents\harness\plugin-manager\dsh-plugin-manager-pro-0.6.9.tgz" "C:\Users\35129\Documents\harness\plugin-manager\dsh-plugin-manager-pro-0.6.9.1.tgz" -Force

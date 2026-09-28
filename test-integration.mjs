@@ -1,7 +1,7 @@
 // test-integration.mjs — v0.8 host 逻辑进程内集成测试（不启动引擎、不占 3080）。
 // 覆盖：事务化卸载/回滚/撤销、卸载影响预览、操作历史、来源人工修正、场景方案（预览+应用）、侧车 v2 兼容。
 // 用法: node test-integration.mjs
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -62,12 +62,15 @@ const entryDefs = [
 	{ id: "g1", options: { id: "group", group: true, name: "@deepseek-ai/dsh-base" } }
 ];
 const entries = entryDefs.map((def) => {
+	// 注意：这里只保留引擎 Entry 真实存在的字段（cordis-plugin-loader 1.0.5 的 Entry =
+	// loader,ctx,fiber,parent,options,subgroup,subtree,_initTask）。历史上这里带了 `_disposing: 0`，
+	// 而引擎根本没有该字段 —— 它把修复前的 waitFor 误判「喂饱」，导致 H1 在测试里永远测不出来（H11）。
+	// 真契约见 tools/test-host-fixes.mjs 段 C（真 loader 上的字段实测）。
 	const entry = {
 		id: def.id,
 		options: def.options,
 		fiber: undefined,
-		_initTask: undefined,
-		_disposing: 0
+		_initTask: undefined
 	};
 	Object.defineProperty(entry, "disabled", {
 		get() { return def.options.group ? false : disabledOf(def.options.id, def.options.name); },
@@ -203,6 +206,97 @@ ok(row !== undefined && row.disabled === true, "isolateFailedEntries wrote disab
 ok(isolateFailedEntries(quarantineDir, badLog).isolated.length === 0, "isolateFailedEntries idempotent (already disabled)");
 ok(isolateFailedEntries(quarantineDir, "no matches here").isolated.length === 0, "isolateFailedEntries no-op on clean log");
 rmSync(quarantineDir, { recursive: true, force: true });
+
+// ---- 14. host blocker 回归：H1 收敛判据 / H2 错误文本 / H3 自动隔离保护集 ----
+// 用「disabled 跟随 patch 文件」的 entry 模拟热重载已收敛，不收敛的 entry 用恒定 false。
+const patchRowOf = (configId) => {
+	try {
+		const seq = parseYaml(readFileSync(patchPath, "utf8"));
+		return Array.isArray(seq) ? seq.find((r) => r && r.id === configId) : undefined;
+	} catch {
+		return undefined;
+	}
+};
+const hEntries = [];
+const makeHostEntry = (id, configId, moduleName, followsPatch) => {
+	const entry = {
+		id,
+		options: { id: configId, name: moduleName },
+		fiber: undefined,
+		_initTask: undefined,
+		parent: { ctx: { fiber: { entry: undefined } } }
+	};
+	Object.defineProperty(entry, "disabled", {
+		get() { return followsPatch ? patchRowOf(configId)?.disabled === true : false; },
+		configurable: true
+	});
+	hEntries.push(entry);
+	return entry;
+};
+const hotEntry = makeHostEntry("h1", "hot-plugin", "dsh-v08-demo", true);
+const stuckEntry = makeHostEntry("h2", "stuck-plugin", "dsh-v08-dep", false);
+const uiCriticalEntry = makeHostEntry("h3", "ui-layout", "@deepseek-ai/dsh-client-ui-layout", false);
+const plainEntry = makeHostEntry("h4", "free-search", "dsh-free-search", false);
+const hostHandlers = [];
+const hostCtx = {
+	loader: { ctx: { baseUrl: pathToFileURL(profileDir + "/").href }, entries: () => hEntries, resolve: (id) => hEntries.find((e) => e.id === id) },
+	on: (event, handler) => { if (event === "internal/plugin") hostHandlers.push(handler); },
+	inject: (_servs, _okCb, failCb) => { if (typeof failCb === "function") failCb(); },
+	logger: { info: () => {} },
+	reflect: { provide: () => {} }
+};
+const hostSvc = new PluginManagerPro(hostCtx, { protectedEntries: [], settleTimeoutMs: 400 });
+
+// H1-a：patch 已写入且运行期已收敛 -> 必须立刻返回 changed（修复前固定等满超时并报 restart-required）
+const tHot = Date.now();
+const hotRes = await hostSvc.setEnabled("h1", false);
+const hotMs = Date.now() - tHot;
+ok(hotRes.items[0].status === "changed", `H1: 收敛条目返回 changed（实测 ${hotMs}ms, status=${hotRes.items[0].status}）`);
+ok(hotMs < 250, `H1: 收敛即返回，不等满 settleTimeoutMs（实测 ${hotMs}ms < 250ms）`);
+ok(patchRowOf("hot-plugin")?.disabled === true, "H1: 收敛条目 patch 行确已写入");
+
+// H1-b：运行期确实没收敛 -> 如实报 restart-required，且消息可执行
+const tStuck = Date.now();
+const stuckRes = await hostSvc.setEnabled("h2", false);
+const stuckMs = Date.now() - tStuck;
+ok(stuckRes.items[0].status === "restart-required", `H1: 不收敛条目如实报 restart-required（实测 ${stuckMs}ms）`);
+ok(typeof stuckRes.items[0].message === "string" && stuckRes.items[0].message.includes("重启"), "H1: restart-required 带可执行说明（提示重启 profile）");
+ok(stuckMs >= 300, `H1: 未收敛时按 settleTimeoutMs 收敛判定（实测 ${stuckMs}ms >= 300ms）`);
+
+// H1-c：同一判据用于隔离路径（quarantine 不再因 waitFor 抛错而报 failed）
+const qRes = await hostSvc.quarantine(["h1"]);
+ok(qRes.items[0].status === "skipped" || qRes.items[0].status === "disabled", `H1: quarantine 使用真实判据（status=${qRes.items[0].status}）`);
+
+// H2：cordis Fiber 只有 _error —— 错误文本必须非空（修复前读 fiber.error 恒为 null）
+const badEntry = makeHostEntry("h5", "bad-plugin", "dsh-bad-plugin", false);
+badEntry.fiber = { state: 3, _error: new Error("invalid plugin, received object") };
+const legacyEntry = makeHostEntry("h6", "legacy-plugin", "dsh-legacy-plugin", false);
+legacyEntry.options.error = "loader exploded";
+const diag = hostSvc.diagnose();
+const badIssue = diag.issues.find((i) => i.configId === "bad-plugin");
+ok(badIssue !== undefined, "H2: diagnose 识别失败条目");
+ok(badIssue !== undefined && typeof badIssue.error === "string" && badIssue.error.includes("invalid plugin"), `H2: diagnose 错误文本非空（${badIssue?.error}）`);
+const badProjected = hostSvc.snapshot().entries.find((e) => e.configId === "bad-plugin");
+ok(badProjected !== undefined && typeof badProjected.error === "string" && badProjected.error.length > 0, `H2: 投影 error 非空（${badProjected?.error}）`);
+ok(badProjected !== undefined && badProjected.phase === "failed", "H2: 投影 phase=failed");
+ok(hostSvc.snapshot().entries.find((e) => e.configId === "legacy-plugin")?.error === "loader exploded", "H2: 回退读 entry.options.error");
+
+// H3：自动隔离必须过保护集，且同一 id 需 >= 2 次稳定失败
+await hostSvc.setRescueConfig({ autoQuarantine: true });
+const emitFiber = (entry, state) => { for (const handler of hostHandlers) handler({ entry, state, _error: state === 3 ? new Error("boot failed") : undefined }); };
+const flushHost = () => new Promise((resolve) => setTimeout(resolve, 200));
+for (let i = 0; i < 3; i += 1) emitFiber(uiCriticalEntry, 3);
+await flushHost();
+ok(patchRowOf("ui-layout")?.disabled !== true, "H3: UI_CRITICAL 条目连续失败 3 次也不被持久禁用");
+emitFiber(plainEntry, 3);
+await flushHost();
+ok(patchRowOf("free-search")?.disabled !== true, "H3: 首次失败不隔离（阈值 >= 2 次）");
+emitFiber(plainEntry, 3);
+await flushHost();
+ok(patchRowOf("free-search")?.disabled === true, "H3: 第 2 次失败才写入禁用行");
+ok(readdirSync(profileDir).some((f) => f.includes(".rescue-bak-")), "H3: 写禁用行前已备份 cordis.patch.yml");
+const hostSidecar = JSON.parse(readFileSync(join(profileDir, "plugin-manager.json"), "utf8"));
+ok(hostSidecar.failureStreak?.["free-search"] >= 2, "H3: 连续失败计数已持久化到侧车（跨启动累计）");
 
 rmSync(profileDir, { recursive: true, force: true });
 if (failures.length > 0) {

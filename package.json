@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-manager-pro",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "本地插件管理器：分类折叠（必要程度×来源）、更新源一键更新（npm/GitHub/插件超市）、浏览器下载优先、下载目录自动安装、插件市场（dshfind 精选目录）、README 简介提取、救砖与启动前自检；事务化卸载（备份→删除→校验→回滚）、操作历史一键撤销、场景方案、来源人工修正、依赖关系感知；独立救砖工具链（3081 rescue-daemon / open-boot 浏览器触发自启 / dsh-boot 启动序列）；跨平台（Windows/macOS/Linux）",
   "author": "nonentity303",
   "repository": {
@@ -23,6 +23,12 @@
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
+  "packageManager": "npm@11.19.0",
+  "bin": {
+    "dsh-pm-launcher": "bin/open-boot.mjs",
+    "dsh-pm-boot": "bin/dsh-boot.mjs",
+    "dsh-pm-rescue": "bin/rescue-daemon.mjs"
+  },
   "exports": {
     ".": {
       "default": "./lib/index.js"
@@ -36,11 +42,13 @@
     "./client": {
       "default": "./lib/client.js"
     },
+    "./bin/*": "./bin/*",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
-    "lib",
+    "lib/*.js",
+    "lib/*.mjs",
     "bin",
     "cordis.patch.yml",
     "README.md",
@@ -50,7 +58,12 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node build.mjs && node test-bundle.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs",
+    "test:launcher": "node test-launcher.mjs",
+    "test:strict": "node test-launcher.mjs --strict",
+    "check:vendor": "node tools/check-vendor.mjs",
+    "pack": "node build.mjs && npm pack"
   },
   "dependencies": {
     "yaml": "^2.9.0",
@@ -76,7 +89,7 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-api-gateway"

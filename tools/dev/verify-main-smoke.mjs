@@ -1,10 +1,11 @@
 // verify-main-smoke.mjs — 主实例（3080）v0.8 冒烟：只读端点 + 自检 + 救援页。
 // Pure ASCII. Usage: VERIFY_PORT=3080 node verify-main-smoke.mjs
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 const PORT = process.env.VERIFY_PORT || "3080";
-const PROFILE_DIR = process.env.VERIFY_PROFILE_DIR || "C:\\Users\\nonen\\.dsh\\profiles\\web";
+const PROFILE_DIR = process.env.VERIFY_PROFILE_DIR || join(homedir(), ".dsh", "profiles", "web");
 
 const post = async (method, args) => {
 	const res = await fetch(`http://127.0.0.1:${PORT}/api/${method}`, {

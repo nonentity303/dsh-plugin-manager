@@ -1,2 +1,11 @@
+# Package-manager settings for this repository.
+#
+# Canonical package manager: npm (see "packageManager" in package.json and
+# package-lock.json). This file is kept so that `pnpm install` also works for
+# contributors who prefer pnpm; without an explicit value pnpm 10+ silently
+# skips dependency build scripts, which breaks esbuild (the client bundler).
+#
+# allowBuilds: per-package build-script approval. esbuild must be true,
+# otherwise `npm run build` fails because the esbuild binary is not linked.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

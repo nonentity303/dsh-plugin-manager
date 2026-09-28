@@ -2,10 +2,11 @@
 // 覆盖：list / 卸载预览 / 场景方案（预览+应用+撤销）/ 来源覆盖 / 事务化卸载 / 撤销卸载 / 救援页 / 自检。
 // Pure ASCII. Usage: VERIFY_PORT=3082 node verify-v08.mjs
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PORT = process.env.VERIFY_PORT || "3082";
-const PROFILE_DIR = process.env.VERIFY_PROFILE_DIR || "C:\\Users\\nonen\\.dsh\\profiles\\web-v08";
+const PROFILE_DIR = process.env.VERIFY_PROFILE_DIR || join(homedir(), ".dsh", "profiles", "web-v08");
 
 const post = async (method, args) => {
 	const res = await fetch(`http://127.0.0.1:${PORT}/api/${method}`, {
@@ -111,7 +112,7 @@ ok(rescuePage.status === 200 && (await rescuePage.text()).includes("rescue"), "G
 const del = await post("pluginManagerPro/scenarioDelete", { id: sid });
 ok(del.result?.ok === true && (del.result?.value?.scenarios ?? []).length === 0, "scenarioDelete cleanup");
 
-writeFileSync(join(process.env.WORKSPACE_DIR ?? "C:\\Users\\nonen\\Documents\\harness\\plugin-manager", ".v08-e2e.json"), JSON.stringify({
+writeFileSync(process.env.V08_E2E_OUT ?? join(tmpdir(), ".v08-e2e.json"), JSON.stringify({
 	port: PORT, profile: "web-v08",
 	entries: entries.length,
 	uninstall: unItem ? { status: unItem.status, verifyOk: unItem.verifyOk } : null,

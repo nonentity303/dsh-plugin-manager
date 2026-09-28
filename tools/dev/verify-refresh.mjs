@@ -36,7 +36,9 @@ if (result.ok) {
   ok(elapsed2 < 30000, `cached refresh under 30s (took ${Math.round(elapsed2 / 1000)}s)`);
 }
 const { writeFileSync } = await import("node:fs");
-writeFileSync("C:\\Users\\35129\\Documents\\harness\\plugin-manager\\.refresh-verify.json", JSON.stringify({
+const { join } = await import("node:path");
+const { tmpdir } = await import("node:os");
+writeFileSync(process.env.REFRESH_VERIFY_OUT || join(tmpdir(), ".refresh-verify.json"), JSON.stringify({
   port: PORT,
   firstMs: elapsed,
   secondMs: null,

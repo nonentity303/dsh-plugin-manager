@@ -47,7 +47,9 @@ ok(rescuePage.status === 200 && (await rescuePage.text()).includes("rescue"), "G
 const list2 = await post("pluginManagerPro/list", {});
 ok(list2.ok, "second list ok");
 const { writeFileSync } = await import("node:fs");
-writeFileSync("C:\\Users\\35129\\Documents\\harness\\plugin-manager\\.recovery-verify.json", JSON.stringify({
+const { join } = await import("node:path");
+const { tmpdir } = await import("node:os");
+writeFileSync(process.env.RECOVERY_VERIFY_OUT || join(tmpdir(), ".recovery-verify.json"), JSON.stringify({
   list: list.ok ? { entries: list.value.entries.length, builtin: list.value.entries.filter((e) => e.origin === "builtin").length, user: list.value.entries.filter((e) => e.origin === "user").length } : null,
   market: catalog.ok ? { source: catalog.value.source, count: catalog.value.count } : null,
   failures

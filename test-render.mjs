@@ -359,47 +359,195 @@ try {
 	process.exitCode = 1;
 }
 
-// ---- 9. 插件自带配置入口：行标记 + 折叠区渲染 + 卡片错误边界
+// ---- 9. 第三方配置出口（0.1.7：plugins.row.config / plugins.bundle.config）
+//      验收点：只有**已注册**的键才产生按钮与出口；summary/page 走框架 renderSlot 三项签名；
+//      未注册键既不渲染也不调用 renderSlot（stub 对未知键直接抛错）。
 const root5 = document.createElement("div");
 document.body.appendChild(root5);
 const root5Instance = createRoot(root5);
 let configCardsError = null;
 try {
-	const configCards = [
-		{ id: "vision-router", label: "视觉路由", render: () => React.createElement("div", null, "VR-CONFIG-CARD") },
-		{ id: "broken-card", label: "坏卡片", render: () => { throw new Error("boom-card"); } }
-	];
+	const renderCalls = [];
+	const renderSlotStub = (key, ownerProps, opts) => {
+		renderCalls.push({ key, view: ownerProps?.view, entryKey: opts?.entryKey, only: opts?.only });
+		if (key === "plugins.row.config" && opts?.entryKey === "dsh-vision-router#vision-router") {
+			return ownerProps?.view === "summary"
+				? React.createElement("span", null, "ROW-SUMMARY")
+				: React.createElement("div", null, "ROW-PAGE");
+		}
+		if (key === "plugins.bundle.config" && opts?.entryKey === "dsh-vision-router") {
+			return ownerProps?.view === "summary" ? null : React.createElement("div", null, "BUNDLE-PAGE");
+		}
+		throw new Error(`unregistered slot key rendered: ${key} entryKey=${opts?.entryKey}`);
+	};
+	const configSurfaces = (() => {
+		// 与产品代码一样：getSnapshot 必须返回稳定引用，否则 useSyncExternalStore 会无限重渲染
+		const snapshot = { rows: ["dsh-vision-router#vision-router"], bundles: ["dsh-vision-router"] };
+		return { getSnapshot: () => snapshot, subscribe: () => () => {} };
+	})();
 	await act(async () => {
-		root5Instance.render(React.createElement(PluginManagerTab, { ...api, t, configCards }));
+		root5Instance.render(React.createElement(PluginManagerTab, { ...api, t, renderSlot: renderSlotStub, configSurfaces }));
 	});
 	await settle();
 	const text5 = () => root5.textContent;
-	// 行标记：展开 optional 分组（jsdom 无法触发受控 input 的 onChange，不用搜索），vision-router 行应有 configEntry 按钮
 	const optionalHeader5 = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
 	if (!optionalHeader5) throw new Error("optional section header missing");
 	await act(async () => {
 		optionalHeader5.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 	});
-	if (!text5().includes("configEntry")) throw new Error("config button missing on vision-router row");
-	// 折叠区：点击 header 展开，正常卡片渲染 + 坏卡片被边界兜底
-	const cardsHeader = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.includes("configCards"));
-	if (!cardsHeader) throw new Error("config cards section header missing");
+	// 行内 summary（契约的 view:'summary'）+ 行内配置按钮
+	if (!text5().includes("ROW-SUMMARY")) throw new Error("row summary (view:'summary') not rendered: " + text5().slice(0, 300));
+	const rowConfigBtn = Array.from(root5.querySelectorAll("button")).find((b) => b.textContent.includes("configEntry"));
+	if (!rowConfigBtn) throw new Error("row config button missing on dsh-vision-router row");
+	const bundleConfigBtn = Array.from(root5.querySelectorAll("button")).find((b) => b.textContent.includes("configBundleEntry"));
+	if (!bundleConfigBtn) throw new Error("bundle config button missing on dsh-vision-router row");
+	// 未注册的插件（community-mod / pkg-no-version）不应有配置按钮：只允许 vision-router 这一行出现 2 个
+	const configBtnCount = Array.from(root5.querySelectorAll("button")).filter((b) => /configEntry|configBundleEntry/.test(b.textContent)).length;
+	if (configBtnCount !== 2) throw new Error(`expected exactly 2 config buttons (row+bundle on one entry), got ${configBtnCount}`);
+	const rowsWithConfig = Array.from(root5.querySelectorAll("li")).filter((li) => /configEntry|configBundleEntry/.test(li.textContent));
+	if (rowsWithConfig.length !== 1) throw new Error(`config buttons must be confined to the matched row, got ${rowsWithConfig.length} rows`);
+	// 展开 page 视图：行配置按钮 -> ROW-PAGE；包配置按钮 -> BUNDLE-PAGE
 	await act(async () => {
-		cardsHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		rowConfigBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 	});
 	await settle(30);
-	if (!text5().includes("VR-CONFIG-CARD")) throw new Error("plugin config card not rendered");
-	if (!text5().includes("configCardFailed") || !text5().includes("boom-card")) {
-		throw new Error("broken card should be caught by boundary");
+	if (!text5().includes("ROW-PAGE")) {
+		throw new Error("row config page view not rendered: " + text5().slice(0, 400));
 	}
-	console.log("RESULT: PASS - config card entry (row button + section + error boundary)");
+	await act(async () => {
+		bundleConfigBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(30);
+	if (!text5().includes("BUNDLE-PAGE")) {
+		throw new Error("bundle config page view not rendered: " + text5().slice(0, 400));
+	}
+	// 所有 renderSlot 调用都必须是「已声明 + 已注册」的那两个键
+	const badCalls = renderCalls.filter((c) => !(
+		(c.key === "plugins.row.config" && c.entryKey === "dsh-vision-router#vision-router") ||
+		(c.key === "plugins.bundle.config" && c.entryKey === "dsh-vision-router")
+	));
+	if (badCalls.length > 0) throw new Error("unexpected renderSlot calls: " + JSON.stringify(badCalls));
+	console.log("RESULT: PASS - third-party config outlets (row.config summary+page, bundle.config page, registered keys only)");
+
+	// 降级：没有 renderSlot（设置页 tab 上下文）时不得出现任何配置按钮
+	const root6 = document.createElement("div");
+	document.body.appendChild(root6);
+	const root6Instance = createRoot(root6);
+	await act(async () => {
+		root6Instance.render(React.createElement(PluginManagerTab, { ...api, t, configSurfaces }));
+	});
+	await settle();
+	const header6 = Array.from(root6.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
+	if (header6) {
+		await act(async () => {
+			header6.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		});
+		await settle();
+	}
+	if (root6.textContent.includes("configEntry") || root6.textContent.includes("configBundleEntry")) {
+		throw new Error("config buttons must not render without renderSlot: " + root6.textContent.slice(0, 300));
+	}
+	console.log("RESULT: PASS - no dead config buttons without renderSlot (settings-tab degradation)");
 } catch (error) {
 	configCardsError = error;
-	console.error("CONFIG-CARDS ERROR:", error && error.stack ? error.stack : error);
+	console.error("CONFIG-OUTLET ERROR:", error && error.stack ? error.stack : error);
 	process.exitCode = 1;
 }
 
-// ---- 10. 行内卸载按钮：用户安装行有「卸载」，架构自带行没有 ----
+// ---- 9b. configSurfacesFor 纯函数（键匹配规则，含未注册键与跨包误配）
+try {
+	const { configSurfacesFor } = exportsObj;
+	if (typeof configSurfacesFor !== "function") throw new Error("configSurfacesFor not exported");
+	const freeSearch = { packageName: "dsh-free-search", moduleName: "dsh-free-search", configId: "web-search-free" };
+	const surfaces = { rows: ["dsh-free-search#web-search-free", "dsh-vision-router#vision-router"], bundles: ["dshmarket", "dsh-recall-plugin"] };
+	const hit = configSurfacesFor(freeSearch, surfaces);
+	if (hit.rows.length !== 1 || hit.rows[0].key !== "dsh-free-search#web-search-free" || hit.rows[0].rowId !== "web-search-free") {
+		throw new Error("row key match wrong: " + JSON.stringify(hit));
+	}
+	if (hit.bundles.length !== 0) throw new Error("free-search must not match bundle keys: " + JSON.stringify(hit.bundles));
+	const market = configSurfacesFor({ packageName: "dshmarket", moduleName: "dshmarket", configId: "dsh-market" }, surfaces);
+	if (market.bundles.length !== 1 || market.bundles[0].key !== "dshmarket" || market.rows.length !== 0) {
+		throw new Error("bundle key match wrong: " + JSON.stringify(market));
+	}
+	const recall = configSurfacesFor({ packageName: "dsh-recall-plugin", moduleName: "dsh-recall-plugin", configId: "recall" }, surfaces);
+	if (recall.bundles.length !== 1 || recall.bundles[0].key !== "dsh-recall-plugin") throw new Error("recall bundle key wrong: " + JSON.stringify(recall));
+	// 同一个包的多行 → 逐个列出（前缀匹配的语义：行属于包）
+	const routers = configSurfacesFor({ packageName: "dsh-vision-router", moduleName: "dsh-vision-router", configId: "vision-router" }, surfaces);
+	if (routers.rows.length !== 1 || routers.rows[0].rowId !== "vision-router") throw new Error("vision-router row key wrong: " + JSON.stringify(routers));
+	// 未注册 / 无匹配 → 全空（不产生空白按钮）
+	const none = configSurfacesFor({ packageName: "community-mod", moduleName: "community-mod", configId: "community-mod" }, surfaces);
+	if (none.rows.length !== 0 || none.bundles.length !== 0) throw new Error("unmatched entry should have no outlets");
+	if (configSurfacesFor(freeSearch, undefined).rows.length !== 0) throw new Error("undefined surfaces must degrade to empty");
+	console.log("RESULT: PASS - configSurfacesFor key matching (row `pkg#rowId` / bundle `pkg`, no false hits)");
+} catch (error) {
+	configCardsError = error;
+	console.error("CONFIG-SURFACES ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+// ---- 10. 官方内置（可选）子页：C4（无 renderSlot 不得留死按钮）+ C5（卡片一行说明走 view:'summary'）----
+const root7 = document.createElement("div");
+document.body.appendChild(root7);
+const root7Instance = createRoot(root7);
+let officialError = null;
+try {
+	const { OfficialPluginsPanel } = exportsObj;
+	if (typeof OfficialPluginsPanel !== "function") throw new Error("OfficialPluginsPanel not exported");
+	const officialApi = {
+		listBundles: async () => [
+			{ name: "@deepseek-ai/dsh-experimental-voice-input-bundle", version: "0.1.7-rc.2", description: "voice", enabled: false, installed: true, optional: true },
+			{ name: "dsh-free-search", version: "0.4.39", description: "search", enabled: true, installed: true, optional: false }
+		],
+		listVersionExemptions: async () => ({ exemptions: {} }),
+		setBundleEnabled: async () => ({ ok: true })
+	};
+	const itemSnapshot = null; // 占位（真正的 itemsSource 见下）
+	const itemsSource = (() => {
+		const snapshot = [{ id: "shell", label: "终端" }, { id: "web-search", label: "网页搜索" }];
+		return { getSnapshot: () => snapshot, subscribe: () => () => {} };
+	})();
+	const renderCalls = [];
+	const renderSlotStub = (key, ownerProps, opts) => {
+		renderCalls.push({ key, view: ownerProps?.view, only: opts?.only });
+		if (key !== "plugins.item") throw new Error("unexpected key in OfficialPluginsPanel: " + key);
+		if (ownerProps?.view === "summary") return React.createElement("span", null, `ITEM-SUMMARY-${opts?.only}`);
+		return React.createElement("div", null, `ITEM-PAGE-${opts?.only}`);
+	};
+	await act(async () => {
+		root7Instance.render(React.createElement(OfficialPluginsPanel, { officialApi, itemsSource, renderSlot: renderSlotStub, t }));
+	});
+	await settle(60);
+	const text7 = () => root7.textContent;
+	if (!text7().includes("ITEM-SUMMARY-shell") || !text7().includes("ITEM-SUMMARY-web-search")) {
+		throw new Error("official item summary (view:'summary') not rendered: " + text7().slice(0, 400));
+	}
+	const openBtn = Array.from(root7.querySelectorAll("button")).find((b) => b.textContent.trim() === "officialOpen");
+	if (!openBtn) throw new Error("official item open button missing with renderSlot available");
+	await act(async () => {
+		openBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(30);
+	if (!text7().includes("ITEM-PAGE-shell")) throw new Error("official item page view not rendered: " + text7().slice(0, 400));
+	// 可选组合包 + 官方插件都渲染
+	if (!text7().includes("语音输入") || !text7().includes("终端")) throw new Error("official bundle/item cards missing");
+	// C4：没有 renderSlot（设置页 tab 上下文）→ 不得出现「打开配置页」死按钮，改为提示
+	const root8 = document.createElement("div");
+	document.body.appendChild(root8);
+	const root8Instance = createRoot(root8);
+	await act(async () => {
+		root8Instance.render(React.createElement(OfficialPluginsPanel, { officialApi, itemsSource, t }));
+	});
+	await settle(60);
+	if (root8.textContent.includes("officialOpen")) throw new Error("dead open button rendered without renderSlot");
+	if (!root8.textContent.includes("configMainPageHint")) throw new Error("settings-tab hint missing: " + root8.textContent.slice(0, 300));
+	console.log("RESULT: PASS - official panel (item summary/page via renderSlot, no dead button without it)");
+} catch (error) {
+	officialError = error;
+	console.error("OFFICIAL PANEL ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+// ---- 11. 行内卸载按钮：用户安装行有「卸载」，架构自带行没有 ----
 // root5 只展开了 optional 分组 => 可见用户行 e3/e5/e6（3 行），e4 在未展开的 recommended 分组
 const uninstallBtnCount = (root5.textContent.match(/rescueUninstall/g) || []).length;
 if (uninstallBtnCount !== 3) throw new Error(`expected 3 row uninstall buttons (visible user rows e3/e5/e6), got ${uninstallBtnCount}`);
@@ -407,6 +555,6 @@ const agentRow = Array.from(root5.querySelectorAll("li")).find((li) => li.textCo
 if (agentRow !== undefined && agentRow.textContent.includes("rescueUninstall")) throw new Error("builtin row should not have uninstall button");
 console.log("RESULT: PASS - row uninstall buttons (user entries only)");
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError) {
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

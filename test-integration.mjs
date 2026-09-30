@@ -26,6 +26,13 @@ writeFileSync(join(vendorDir, "dsh-v08-demo", "cordis.patch.yml"), "[]\n", "utf8
 
 const patchHeader = "# test patch\n";
 writeFileSync(join(profileDir, "cordis.patch.yml"), patchHeader + "[]\n", "utf8");
+// 固定 pnpm 的 virtual store 位置（2026-09-30，CI）：不写这一条时，pnpm 在 Windows runner 上
+// 会一边把 node_modules 记成 `C:\Users\runneradmin\…`，一边把 virtual store 报成
+// `C:\Users\RUNNER~1\…`（8.3 短名），于是后续的 `pnpm remove` 认为"两个 store 不一致"而拒绝执行：
+//   The dependencies at …node_modules are currently symlinked from the virtual store directory at …
+//   pnpm now wants to use the virtual store at …node_modules/.pnpm to link dependencies from the store.
+// 明确写死 virtualStoreDir 后，两次调用看到的是同一个路径。
+writeFileSync(join(profileDir, "pnpm-workspace.yaml"), ["packages:", "  - .", "virtualStoreDir: node_modules/.pnpm", ""].join("\n"), "utf8");
 writeFileSync(join(profileDir, "package.json"), JSON.stringify({
 	name: "dsh-profile-web-v08",
 	private: true,

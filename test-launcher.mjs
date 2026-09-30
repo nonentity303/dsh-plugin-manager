@@ -20,7 +20,7 @@
 //  6. bin/dsh-boot.cmd    双击冒烟（Windows；审计③ L1）
 //  7. bin/rescue-daemon.mjs  随机端口 + 临时 profile 的 /、/api/verify、/api/status
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect } from "node:net";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -165,6 +165,22 @@ async function getJson(url) {
 	return { status: res.status, json, text };
 }
 
+// 在临时 profile 里造一个"可解析"的 bundle 桩包（2026-09-30，CI）：
+// verifyProfile 的判据是 `<profile>/node_modules/<pkg>` 存在且声明了 dsh.bundle。
+// 以前这条断言是**环境相关**的——本机靠 `%APPDATA%\npm\node_modules` 里的全局 dsh 兜底才通过，
+// CI 上没有全局 dsh 就变成假失败。让夹具自带桩包后，断言在哪儿都成立。
+function writeBundleStub(profileDir, name) {
+	const rel = name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name;
+	const pkgDir = join(profileDir, "node_modules", rel);
+	mkdirSync(pkgDir, { recursive: true });
+	writeFileSync(join(pkgDir, "package.json"), JSON.stringify({
+		name,
+		version: "0.0.0-stub",
+		dsh: { bundle: { patch: "./cordis.patch.yml" } }
+	}, null, 2) + "\n", "utf8");
+	writeFileSync(join(pkgDir, "cordis.patch.yml"), "[]\n", "utf8");
+}
+
 function writeProfile(dir, bundles, extra = {}) {
 	writeFileSync(join(dir, "package.json"), JSON.stringify({
 		name: "pm-launcher-test-profile",
@@ -174,6 +190,8 @@ function writeProfile(dir, bundles, extra = {}) {
 		...extra
 	}, null, 2) + "\n", "utf8");
 	writeFileSync(join(dir, "cordis.patch.yml"), "# pm-launcher test profile\n[]\n", "utf8");
+	// 除刻意做成"不可解析"的包（BAD）外，其余都补桩，保证夹具自洽
+	for (const b of bundles) if (b !== BAD) writeBundleStub(dir, b);
 	return dir;
 }
 

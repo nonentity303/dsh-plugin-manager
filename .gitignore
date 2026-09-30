@@ -4,6 +4,11 @@ node_modules/
 .npmrc
 # npm 工具的本地缓存/工作目录
 .npm-cache/
+# 发布流程的本地产物（含安全密钥授权网址、实时发布日志）——不进仓库
+auth-url-last.txt
+auth-urls.log
+publish-live.log
+publish-webauth.log
 lib/client.js.map
 .origin-verify.json
 .origin-verify.log

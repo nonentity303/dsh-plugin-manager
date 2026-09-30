@@ -122,6 +122,60 @@ const main = async () => {
     record("凭据冲突提示", "warn", "用户级 .npmrc 里是另一枚 token——历史 401 常来自这里；项目 .npmrc 会盖过它，但建议把用户级那枚也清掉");
   }
 
+  // ★ 写权限探测（2026-09-30 的教训）：
+  //   `npm whoami` 只证明"token 有效"，**证明不了"能发布"**。registry 对写操作权限不足时
+  //   返回 404 {"error":"Not found"}（故意掩盖 401），而读操作一切正常——
+  //   实测：项目级 token 读全过、写是 404；用户级（npm login 写入）才是 401（有写权限）。
+  //   判据：PUT 一个结构合法但版本不存在的 manifest →
+  //     401 + npm-notice = 有写权限（仅缺 2FA 一次性凭据）；404 = 无写权限。
+  let writeCapable = null;
+  const tokenList = [
+    { label: "项目 .npmrc", token: projectToken },
+    { label: "用户 ~/.npmrc", token: userToken },
+  ].filter((t) => t.token);
+  for (const t of tokenList) {
+    try {
+      const res = await fetch(`https://registry.npmjs.org/${pkg.name}`, {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${t.token}`,
+          "content-type": "application/json",
+          "npm-command": "publish",
+          "user-agent": `npm/11.19.0 node/${process.versions.node} ${process.platform} ${process.arch}`,
+        },
+        body: JSON.stringify({
+          _id: `${pkg.name}@0.0.0-probe`,
+          name: pkg.name,
+          version: "0.0.0-probe",
+          description: "preflight write probe",
+          "dist-tags": { latest: "0.0.0-probe" },
+          versions: { "0.0.0-probe": { name: pkg.name, version: "0.0.0-probe" } },
+          _attachments: {},
+        }),
+      });
+      const notice = res.headers.get("npm-notice");
+      if (res.status === 401) {
+        record(`写权限探测 · ${t.label}`, "ok", "HTTP 401 → 有写权限（仅缺 2FA 一次性凭据）");
+        if (!writeCapable) writeCapable = { ...t, notice };
+      } else if (res.status === 404) {
+        record(`写权限探测 · ${t.label}`, "warn", "HTTP 404 → 无写权限（registry 用 404 掩盖 401）");
+      } else {
+        record(`写权限探测 · ${t.label}`, "warn", `HTTP ${res.status}（既非 401 也非 404，请人工确认）`);
+      }
+    } catch (e) {
+      record(`写权限探测 · ${t.label}`, "warn", `探测失败：${e.message}`);
+    }
+  }
+  if (tokenList.length && !writeCapable) {
+    record("可用发布凭据", "fail", "两处 token 都没有写权限 → 重签一枚 Read and write 的 token，或改用 Trusted Publishing（OIDC）");
+  } else if (writeCapable) {
+    record("可用发布凭据", "ok", `${writeCapable.label}（注意 npm 优先级：项目级 .npmrc 会顶掉用户级）`);
+    if (!JSON_OUT && writeCapable.notice) {
+      const url = writeCapable.notice.replace(/^Open\s+/, "").replace(/\s+to use your security key.*$/, "").trim();
+      console.log(`    安全密钥授权入口（2FA 卡住时用 tools/dev/publish-webauth.mjs）：${url}`);
+    }
+  }
+
   const who = npm(["whoami"]);
   const whoBlob = who.out + "\n" + who.err;
   if (who.code !== 0 || !whoBlob.trim()) {

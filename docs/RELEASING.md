@@ -108,38 +108,61 @@ npm run pack           # = node build.mjs && npm pack
 1. **必须是项目级 `.npmrc`，不要只依赖用户级 `~/.npmrc`**。npm 的读取优先级是
    `命令行 > 环境变量 > 项目 .npmrc > 用户 .npmrc > 全局`；用户级里那枚陈旧的 token
    **正是历史 `E401` 的元凶**（项目级一旦存在就会盖过它，问题立刻消失）。
+   ⚠️ 但要注意：**"项目级优先"意味着项目级那枚如果权限不足，会把用户级那枚有效 token 顶掉**——
+   2026-09-30 的实况就是如此（项目级 token 无写权限 → 一路 404）。
 2. `.npmrc` **已进 `.gitignore`**，不要把它提交进仓库，也不要把 token 写进任何文档/Release 说明。
 3. 轮换 token 的操作：npm 网站 → Access Tokens → **Revoke** 旧的 → Generate New Token
-   → 重新写进 `.npmrc` → 跑 `npm run preflight` 确认身份。**在聊天/工单里出现过一次的 token 就当作已泄露**。
+   → 重新写进 `.npmrc` → **跑写权限探测**（见 §4.2 事实二，不要只看 `npm whoami`）。
+   **在聊天/工单里出现过一次的 token 就当作已泄露**。
 
-### 4.2 关于 2FA：先认清一个反直觉的事实
+### 4.2 关于 2FA 与权限：三个反直觉的事实（2026-09-30 实测）
 
-**`npm publish --dry-run` 不会向 registry 发任何请求**（它只做本地打包），所以
-**dry-run 通过 ≠ 能发布**。真正会暴露权限/2FA 问题的是**真发布那一刻**：
+**事实一：`npm publish --dry-run` 不向 registry 发任何请求**（只做本地打包）。
+所以 dry-run 通过 ≠ 能发布；权限 / 2FA 只有真发布那一刻才暴露。
 
-```
-npm error code EOTP
-npm error This operation requires a one-time password.
-npm error Open this URL in your browser to authenticate: https://www.npmjs.com/auth/cli/…
-```
+**事实二：`npm whoami` 成功证明不了「能发布」。** registry 对**写操作**权限不足时返回
+**404 `{"error":"Not found"}`**（故意掩盖 401，避免泄露包是否存在），而读操作一切正常。
+本次实测两枚 token：
 
-三种可行姿势（按推荐度）：
-
-| 姿势 | 操作 | 适用 |
+| token 来源 | `npm whoami` | 写操作探测（PUT 合法 body） |
 |---|---|---|
-| **① OTP 直发**（最快） | `node tools/dev/publish-npm.mjs --apply --otp 123456` | 就这一次，token 没有绕过能力时 |
-| **② 带 Bypass 2FA 的 token** | npm → Access Tokens → Generate（勾 **Bypass 2FA**）→ 写进 `.npmrc` | 临时/过渡，但见下方警告 |
-| **③ Trusted Publishing（OIDC）** | 发版交给 CI：npm 上配 trusted publisher + GitHub Actions 里 `id-token: write`，**完全不需要 token** | 长期正解 |
+| 手工建的项目 `.npmrc`（`npm_9asqCZ…`） | ✅ nonentity303 | **404 = 无写权限** |
+| `npm login --auth-type=web` 写入 `~/.npmrc` | ✅ nonentity303 | **401 + `npm-notice` = 有写权限（仅缺 2FA）** |
 
-> ⚠️ **npm 官方已经在收紧 ②**（npm CLI 自己的提示原文）：
+→ 发布前请用**写权限探测**而不是 `whoami`：对该包名发一个结构合法、版本不存在的 `PUT`
+（如 `0.0.0-probe`）。判据：**401 = 有写权限（只缺 2FA）／404 = 无写权限**。
+
+**事实三：npm CLI 只实现 TOTP，完全不读 registry 的「安全密钥」入口。**
+2FA 拦截时 registry 返回的是：
+
+```
+www-authenticate: OTP
+npm-notice: Open https://www.npmjs.com/login/<uuid> to use your security key for authentication
+```
+
+而 npm 11.19.0 的 `lib/utils/auth.js` 只在 `err.body.authUrl && err.body.doneUrl` 同时存在时
+才走 WebAuthn（`webAuthOtp`），且要求 **stdin/stdout 是 TTY**；registry 实际给的是
+`npm-notice` **响应头**，CLI 不解析它 → 直接抛
+`This operation requires a one-time password`，并把 URL 打成 `auth/cli/***`。
+**对"只用 Windows Hello、未配置 TOTP"的账号，CLI 发布天然被堵死。**
+
+补充：registry 对 `npm-otp` 的校验规则是 **6 位纯数字 TOTP** 或 **64 字符 web token**
+（`otp length must be 64 characters long`）——随手一串数字过不去。
+
+**三条可用姿势**：
+
+| 姿势 | 操作 | 评价 |
+|---|---|---|
+| **① `tools/dev/publish-webauth.mjs`** | 脚本从响应头取未打码的 `npm-notice` 链接 → 开浏览器用 Windows Hello 认证 → **每 20 秒重试真发布**直到成功 | ✅ 已验证（0.9.0 就是这么发的） |
+| **② Bypass 2FA 的 granular token** | npm 网站生成（勾 Bypass 2FA）→ 写进项目 `.npmrc` | 省事，但 npm 正在收紧（见下） |
+| **③ Trusted Publishing（OIDC）** | 交给 CI：`id-token: write`，**零 token、零 2FA** | 长期正解（见 `.github/workflows/release.yml`） |
+
+> ⚠️ npm 官方正在收紧 ②（CLI 提示原文）：
 > `npm tokens that bypass 2FA are being restricted for account changes and direct publishing.`
-> 也就是说"再签一枚绕过 2FA 的 token"只是权宜之计——**新项目直接上 ③**，别把流程绑死在 token 上。
+> 日常发版走 ③，卡住时用 ① 兜底。
 
-**服务端能提前验证到哪一步**（`npm run preflight` 就是这么做的）：
-
-- ✅ `npm whoami` → 身份（token 有没有效）
-- ✅ `npm access list collaborators <包名>` → **写权限**（真的问了服务器，`read-write` = 有发布权）
-- ❌ 2FA 要不要 OTP —— **无法提前判定**，只能真发布时看有没有 `EOTP`
+**为什么 ① 的进度判据必须是「反复试真发布」**：npm 的 web token 是写进 CLI 会话的，
+探测请求看不出浏览器会话状态——只有真的调 `publish` 才知道认证生效没有（失败即 `EOTP` 就继续等）。
 
 ### 4.3 每次发布：三条命令
 

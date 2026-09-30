@@ -71,7 +71,12 @@ const pnpmCmd = process.platform === "win32" ? ["cmd", "/c", "pnpm"] : ["pnpm"];
 // 两个 guard 都要关掉，否则 pnpm 11 会因为「祖先目录里声明了别的 packageManager / 工作区根」
 // 而拒绝在临时 profile 里安装（[ERROR] This project is configured to use npm）；
 // 这里操作的是**一次性临时 profile**，与仓库自身的 npm 约定无关。
-execFileSync(pnpmCmd[0], [...pnpmCmd.slice(1), "install"], {
+//
+// `--force`（2026-09-30）：必须让本次安装与后续管理器内部调用的 `pnpm remove` 使用**同一个
+// virtual store 位置**。否则 pnpm 会报 "The dependencies at …node_modules are currently symlinked
+// from the virtual store directory at … / pnpm now wants to use …node_modules/.pnpm"，
+// 卸载被拒 → 管理器如实回滚 → 断言失败（假失败，环境问题而非代码缺陷）。
+execFileSync(pnpmCmd[0], [...pnpmCmd.slice(1), "install", "--force"], {
 	cwd: profileDir,
 	stdio: "pipe",
 	env: { ...process.env, NO_COLOR: "1", COREPACK_ENABLE_STRICT: "0", npm_config_ignore_workspace_root_check: "true" },

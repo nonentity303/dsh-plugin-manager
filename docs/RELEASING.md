@@ -41,7 +41,7 @@
 ## 2. 本地验证（发布前必跑）
 
 ```sh
-npm install            # 或 pnpm install（见 §0）
+npm ci                 # 必须用 lockfile 装（见 §2bis）——不要用 pnpm 装出另一棵树
 npm test               # build + bundle/render/integration/launcher 四套测试
 npm run test:strict    # 同上但把"写域外已知缺陷"当失败（发布前应当全绿）
 npm run check:vendor   # vendor 与工作树的**版本 + 内容级 sha256** 一致性（迁移包不在时 SKIP；见 §5）
@@ -49,6 +49,35 @@ npm run check:vendor   # vendor 与工作树的**版本 + 内容级 sha256** 一
 
 `test-launcher.mjs` 用**随机端口 + 临时 profile**，不碰 3080/3081 与真 profile，也不写注册表（自启只做只读校验），
 因此可以在任何机器上重复跑。
+
+`test-integration.mjs` 会 `import lib/index.js`，而 host 需要引擎模块
+`@deepseek-ai/dsh-home-paths`。它同时是 **optional peerDependencies**（运行时由引擎提供）
+和 **devDependencies（钉 0.1.7-rc.2）**——后者专为"在普通工程/CI 里也能跑集成测试"。
+只声明 peer 是不够的：`npm ci` 不会装 optional peer，集成测试会以
+`ERR_MODULE_NOT_FOUND: @deepseek-ai/dsh-home-paths` 失败（这是审计④ R10 的实证）。
+
+## 2bis. 「发布的字节 = 测过的字节」：依赖树必须来自 lockfile
+
+**踩过的坑（2026-09-29，很隐蔽，务必保留这条）**：本地 `node_modules` 曾是用 **pnpm** 装的，
+而 lockfile 是 **npm** 的 `package-lock.json` —— 两棵树对 `zod` 的解析不同：
+
+| 依赖树 | zod | `lib/client.js` |
+|---|---|---|
+| 本地 pnpm 树（漂移） | 4.5.4 | **976,145 B**（22,684 行） |
+| lockfile / `npm ci`（canonical） | 4.4.3 | **782,481 B**（18,236 行） |
+
+差 **194 KB（25%）**。后果：**CI 发布的 bundle 与本地测过的 bundle 不是同一份**。
+（诊断法：esbuild 的 `metafile` 显示两棵树 `inputs` 字节完全相同 → 差异只能来自依赖解析；
+再逐个替换包定位到 zod。这个手法值得记住。）
+
+**铁律**：
+
+1. `packageManager` 是 `npm@11.19.0`，lockfile 是 `package-lock.json` → **装依赖就用 `npm ci`**。
+   保留 `pnpm-workspace.yaml` 只是为了 pnpm 用户能跑 `build`（esbuild 的 `allowBuilds`），
+   **不代表依赖树可以是 pnpm 的**。
+2. 发布前做一次**干净树校验**：`rm -rf node_modules && npm ci && npm test && node build.mjs`，
+   确认 `lib/client.js` 的 sha256 与你测过的那份一致。
+3. 本机与 CI 都用 `npm ci` → 两边构建**逐字节相同**（已实测：`547e8d75dd3d26b7`）。
 
 ## 3. 打包
 
@@ -63,7 +92,101 @@ npm run pack           # = node build.mjs && npm pack
   - 测试脚本、`tools/`、`docs/` 不发布。
 - 核对清单：`npm pack --dry-run` 的输出里必须有四个 `bin/*` 与两个 `lib/*.mjs`（`enginectl.mjs`、`preflight.mjs`）。
 
-## 4. CLI 入口
+## 4. 发布到 npm（认证 / 2FA / 冷静期 —— 一次说清，不用再调）
+
+> 这一节的目的是：**任何一台机器、任何一次发版，都照抄这四步**，不再出现"token 明明是对的却 401"。
+
+### 4.1 一次性准备：写一份**项目级** `.npmrc`
+
+```sh
+# 在仓库根（与 package.json 同级）建 .npmrc，内容一行：
+//registry.npmjs.org/:_authToken=npm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+三条硬规则：
+
+1. **必须是项目级 `.npmrc`，不要只依赖用户级 `~/.npmrc`**。npm 的读取优先级是
+   `命令行 > 环境变量 > 项目 .npmrc > 用户 .npmrc > 全局`；用户级里那枚陈旧的 token
+   **正是历史 `E401` 的元凶**（项目级一旦存在就会盖过它，问题立刻消失）。
+2. `.npmrc` **已进 `.gitignore`**，不要把它提交进仓库，也不要把 token 写进任何文档/Release 说明。
+3. 轮换 token 的操作：npm 网站 → Access Tokens → **Revoke** 旧的 → Generate New Token
+   → 重新写进 `.npmrc` → 跑 `npm run preflight` 确认身份。**在聊天/工单里出现过一次的 token 就当作已泄露**。
+
+### 4.2 关于 2FA：先认清一个反直觉的事实
+
+**`npm publish --dry-run` 不会向 registry 发任何请求**（它只做本地打包），所以
+**dry-run 通过 ≠ 能发布**。真正会暴露权限/2FA 问题的是**真发布那一刻**：
+
+```
+npm error code EOTP
+npm error This operation requires a one-time password.
+npm error Open this URL in your browser to authenticate: https://www.npmjs.com/auth/cli/…
+```
+
+三种可行姿势（按推荐度）：
+
+| 姿势 | 操作 | 适用 |
+|---|---|---|
+| **① OTP 直发**（最快） | `node tools/dev/publish-npm.mjs --apply --otp 123456` | 就这一次，token 没有绕过能力时 |
+| **② 带 Bypass 2FA 的 token** | npm → Access Tokens → Generate（勾 **Bypass 2FA**）→ 写进 `.npmrc` | 临时/过渡，但见下方警告 |
+| **③ Trusted Publishing（OIDC）** | 发版交给 CI：npm 上配 trusted publisher + GitHub Actions 里 `id-token: write`，**完全不需要 token** | 长期正解 |
+
+> ⚠️ **npm 官方已经在收紧 ②**（npm CLI 自己的提示原文）：
+> `npm tokens that bypass 2FA are being restricted for account changes and direct publishing.`
+> 也就是说"再签一枚绕过 2FA 的 token"只是权宜之计——**新项目直接上 ③**，别把流程绑死在 token 上。
+
+**服务端能提前验证到哪一步**（`npm run preflight` 就是这么做的）：
+
+- ✅ `npm whoami` → 身份（token 有没有效）
+- ✅ `npm access list collaborators <包名>` → **写权限**（真的问了服务器，`read-write` = 有发布权）
+- ❌ 2FA 要不要 OTP —— **无法提前判定**，只能真发布时看有没有 `EOTP`
+
+### 4.3 每次发布：三条命令
+
+```sh
+npm run preflight          # ① 体检：身份 / 版本是否已占用 / 2FA / tarball 内容（只读，不改任何东西）
+npm run test               # ② 回归：build + bundle/render/integration/launcher 四套（见 §2）
+npm run publish:npm        # ③ 预演：npm publish --dry-run（不写 registry）
+npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打印冷静期提示
+```
+
+- ③/④ 用的是同一个脚本 `tools/dev/publish-npm.mjs`：**默认预演，必须显式 `--apply` 才真发**。
+  发布前它会自己再串一遍体检，任何 FAIL 直接中止。
+- 其它参数：`--tag next`（发到别的 dist-tag）、`--otp 123456`（token 没有 2FA 绕过能力时用）、
+  `--cache <目录>`（npm 缓存不可写时指定，例如受限沙箱/只读盘）。
+- 脚本会**强制把 npm 缓存指到一个可写目录**（默认仓库内 `.npm-cache/`，已 gitignore）。
+  默认缓存目录不可写时报的是 `EPERM`（看起来像权限故障，其实只是缓存目录不可写），指一下就没了。
+
+### 4.4 发完立刻要做的两件事
+
+1. **核对**：`npm view dsh-plugin-manager-pro version` 必须等于 `package.json` 的 `version`
+   （`publish:npm:apply` 已经自动打印）。README 里"npm 上最新是 X"这句话要同步改。
+2. **告诉用户怎么立刻装上**——pnpm 11 的 `minimumReleaseAge` 默认 **1440 分钟**（24 小时），
+   刚发的版本**不带版本号是装不到的**：
+
+   ```sh
+   # 立刻装（唯一永远可靠的写法：显式版本号）
+   dsh plugin --profile web add dsh-plugin-manager-pro@0.9.0
+   # 或者把该版本加进 profile 的 pnpm-workspace.yaml：
+   # minimumReleaseAgeExclude:
+   #   - dsh-plugin-manager-pro@0.9.0
+   ```
+
+   这条同样写进了 README 的安装小节，避免"发了但用户说装不上"。
+
+### 4.5 常见错误对照表
+
+| 症状 | 真因 | 处理 |
+|---|---|---|
+| `E401 Unauthorized` | 用的是用户级 `~/.npmrc` 里的旧 token（或 token 被撤销） | 写项目级 `.npmrc`；`npm run preflight` 看 whoami |
+| `EOTP` / This operation requires a one-time password | token 没有 Bypass 2FA 能力 | `--otp <6位数>` 直发，或改走 §4.2 的 ③ |
+| `dry-run` 通过但真发布失败 | **dry-run 不访问 registry**，它不校验权限/2FA | 以真发布结果为准；用 `npm access list collaborators` 提前确认写权限 |
+| `EPERM ... npm-cache` | npm 缓存目录不可写 | `--cache <可写目录>`（脚本已默认处理） |
+| `EPUBLISHCONFLICT` / cannot publish over | 同版本号已存在 | 改 `package.json` 的 version（禁止删版本重发） |
+| 发布成功但用户装的是旧版 | `minimumReleaseAge` 24 小时冷静期 | 让用户用显式版本号 `@<version>` 安装 |
+| 包内容少了 bin / 多了 `.map` | `files` 白名单被改动 | 体检里的「tarball 必备文件 / 体积红线」会拦下 |
+
+
 
 `package.json` 的 `bin` 暴露三个命令（`exports` 同时放行 `./bin/*` 供程序化调用）：
 

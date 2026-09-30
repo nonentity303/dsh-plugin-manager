@@ -1,5 +1,9 @@
 node_modules/
 *.tgz
+# 本地发布凭据（绝不入库）
+.npmrc
+# npm 工具的本地缓存/工作目录
+.npm-cache/
 lib/client.js.map
 .origin-verify.json
 .origin-verify.log

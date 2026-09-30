@@ -6,7 +6,8 @@
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · 跨平台（Windows / macOS / Linux）
 >
-> **当前版本 0.9.0 通过 GitHub Release 分发**（npm 上的最新仍是 0.8.2，见下文"安装"）。
+> **当前版本 0.9.0**，npm 与 GitHub Release 双通道分发（npm：`dsh-plugin-manager-pro`）。
+> ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文"安装"）。
 
 ---
 
@@ -121,22 +122,43 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 
 - Windows 10/11 · macOS · Linux（`/rescue` 与三个 bin 工具全平台可用；**开机自启管理 `--install-autostart` 目前为 Windows**，macOS/Linux 可用 `--supervise` 自行加入系统自启）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
-- **DSH 引擎 0.1.7**：本版的插件页按 0.1.7 的客户端槽位与宿主接口开发；更早的引擎版本未做兼容承诺——升级前建议先在测试 profile 里试装
+- **引擎版本决定你该装哪一版**（见下表）——**装错版本 = 插件页不出现、甚至 profile 起不来**
+
+### 引擎版本 ↔ 插件版本对照
+
+| 你的 DSH 引擎 | 装哪个版本 | 原因 |
+|---|---|---|
+| **0.1.6-alpha.2 及以上**（含 0.1.7-rc.2，本机实测） | **0.9.0**（推荐） | 官方在 0.1.6 起把插件管理升成侧边栏一级页并新增 `id: plugin-manager` 行；0.9.0 用 `cordis.patch.yml` 关掉内置页 + 声明同名子槽位的方式接管，已实测在 0.1.7-rc.2 上零告警 |
+| **0.1.0-rc.6 ~ 0.1.5**（更早的引擎） | **0.8.2** | 0.8.x 走的是「设置 → 插件」里的设置页 tab 路线，按旧槽位开发 |
+| 0.1.6 之前且已装 0.9.0 导致起不来 | 回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2` | 见下文"安装"里的回退命令 |
+
+> ⚠️ **反向不兼容已经实测确认**：0.8.2 的 `dsh.client.inject` 里有 `@deepseek-ai/dsh-client-runtime`，而 **0.1.7 的引擎已不带这个包**（继任者是 `dsh-client-ui-renderer`）——所以在 0.1.7 上装 0.8.2 会加载失败。
+> 也就是说：**引擎越新越要 0.9.0；引擎很老才需要 0.8.2**。表里 0.1.6 这条分界线是唯一确定的那条，中间的 0.1.6-alpha.x 过渡版本未逐一实测。
 
 ## 安装
 
-> **0.9.0 目前只通过 GitHub Release 分发**（npm 上的最新版本仍是 0.8.2 的设置页版本）。
+> **推荐从 npm 安装**（`dsh plugin … add` 底层是 pnpm，会自动用引擎自带的 `@deepseek-ai/*`）。
 
 ```sh
-# 方式一：GitHub Release 页下载 tgz 后安装（0.9.0 走这条路）
+# 方式一（推荐，引擎 ≥ 0.1.6）：npm
+dsh plugin --profile web add dsh-plugin-manager-pro
+
+# 方式二：刚发版时（或在 24 小时冷静期内）——显式写版本号，最可靠
+dsh plugin --profile web add dsh-plugin-manager-pro@0.9.0
+
+# 方式三：离线 tgz（GitHub Release 页下载，或 npm pack 自建）
 dsh plugin --profile web add ./dsh-plugin-manager-pro-0.9.0.tgz
 
-# 方式二：npm（当前会装到 0.8.2；0.9.0 发布到 npm 后此命令即装最新）
-dsh plugin --profile web add dsh-plugin-manager-pro
+# 老引擎（0.1.0-rc.6 ~ 0.1.5）或 0.9.0 装上去不生效时，回退到旧 UI 版
+dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
 
 # 重启 web 生效（客户端 bundle 在引擎启动时加载，装完必须重启）
 dsh web
 ```
+
+> **装不到 / 装完还是旧版？** 两种常见原因：① 引擎在**启动时**加载客户端 bundle——装完**必须重启** `dsh web`；
+> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），**当天刚发布的版本不带版本号会解析到旧版**——
+> 用上面"方式二"的显式版本号即可绕过（也可把 `dsh-plugin-manager-pro@0.9.0` 加进 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
 
 装好后：侧边栏出现一级入口 **「插件管理」**（内置插件页已由本包的 patch 停用并接管）。右下角 🛟 打开救援中心；独立救援页 `http://127.0.0.1:3080/rescue`。
 
@@ -228,4 +250,4 @@ MIT。补丁持久化机制借鉴 [hrhgit/deepseek-harness-plugin-manager](https
 
 A local plugin manager for DeepSeek Harness. Since **0.9.0** the manager is a **standalone page** (sidebar entry "Plugin manager") instead of a tab inside Settings: five sections — **Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance** — with collapsible necessity groups, origin classification (built-in vs user-installed), status/version/source columns, enable/disable toggles, **third-party config entries rendered inline**, a plugin market over the awesome-dsh-plugin catalog, transactional uninstall with rollback, operation history/undo and named scenarios. It also ships a **standalone brick-rescue toolchain** (v0.7+): `rescue-daemon` (works when the engine is down), `open-boot` (browser-triggered self-check/repair/start, HTTP-handshake + identity health check), and `dsh-boot` (Steam-style boot sequence with exit codes). Cross-platform, zero new runtime dependencies.
 
-Install: download the tarball from GitHub Releases → `dsh plugin --profile web add ./dsh-plugin-manager-pro-0.9.0.tgz` → restart `dsh web` → open the sidebar "Plugin manager". (npm still carries 0.8.2; 0.9.0 is distributed via GitHub Releases.)
+Install: `dsh plugin --profile web add dsh-plugin-manager-pro` (pin `@0.9.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". A prebuilt tarball is also attached to each GitHub Release.

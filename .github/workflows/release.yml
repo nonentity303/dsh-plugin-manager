@@ -1,0 +1,83 @@
+name: Release to npm
+
+# 发版方式（Trusted Publishing / OIDC —— 不需要任何 npm token，也就没有 2FA 弹窗）：
+#   1) 本地把版本号改好、验证通过、提交并打 tag：
+#        npm run preflight && npm test
+#        git add -A && git commit -m "v<version>: <一句话>"
+#        git tag v<version> && git push origin master && git push origin v<version>
+#   2) 本工作流被 tag 触发 → 回归测试 → npm publish（带 provenance 签名）
+#   也可以到 Actions 页面手动 Run workflow（workflow_dispatch）发当前 master 上的版本。
+#
+# ⚠️ 一次性前置（npm 网站，不在本仓库里）：
+#   npmjs.com → 包 dsh-plugin-manager-pro → Settings → Trusted Publisher → GitHub Actions
+#     Organization or user : nonentity303
+#     Repository            : dsh-plugin-manager
+#     Workflow filename     : release.yml        ← 必须与 .github/workflows/release.yml 同名
+#     Environment           : （留空）
+#   三者必须逐字匹配，否则 npm 会以 404/401 拒绝 OIDC 交换。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC 换取一次性发布凭据（Trusted Publishing 的核心）
+
+jobs:
+  release:
+    # 四套测试里有 Windows 专属断言（注册表自启只读校验、.cmd 冒烟、shim 编码），
+    # 所以这里固定用 windows-latest；测试全绿过再考虑加 ubuntu 矩阵。
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      # OIDC 发布需要 npm ≥ 11.5.1；package.json 里的 packageManager 也钉了 11.19.0
+      - name: 升级 npm（OIDC 需要 ≥ 11.5.1）
+        run: npm install -g npm@11.19.0
+
+      - name: 校验 tag 与 package.json 版本一致
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag  package.json=$pkg"
+          if ($tag -ne $pkg) { throw "tag（$tag）与 package.json 的 version（$pkg）不一致，已中止发布" }
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
+        run: npm test
+
+      - name: vendor 一致性（迁移包不在 CI 上 → 自动 SKIP）
+        run: npm run check:vendor
+
+      - name: 发布到 npm（OIDC，无需 token）
+        run: npm publish --provenance --access public
+
+      - name: 发布后核对 registry
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $want = $pkg.version
+          $got = $null
+          for ($i = 1; $i -le 10; $i++) {
+            $got = (npm view "$($pkg.name)@$want" version 2>$null | Out-String).Trim()
+            if ($got -eq $want) { break }
+            Write-Host "第 $i 次未查到，等 15s 重试…"
+            Start-Sleep -Seconds 15
+          }
+          if ($got -ne $want) { throw "发布后核对失败：registry 上没有 $($pkg.name)@$want" }
+          Write-Host "✅ registry 已确认：$($pkg.name)@$got"
+          npm view $pkg.name dist-tags.latest

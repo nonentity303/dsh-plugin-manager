@@ -35,6 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 集成测试的「事务化卸载 / 撤销」断言依赖 pnpm 的真实解析行为（见 test-integration.mjs 顶部说明），
+      # 而 Windows runner 不自带 pnpm —— 必须显式安装，否则套件会以环境错误退出（exit 2）
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -59,6 +65,11 @@ jobs:
 
       - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
         run: npm test
+        env:
+          # 集成测试会在临时 profile 里跑真实 pnpm 安装；关掉 pnpm 的"祖先工程 packageManager"守卫，
+          # 否则 runner 上会以 [ERROR] This project is configured to use npm 拒绝执行
+          COREPACK_ENABLE_STRICT: 0
+          npm_config_ignore_workspace_root_check: "true"
 
       - name: vendor 一致性（迁移包不在 CI 上 → 自动 SKIP）
         run: npm run check:vendor

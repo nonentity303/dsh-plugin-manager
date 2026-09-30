@@ -37,9 +37,45 @@ writeFileSync(join(profileDir, "package.json"), JSON.stringify({
 }, null, 2) + "\n", "utf8");
 
 // 真实 pnpm install：让 pnpm 拥有 node_modules（否则 pnpm remove 会把手工目录当外部包拒绝）
+//
+// 环境前提（2026-09-30）：本套件的「事务化卸载 / 撤销」断言依赖 **pnpm 的真实解析行为**
+// （卸载会把 file: 依赖真删掉、撤销会真装回来）。所以 pnpm 缺失时**不能**用假垫片糊过去——
+// 那样只会把断言推到一个 undefined 上崩掉。正确做法是：
+//   · 本机：装了 pnpm（用户环境本来就有，见 docs/RELEASING.md §0）
+//   · CI：workflow 里显式装 pnpm（pnpm/action-setup）——见 .github/workflows/release.yml
+// 缺失时这里给出**明确的环境错误**，而不是让后续断言以 TypeError 的形式误导排查。
 import { execFileSync } from "node:child_process";
+const pnpmProbe = (() => {
+	try {
+		// 注意：必须在**仓库之外**探测。仓库 package.json 钉了 packageManager: npm，
+		// pnpm 11 在 cwd 落在这种工程里时会直接拒绝运行（"[ERROR] This project is configured to use npm"），
+		// 那不是"没装 pnpm"，只是"这里不归它管"。
+		const r = execFileSync(process.platform === "win32" ? "cmd" : "pnpm", process.platform === "win32" ? ["/c", "pnpm", "--version"] : ["--version"], {
+			stdio: "pipe",
+			cwd: tmpdir(),
+		});
+		return String(r).trim().split("\n").pop().trim();
+	} catch {
+		return null;
+	}
+})();
+if (!pnpmProbe) {
+	console.error("✘ 环境缺少 pnpm —— 本套件的卸载/撤销断言需要真实的 pnpm 行为。");
+	console.error("  · 本机请安装 pnpm（npm i -g pnpm）或核对 PATH");
+	console.error("  · CI 请确认 workflow 里有 pnpm/action-setup 步骤");
+	process.exit(2);
+}
+console.log(`（pnpm ${pnpmProbe}）`);
+
 const pnpmCmd = process.platform === "win32" ? ["cmd", "/c", "pnpm"] : ["pnpm"];
-execFileSync(pnpmCmd[0], [...pnpmCmd.slice(1), "install"], { cwd: profileDir, stdio: "pipe", env: { ...process.env, NO_COLOR: "1" } });
+// 两个 guard 都要关掉，否则 pnpm 11 会因为「祖先目录里声明了别的 packageManager / 工作区根」
+// 而拒绝在临时 profile 里安装（[ERROR] This project is configured to use npm）；
+// 这里操作的是**一次性临时 profile**，与仓库自身的 npm 约定无关。
+execFileSync(pnpmCmd[0], [...pnpmCmd.slice(1), "install"], {
+	cwd: profileDir,
+	stdio: "pipe",
+	env: { ...process.env, NO_COLOR: "1", COREPACK_ENABLE_STRICT: "0", npm_config_ignore_workspace_root_check: "true" },
+});
 
 // 动态加载器：entry.disabled 实时读 patch 文件（模拟热重载收敛）
 import { parse as parseYaml } from "yaml";

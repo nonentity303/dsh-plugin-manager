@@ -74,6 +74,11 @@ jobs:
         if: matrix.mode == 'no-pnpm'
         # 集成类断言（test-integration.mjs 的事务化卸载/撤销）**不在本腿运行**：
         # pnpm 11 需要 Node ≥ 22.13，Node 20 上 pnpm 无法启动 —— 那是 pnpm 的版本要求，不是本仓库的缺陷。
+        #
+        # ⚠ 必须 `shell: bash`（Git Bash，Windows runner 自带）：Windows 默认 shell 是 pwsh，而 pwsh 只会把
+        # **最后一条命令**的退出码透传给 step —— 中间 `compat-scan` 失败（exit 2）会被后面的成功命令吞掉，
+        # 变成"绿了但没意义"的假门禁（t16 负控实测踩到过）。bash 的 `-e` 保证任一条失败即中止。
+        shell: bash
         run: |
           node tools/dev/compat-scan.mjs --root .
           node build.mjs
@@ -130,6 +135,8 @@ jobs:
 
       - name: 实验 · Node 20 形状：compat-scan + 不含 pnpm 依赖的套件
         if: matrix.mode == 'no-pnpm'
+        # 同 Windows 腿：`shell: bash` 保证中间命令失败即中止（pwsh 只透传最后一条的退出码）
+        shell: bash
         run: |
           node tools/dev/compat-scan.mjs --root .
           node build.mjs

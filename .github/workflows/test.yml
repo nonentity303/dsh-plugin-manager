@@ -8,9 +8,21 @@ name: Test
 # R13 `--uninstall` 的注册表往返（HKCU\...\Run）、.cmd 双击冒烟、.vbs shim 编码、进程镜像与
 # 端口归属探测（tasklist / netstat）。这些在非 Windows 上无法成立。
 #
-# 为什么必须装 pnpm：test-integration.mjs 的「事务化卸载 / 撤销」断言依赖**真实 pnpm 解析行为**，
-# 而 GitHub 的 Windows runner 不自带 pnpm —— 缺它时套件会以环境错误 exit 2 退出（不是测试失败）。
-# 另外该套件会在临时 profile 里跑真实 pnpm 安装，runner 上没有祖先工程的 packageManager 守卫，
+# 两条腿的**分工**（2026-10-07 修订，原因见下）：
+#   · node 22（门禁）：完整回归 `npm test`（契约 / 渲染 / 集成 / 启动器），**含真 pnpm**。
+#   · node 20（门禁）：**不需要 pnpm 的门禁组合** —— 静态门禁 `tools/dev/compat-scan.mjs`
+#     （拦"源码用了 Node 22+ API"这一类，G1 `findPackageJSON` 就是被它拦下的）+ 不依赖 pnpm 的
+#     套件（bundle / render / launcher --strict）。
+#     **集成类断言不在此腿运行**：`test-integration.mjs` 的「事务化卸载 / 撤销」断言依赖**真实 pnpm
+#     解析行为**，而 pnpm 11 自身要求 **Node ≥ 22.13**（内部 `require("node:sqlite")`），在 Node 20 上
+#     它连启动都会抛 `ERR_UNKNOWN_BUILTIN_MODULE: No such module: node:sqlite`
+#     （实测 CI 日志：`warn: This version of pnpm requires at least Node.js v22.13`）。
+#     这条腿的价值在于**跨 Node 版本的源码形状**，不是 pnpm 行为，故不因 pnpm 装不上而红。
+#   · ubuntu 两条腿（**实验性，非门禁**，job 级 continue-on-error）：失败**不影响** workflow 结论，
+#     目的只是尽早暴露"偷偷依赖 Windows"的测试代码；与 Windows 腿同一套分工（node 20 无 pnpm）。
+#
+# 安装顺序注记：pnpm 只在 node ≥ 22 的腿上装（pnpm 11 需要 Node ≥ 22.13）；node 20 腿不装 pnpm。
+# 另外套件会在临时 profile 里跑真实安装，runner 上没有祖先工程的 packageManager 守卫，
 # 所以与 release.yml 一样关掉 COREPACK_ENABLE_STRICT 与 workspace-root 检查。
 
 on:
@@ -34,14 +46,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        include:
+          # node 20 腿：不装 pnpm（pnpm 11 需要 ≥ 22.13）→ 跑"不需要 pnpm 的门禁组合"
+          - node: 20
+            mode: no-pnpm
+          # node 22 腿：完整回归（含真 pnpm 的集成套件）
+          - node: 22
+            mode: full
     steps:
       - uses: actions/checkout@v4
-
-      # 集成测试依赖真实 pnpm（见文件头说明）：先装 pnpm，再装 Node。
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -51,7 +64,28 @@ jobs:
       - name: 安装依赖（以 package-lock.json 为准）
         run: npm ci
 
-      - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
+      # 只有 node ≥ 22 的腿装 pnpm：pnpm 11 内部用 node:sqlite，Node 20 上起不来（见文件头说明）
+      - if: matrix.mode == 'full'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 门禁 · Node 20 形状：compat-scan（拦 Node 22+ API）+ 不含 pnpm 依赖的套件
+        if: matrix.mode == 'no-pnpm'
+        # 集成类断言（test-integration.mjs 的事务化卸载/撤销）**不在本腿运行**：
+        # pnpm 11 需要 Node ≥ 22.13，Node 20 上 pnpm 无法启动 —— 那是 pnpm 的版本要求，不是本仓库的缺陷。
+        run: |
+          node tools/dev/compat-scan.mjs --root .
+          node build.mjs
+          node test-bundle.mjs
+          node test-render.mjs
+          node test-launcher.mjs --strict
+        env:
+          COREPACK_ENABLE_STRICT: 0
+          npm_config_ignore_workspace_root_check: "true"
+
+      - name: 门禁 · 完整回归（契约 / 渲染 / 集成 / 启动器，含真 pnpm）
+        if: matrix.mode == 'full'
         run: npm test
         env:
           COREPACK_ENABLE_STRICT: 0
@@ -59,8 +93,8 @@ jobs:
 
   # ---------------------------------------------------------------- 实验性（非门禁）
   ubuntu:
-    # ⚠ 实验性：job 级 continue-on-error，失败**不阻塞**合并。目的只是尽早暴露"偷偷依赖 Windows"的
-    # 测试代码；等它稳定后由用户决定是否升为门禁。
+    # ⚠ 实验性：job 级 continue-on-error，失败**不阻塞**合并、也不影响 workflow 结论。目的只是尽早
+    # 暴露"偷偷依赖 Windows"的测试代码；等它稳定后由用户决定是否升为门禁。
     #
     # 约定：Windows 特有的断言（注册表 Run 值、.vbs/.cmd shim、tasklist/netstat 端口归属、
     # --uninstall 的注册表往返）在非 Windows 上必须**跳过而不是失败**（本仓库已有平台守卫，
@@ -73,13 +107,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        include:
+          - node: 20
+            mode: no-pnpm
+          - node: 22
+            mode: full
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -89,7 +123,25 @@ jobs:
       - name: 安装依赖（以 package-lock.json 为准）
         run: npm ci
 
-      - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
+      - if: matrix.mode == 'full'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 实验 · Node 20 形状：compat-scan + 不含 pnpm 依赖的套件
+        if: matrix.mode == 'no-pnpm'
+        run: |
+          node tools/dev/compat-scan.mjs --root .
+          node build.mjs
+          node test-bundle.mjs
+          node test-render.mjs
+          node test-launcher.mjs --strict
+        env:
+          COREPACK_ENABLE_STRICT: 0
+          npm_config_ignore_workspace_root_check: "true"
+
+      - name: 实验 · 完整回归（契约 / 渲染 / 集成 / 启动器，含真 pnpm）
+        if: matrix.mode == 'full'
         run: npm test
         env:
           COREPACK_ENABLE_STRICT: 0

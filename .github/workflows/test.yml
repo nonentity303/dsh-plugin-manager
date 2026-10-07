@@ -1,0 +1,96 @@
+name: Test
+
+# 独立测试工作流：只管"每次改动都跑测试"，发布仍由 release.yml（Trusted Publishing）负责，两者互不影响。
+#
+# 触发：push 到 master + 所有 pull_request。
+#
+# 为什么 Windows 是**必需门禁**：四套测试里有 Windows 专属断言 —— 启动器的注册表只读校验与
+# R13 `--uninstall` 的注册表往返（HKCU\...\Run）、.cmd 双击冒烟、.vbs shim 编码、进程镜像与
+# 端口归属探测（tasklist / netstat）。这些在非 Windows 上无法成立。
+#
+# 为什么必须装 pnpm：test-integration.mjs 的「事务化卸载 / 撤销」断言依赖**真实 pnpm 解析行为**，
+# 而 GitHub 的 Windows runner 不自带 pnpm —— 缺它时套件会以环境错误 exit 2 退出（不是测试失败）。
+# 另外该套件会在临时 profile 里跑真实 pnpm 安装，runner 上没有祖先工程的 packageManager 守卫，
+# 所以与 release.yml 一样关掉 COREPACK_ENABLE_STRICT 与 workspace-root 检查。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- 必需门禁
+  windows:
+    name: windows-latest / node ${{ matrix.node }}（门禁）
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 集成测试依赖真实 pnpm（见文件头说明）：先装 pnpm，再装 Node。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: 安装依赖（以 package-lock.json 为准）
+        run: npm ci
+
+      - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
+        run: npm test
+        env:
+          COREPACK_ENABLE_STRICT: 0
+          npm_config_ignore_workspace_root_check: "true"
+
+  # ---------------------------------------------------------------- 实验性（非门禁）
+  ubuntu:
+    # ⚠ 实验性：job 级 continue-on-error，失败**不阻塞**合并。目的只是尽早暴露"偷偷依赖 Windows"的
+    # 测试代码；等它稳定后由用户决定是否升为门禁。
+    #
+    # 约定：Windows 特有的断言（注册表 Run 值、.vbs/.cmd shim、tasklist/netstat 端口归属、
+    # --uninstall 的注册表往返）在非 Windows 上必须**跳过而不是失败**（本仓库已有平台守卫，
+    # 例如 test-launcher.mjs 里的 `if (!WIN) { console.log("SKIP: …") }`）。若这里真的红了，
+    # 应修测试的平台分支，而不是给整个 job 加豁免。
+    name: ubuntu-latest / node ${{ matrix.node }}（实验性，非门禁）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: 安装依赖（以 package-lock.json 为准）
+        run: npm ci
+
+      - name: 回归测试（契约 / 渲染 / 集成 / 启动器）
+        run: npm test
+        env:
+          COREPACK_ENABLE_STRICT: 0
+          npm_config_ignore_workspace_root_check: "true"

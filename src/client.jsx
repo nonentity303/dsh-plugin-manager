@@ -1126,6 +1126,26 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 	);
 }
 
+/** P1-4 体检结论样式（safe=绿 / caution=黄 / risky=红）。 */
+const VERDICT_META = {
+	safe: { key: "uninstallVerdictSafe", color: "var(--dsw-alias-state-success-primary, #22c55e)" },
+	caution: { key: "uninstallVerdictCaution", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	risky: { key: "uninstallVerdictRisky", color: "var(--dsw-alias-state-error-primary)" }
+};
+/** P1-4 体检条目分级样式（high=高风险 / warning=提示 / info=信息）。 */
+const CHECK_SEVERITY_META = {
+	high: { key: "uninstallCheckHigh", color: "var(--dsw-alias-state-error-primary)" },
+	warning: { key: "uninstallCheckWarning", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	info: { key: "uninstallCheckInfo", color: "var(--dsw-alias-label-secondary)" }
+};
+/** L9 开机自启清理结果文案。 */
+const AUTOSTART_META = {
+	cleaned: { key: "uninstallAutostartCleaned", color: "var(--dsw-alias-state-success-primary, #22c55e)" },
+	skipped: { key: "uninstallAutostartSkipped", color: "var(--dsw-alias-label-secondary)" },
+	failed: { key: "uninstallAutostartFailed", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	timeout: { key: "uninstallAutostartTimeout", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }
+};
+
 /** 事务化卸载流程：影响预览 → 确认（可选级联） → 执行 → 卸载报告（自主校验 + 残留）。 */
 function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 	const [data, setData] = useState(null);
@@ -1159,6 +1179,12 @@ function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 		}
 	};
 
+	// 老宿主（无体检字段）也要能渲染：全部走 ?? 兜底
+	const checks = data?.checks ?? [];
+	const verdict = VERDICT_META[data?.verdict ?? "safe"] ?? VERDICT_META.safe;
+	const autostart = report?.autostartCleanup ?? null;
+	const autostartMeta = autostart === null ? null : AUTOSTART_META[autostart.status] ?? AUTOSTART_META.failed;
+
 	return (
 		<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary, #f59e0b)", background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #f59e0b) 8%, transparent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
 			<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1173,6 +1199,11 @@ function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 						<p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{data.spec === null ? t("uninstallNotManaged") : t("uninstallLocalBlocked")}</p>
 					) : (
 						<>
+							{/* P1-4 结论行：本次卸载：安全 / 需注意 / 有风险 + 一句理由 */}
+							<div data-check-verdict={data.verdict ?? "safe"} style={{ border: `1px solid ${verdict.color}`, borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+								<span style={{ fontSize: 12.5, fontWeight: 600, color: verdict.color }}>{t("uninstallVerdictLine")}：{t(verdict.key)}</span>
+								<span style={{ fontSize: 11.5, color: "var(--dsw-alias-label-secondary)", lineHeight: "16px" }} data-check-reason="1">{data.verdictReason ?? ""}</span>
+							</div>
 							<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)", lineHeight: "18px" }}>{t("uninstallPreviewHint")}</p>
 							<div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
 								{data.affectedEntries.length > 0 ? (
@@ -1184,6 +1215,24 @@ function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 								)}
 								{data.inBundles ? <p style={{ margin: 0 }}>{t("uninstallBundleRow")}</p> : null}
 								{data.patchRows > 0 ? <p style={{ margin: 0 }}>{t("uninstallPatchRows")}: {data.patchRows}</p> : null}
+								{/* P1-4 三类检查明细（只读，不改动任何 profile 文件） */}
+								<div data-check-list="1" style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+									<p style={{ margin: 0, fontWeight: 600 }}>{t("uninstallCheckTitle")} <span style={{ fontWeight: 400, color: "var(--dsw-alias-label-tertiary)", fontSize: 11 }}>{t("uninstallCheckHint")}</span></p>
+									{checks.length === 0 ? (
+										<p data-check-empty="1" style={{ margin: 0, fontSize: 11.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallCheckEmpty")}</p>
+									) : (
+										checks.map((check, i) => {
+											const meta = CHECK_SEVERITY_META[check.severity] ?? CHECK_SEVERITY_META.info;
+											return (
+												<p key={`${check.id}-${i}`} data-check-id={check.id} data-check-severity={check.severity} style={{ margin: 0, fontSize: 11.5, lineHeight: "17px" }}>
+													<span style={{ color: meta.color, fontWeight: 600 }}>[{t(meta.key)}]</span>{" "}
+													<span style={{ fontWeight: 600 }}>{check.title}</span>{" "}
+													<span style={{ color: "var(--dsw-alias-label-tertiary)" }}>—— {check.detail}</span>
+												</p>
+											);
+										})
+									)}
+								</div>
 								{data.dependents.length > 0 ? (
 									<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary, #f59e0b)", borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
 										<p style={{ margin: 0, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>⚠ {t("uninstallDependents")}:</p>
@@ -1200,6 +1249,10 @@ function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 									</div>
 								) : null}
 							</div>
+							{/* L9：管理器自身卸载前会先清理开机自启 */}
+							{data.isSelf === true ? (
+								<p data-self-hint="1" style={{ margin: 0, fontSize: 11.5, lineHeight: "17px", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("uninstallSelfHint")}</p>
+							) : null}
 							<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
 								<button type="button" onClick={doUninstall} disabled={busy}
 									style={{ ...buttonStyle, background: "var(--dsw-alias-state-error-primary)", color: "#fff", fontWeight: 600 }}>
@@ -1223,6 +1276,15 @@ function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
 							{report.dependentPackages.length > 0 ? <p style={{ margin: 0 }}>{t("uninstallReportCascade")}: {report.dependentPackages.join(", ")}</p> : null}
 							{report.residuals.length > 0 ? <p style={{ margin: 0, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("uninstallResiduals")}: {report.residuals.join(", ")}</p> : null}
 						</>
+					) : null}
+					{/* L9：开机自启清理结果（仅卸载管理器自身时出现；失败/超时也如实展示） */}
+					{autostartMeta !== null && autostart !== null ? (
+						<p data-autostart-cleanup={autostart.status} style={{ margin: 0, color: autostartMeta.color, lineHeight: "17px" }}>
+							{t("uninstallAutostartTitle")}: {t(autostartMeta.key)} —— {autostart.message}
+						</p>
+					) : null}
+					{report.isSelf === true && report.status === "removed" ? (
+						<p data-self-uninstalled="1" style={{ margin: 0, color: "var(--dsw-alias-state-warning-primary, #f59e0b)", lineHeight: "17px" }}>{t("uninstallSelfReport")}</p>
 					) : null}
 					<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
 						<button type="button" onClick={() => onDone(report.status === "removed")} style={buttonStyle}>{t("done")}</button>
@@ -2350,6 +2412,24 @@ const zh = {
 	uninstallPatchRows: "将清理的管理器开关行",
 	uninstallDependents: "以下已安装插件依赖该包，卸载会造成依赖断裂",
 	uninstallCascade: "级联卸载依赖插件",
+	// —— 卸载前体检（P1-4：依赖断裂 / patch 残留 / 重复 service·端口）——
+	uninstallVerdictLine: "本次卸载",
+	uninstallVerdictSafe: "安全",
+	uninstallVerdictCaution: "需注意",
+	uninstallVerdictRisky: "有风险",
+	uninstallCheckTitle: "卸载前体检",
+	uninstallCheckHint: "三类只读检查：依赖断裂 / patch 残留 / 重复 service·端口（不会改动任何 profile 文件）",
+	uninstallCheckHigh: "高风险",
+	uninstallCheckWarning: "提示",
+	uninstallCheckInfo: "信息",
+	uninstallCheckEmpty: "没有需要提示的体检项。",
+	uninstallSelfHint: "这是管理器自身：卸载前会先执行 bin/open-boot.mjs --uninstall 清理开机自启（停本 profile 守护 → 删 DSHWeb* 自启值 → 删 .vbs → 清 pid）。失败或超时不阻断卸载，结果会写进卸载报告与操作历史。",
+	uninstallSelfReport: "管理器自身已卸载：重启引擎后本页面消失；如要装回，用 dsh plugin --profile <name> add dsh-plugin-manager-pro。",
+	uninstallAutostartTitle: "开机自启清理",
+	uninstallAutostartCleaned: "已完成",
+	uninstallAutostartSkipped: "已跳过（包内没有 --uninstall，旧版本）",
+	uninstallAutostartFailed: "未成功（不影响卸载）",
+	uninstallAutostartTimeout: "超时（不影响卸载）",
 	uninstallConfirm: "确认卸载",
 	uninstalling: "卸载中…",
 	uninstallStatusremoved: "已卸载",
@@ -2555,6 +2635,24 @@ const en = {
 	uninstallPatchRows: "Manager patch rows to be cleaned",
 	uninstallDependents: "These installed plugins depend on this package; uninstalling will break them",
 	uninstallCascade: "Cascade-uninstall dependents",
+	// —— Pre-uninstall health check (P1-4) ——
+	uninstallVerdictLine: "This uninstall",
+	uninstallVerdictSafe: "safe",
+	uninstallVerdictCaution: "needs attention",
+	uninstallVerdictRisky: "risky",
+	uninstallCheckTitle: "Pre-uninstall check",
+	uninstallCheckHint: "Three read-only checks: broken dependencies / patch leftovers / duplicate services·ports (no profile file is modified)",
+	uninstallCheckHigh: "high risk",
+	uninstallCheckWarning: "note",
+	uninstallCheckInfo: "info",
+	uninstallCheckEmpty: "No findings to report.",
+	uninstallSelfHint: "This is the manager itself: before removal it runs bin/open-boot.mjs --uninstall to clear autostart (stops this profile's daemon → deletes DSHWeb* Run values → deletes .vbs shims → clears the pid file). Failure or timeout never blocks the uninstall, and the outcome is written to the report and operation history.",
+	uninstallSelfReport: "The manager itself was removed: this page disappears after an engine restart; reinstall with dsh plugin --profile <name> add dsh-plugin-manager-pro.",
+	uninstallAutostartTitle: "Autostart cleanup",
+	uninstallAutostartCleaned: "done",
+	uninstallAutostartSkipped: "skipped (no --uninstall in this package — older version)",
+	uninstallAutostartFailed: "did not succeed (uninstall unaffected)",
+	uninstallAutostartTimeout: "timed out (uninstall unaffected)",
 	uninstallConfirm: "Confirm uninstall",
 	uninstalling: "Uninstalling…",
 	uninstallStatusremoved: "Removed",

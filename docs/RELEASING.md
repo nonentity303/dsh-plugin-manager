@@ -29,7 +29,7 @@
 
 ## 1. 版本号
 
-- 唯一来源：`package.json` 的 `version`（当前 0.9.0）。构建产物不写版本号，`lib/client.js` 是源码的编译结果。
+- 唯一来源：`package.json` 的 `version`（当前 **0.9.1**）。构建产物不写版本号，`lib/client.js` 是源码的编译结果。
 - 每个版本必须有 `docs/releases/<version>.md`（发布说明）。缺它就不算可发布。
 - 预发布段（如 `0.9.0-1`）用于"同一版本的修补"：`dsh plugin add` 按版本号缓存 tarball，
   **内容改了就必须改版本号**，否则 pnpm 会报 "Already up to date"。
@@ -49,6 +49,10 @@ npm run check:vendor   # vendor 与工作树的**版本 + 内容级 sha256** 一
 
 `test-launcher.mjs` 用**随机端口 + 临时 profile**，不碰 3080/3081 与真 profile，也不写注册表（自启只做只读校验），
 因此可以在任何机器上重复跑。
+
+> **统计断言数别踩这个（D3）**：`test-bundle.mjs` 的断言行是 `CONTRACT OK:` / `RESCUE WIRE OK:` 之类的形式，
+> **不以 `OK:` 开头** —— 任何按 `^OK:` 统计的脚本都会把它数成 **0**（实际是 11 条）。要机器统计就逐行枚举，
+> 或等它在套件末尾加一行 `ALL … PASSED (11 checks)` 汇总（与 `test-render.mjs` / `test-launcher.mjs` 对齐）。
 
 `test-integration.mjs` 会 `import lib/index.js`，而 host 需要引擎模块
 `@deepseek-ai/dsh-home-paths`。它同时是 **optional peerDependencies**（运行时由引擎提供）
@@ -78,6 +82,10 @@ npm run check:vendor   # vendor 与工作树的**版本 + 内容级 sha256** 一
 2. 发布前做一次**干净树校验**：`rm -rf node_modules && npm ci && npm test && node build.mjs`，
    确认 `lib/client.js` 的 sha256 与你测过的那份一致。
 3. 本机与 CI 都用 `npm ci` → 两边构建**逐字节相同**（已实测：`547e8d75dd3d26b7`）。
+4. **复现构建一律用 canonical `node build.mjs`**，不要用 shell 拼 `--banner:js=` / `--footer:js=`（D4）：
+   PowerShell 向原生程序传多行参数会**吞掉引号与 `\n`/`\t` 转义**，实测等价 CLI 产物变成
+   **795,362 B / `60E76846…`**，而 canonical 是 **792,931 B / `00D06285…`** —— 差 2,431 B 的另一份字节。
+   （两次等价 CLI 之间确实同哈希，所以那条只能证明"构建路径确定"，**不能**当等价性证据。）
 
 ## 3. 打包
 
@@ -215,9 +223,11 @@ npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打�
 
 | 命令 | 文件 | 用途 |
 |---|---|---|
-| `dsh-pm-launcher` | `bin/open-boot.mjs` | 3081 网页启动器 + 常驻守护（`--supervise`/`--ensure`/`--autostart-status`/`--install-autostart`） |
+| `dsh-pm-launcher` | `bin/open-boot.mjs` | 3081 **唯一网页入口**（启动页 `/` + 救援页 `/rescue` + `/api/*`）+ 常驻守护（`--supervise`/`--ensure`/`--status`/`--autostart-status`/`--install-autostart`/`--uninstall-autostart`）+ `--uninstall` 卸载闭环 |
 | `dsh-pm-boot` | `bin/dsh-boot.mjs` | 启动序列：verify → fix → 拉起引擎 → 健康等待（`--repair-only`） |
-| `dsh-pm-rescue` | `bin/rescue-daemon.mjs` | 独立救砖守护（verify/fix/start/stop/status API） |
+| `dsh-pm-rescue` | `bin/rescue-daemon.mjs` | 独立**备份**救援服务（默认 **3082**；verify/fix/start/stop/status API） |
+
+> 端口、退出码、写接口防护与 `--uninstall` 四步的完整口径见 [`LAUNCHER.md`](LAUNCHER.md)（该文件与实现逐条核对，附「文档条目 → 代码位置」核对表）。
 
 安装后可直接 `npx dsh-pm-launcher --help`，或在包目录里 `node node_modules/dsh-plugin-manager-pro/bin/open-boot.mjs --help`。
 **不要在 README/文档里写裸相对路径 `node bin/...`**——那只对"cwd 恰好在包根"的开发者成立。
@@ -292,7 +302,7 @@ cd /tmp/pm-083/package
 #    注意：**不要**覆盖 lib/client.js（保持 0.8.x 旧 UI），也**不要**覆盖 cordis.patch.yml
 #         （0.8.x 那份没有 main key=plugins 的接管）
 
-# 3) 版本号：在**一次性目录里**把 package.json 的 version 改成 0.8.3（仓库里的 0.9.0 不动）
+# 3) 版本号：在**一次性目录里**把 package.json 的 version 改成 0.8.3（仓库里的版本不动）
 node -e "const f='package.json',p=require('./'+f);p.version='0.8.3';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
 
 # 4) 打包（不要跑 build.mjs，否则会把 0.9 的新 UI 编译进 lib/client.js）
@@ -312,7 +322,7 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/enginectl.mjs | grep -c '
 tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'AUTO_QUARANTINE_STREAK' # 期望 >0（H3 修复的产物）
 ```
 
-> 参考数值（本机实测，仓库当前 0.9.0 的 bundle 与基线 0.8.3-1 的 bundle 对比）：
+> 参考数值（本机实测，0.9.0 的 bundle 与基线 0.8.3-1 的 bundle 对比）：
 > `plugins.row.config` 在 0.8.3-1 的 `lib/client.js` 里为 **0** 命中，在 0.9.0 里为 **6** 命中 → 用它当"新 UI 指纹"是可靠的。
 
 **发布**：`npm publish` 或 GitHub Release 附 tgz；`git tag v0.8.3`（tag 指向产出该包的那次提交即可，
@@ -335,4 +345,127 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 | `package/lib/enginectl.mjs` 内 `engineHealth` | **6**（L4 修复已进包 ✓） |
 | `package/lib/index.js` 内 `AUTO_QUARANTINE_STREAK` | **5**（H3 修复已进包 ✓） |
 | tarball 内 `client.js.map` | **0**（不发布 sourcemap ✓） |
-| 仓库 `package.json` 的 version | 仍为 **0.9.0**（未被派生打包影响 ✓） |
+| 仓库 `package.json` 的 version | 仍为 **0.9.0**（当时的仓库版本；演练证明派生打包不会动仓库版本 ✓） |
+
+## 8. pnpm 11 的 24 小时冷静期（`minimumReleaseAge`）
+
+**事实**：pnpm 11 起 `minimumReleaseAge` 默认 **1440 分钟**（v11 之前为 0）——
+[pnpm 文档 settings/dependency-resolution#minimumreleaseage](https://pnpm.io/settings/dependency-resolution#minimumreleaseage)。
+`minimumReleaseAgeStrict` 默认 `false`，所以表现不是"直接失败"，而是**新版本可见但解析不到**：当天发布的版本
+`dsh plugin --profile web add dsh-plugin-manager-pro`（不带版本号）会解析到**旧版**，用户看到的是"发了但我装不上"。
+
+**发布时必做的两件事**
+
+1. 发完立刻核对（`publish:npm:apply` 会自动打印）：
+   ```sh
+   npm view dsh-plugin-manager-pro version          # 必须等于 package.json 的 version
+   npm view dsh-plugin-manager-pro time.0.9.1       # 发布时间戳
+   ```
+2. 告诉用户**怎么立刻装上**——唯一永远可靠的写法是显式版本号：
+   ```sh
+   dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1
+   # 或把它加进 profile 的 pnpm-workspace.yaml（本机已用过这个豁免）：
+   # minimumReleaseAgeExclude:
+   #   - dsh-plugin-manager-pro@0.9.1
+   ```
+
+> 这条同时写进了仓库根 `README.md` 的安装小节（"装不到 / 装完还是旧版？"）：**别在发版当天说"已发布，去装吧"**。
+
+## 9. 引擎升级彩排（每次 DSH `0.1.x` 发布后必跑）
+
+**为什么是硬流程**：官方 0.1.6 把插件管理页收进引擎后，**同类管理器成批死亡**——声明了与官方同名的 loader entry id
+就会让 profile 直接崩（`TypeError: duplicate loader entry id: plugin-manager`，见 `README.md` 的「老管理器为什么死」）。
+本包靠"不与官方抢 id + 关内置页 + 自己当槽位宿主"活下来，但**下一次引擎改动同样会打到我们身上**。
+所以每次引擎小版本发布后，必须在**隔离环境**里验收三类破坏性变更：
+
+| 类别 | 检查什么 | 怎么验 | 命中后的动作 |
+|---|---|---|---|
+| **行 id** | 官方 `dsh-base` / `dsh-web-app` 的 patch 里是否新增/改名了 `plugin-manager`、`ui-plugin-manager` 等行 | 读引擎安装目录的 `@deepseek-ai/dsh-base/cordis.patch.yml`、`@deepseek-ai/dsh-web-app/cordis.patch.yml`，与 `dev-docs/管理器适配0.1.7新UI方案.md` 的记录对比 | 调整包内 `cordis.patch.yml`（停用哪一行 / 自己用什么 id），并跑一遍彩排 |
+| **槽位** | `main` 的 `key`、`sidebar.panellist` 的 `id`、7 个 `plugins.*` 子槽位的名字与 kind 是否变化 | 用探针脚本抓 `__DSH_BOOT__` 与槽位注册表；对照 `src/client.jsx` 的 `children` 声明 | 改客户端注册面（`main` / `sidebar.panellist` / `children`）并重建 `lib/client.js` |
+| **包存在性** | `dsh.client.inject` 引用的 `@deepseek-ai/*` 包是否还在（0.1.7 删掉过 `dsh-client-runtime`）、typert strict codec 是否需要新工厂 | `upgrade-rehearsal/tools/scan-compat.mjs --target <引擎 node_modules>`（逐 mod 扫全版本历史）+ 启动日志里查 `did not activate` / `no create() factory` | 改 `package.json` 的 `dsh.client.inject` / `lib/remote.js` 的 codec，重打包后在彩排环境复跑 |
+
+**彩排搬运单（照抄）**
+
+```sh
+# 1) 独立 DSH_HOME + 克隆 profile（绝不碰真实 ~/.dsh）
+#    参见 upgrade-rehearsal/README.md 的三个坑：别 robocopy 克隆 node_modules、必须独立 DSH_HOME、
+#    不要在彩排根目录跑 npm/pnpm install
+# 2) 用隔离引擎起一个独立端口（例：3085）
+# 3) 装候选 tgz（显式版本号 + 关掉冷静期）
+#    dsh plugin --profile web add ./dsh-plugin-manager-pro-<版本>.tgz --config.minimumReleaseAge=0
+# 4) 判定标准
+#    a. 启动日志里**不出现** `dsh: warning: N entries did not activate`
+#    b. 侧边栏出现「插件管理」，五个分区齐备（截图存证）
+#    c. 第三方配置卡片（如 dsh-free-search 的行内配置）能展开
+#    d. `npx dsh-pm-launcher --status` 对隔离 profile 报三进程正常
+```
+
+彩排结论写进 `docs/releases/<版本>.md` 的「验证」段（历史样例见 `RELEASE_NOTES_0.8.3-1.md`：**引擎 0.1.7-rc.2：零条目失败**），
+并在下一次发版时更新 `README.md` 的引擎兼容性矩阵。
+
+## 10. 发布核对表（用户规定的固定五步，照抄即可）
+
+> **固定五步，不得跳步或换序**：**① 独立端口验证 → ② 打包 → ③ 主端口安装 → ④ 补充打包 → ⑤ 上传**。
+> 适用于所有自研 mod（本包与后续新 mod）。下面 18 条按这五步分组，编号即执行顺序。
+
+**红线（先看这三条）**
+
+1. **未经用户明确确认，不得进入第 ⑤ 步** —— 推送 / tag / npm 发布一律等用户点头。
+2. **任何改动之后必须回到第 ② 步重新打包**（代码、文档、版本号、发布日期都算）；"版本号相同、内容陈旧"是最隐蔽的坑。
+3. 每一步都要留下**可复核证据**（命令原文 + 输出 + 哈希 / 截图）；**未实测的不写"通过"**。
+
+### ① 独立端口验证（绝不碰真机 3080/3081/4081）
+
+| # | 步骤 | 命令 | 通过标准 |
+|---|---|---|---|
+| 1 | 搭隔离环境 | 独立 `DSH_HOME` + 克隆 profile（排除 `node_modules` 后重建）+ 非默认端口（如 3090/3091/3092） | 真机 3080/3081/4081 全程未被动过（记录前后 pid 与注册表值） |
+| 2 | 装候选件，跑通**全部新功能** | `dsh plugin --profile <名> add <候选 tgz> --config.minimumReleaseAge=0`；`node test-launcher.mjs --strict` / `npm test` | 四套件全绿（启动器断言数以当次输出为准）；**每个新功能**都有命令原文 + 输出 + 截图或用户点检清单 |
+| 3 | 补彩排结论 | 需要时按 §9 跑引擎升级彩排的三类破坏性变更（行 id / 槽位 / 包存在性） | 结论写进 `docs/releases/<版本>.md` 的「验证」段；**未取得的证据如实记为"未取得"** |
+
+### ② 打包（canonical 路径 + 记录指纹）
+
+| # | 步骤 | 命令 | 通过标准 |
+|---|---|---|---|
+| 4 | 干净树构建 | `rm -rf node_modules && npm ci && npm run build` | `lib/client.js` 的 sha256 == 你测过的那份（§2bis）。**只用 canonical `node build.mjs`**；不要用 shell 拼 `--banner:js=`（D4：PowerShell 吞引号与 `\n`/`\t`，产物变成另一份字节） |
+| 5 | 四套测试 | `npm test`；发布前再加 `npm run test:strict` | 全绿（bundle / render / integration / launcher）。统计断言数时注意 **`test-bundle.mjs` 不以 `^OK:` 开头**（D3，按 `^OK:` 会数成 0，实际 11 条） |
+| 6 | bump 版本 + 发布说明 + CHANGELOG | 改 `package.json` 的 `version`；写/更新 `docs/releases/<版本>.md`（发布日期可在第 ④ 步回填）；`node tools/dev/gen-changelog.mjs` | `node tools/dev/gen-changelog.mjs --check` exit 0（发布说明已进 CHANGELOG，版本倒序正确） |
+| 7 | vendor 刷新 + 内容级校验 | 先按 §5 用**本轮** tgz 刷新 `migration/pkg/main/vendor/` 与 `manifest.json`，再 `npm run check:vendor` | 版本链 + 正反双向逐文件 sha256 全绿。**vendor 还停在上一版时这一步必然红**（开发期为预期状态，打包后必须刷新） |
+| 8 | 打包 + 记录指纹 + 逐文件比对 | `npm run pack`（= `node build.mjs && npm pack`）→ 记录 **sha256 + 文件数 + 关键文件哈希** → **逐文件比对 tgz 与工作树**（可用 `node tools/dev/verify-triple.mjs` 做「本地 tgz / 工作树 / registry」三方比对） | 逐文件一致（**不一致 = 作废重打**）；`npm pack --dry-run` 的输出里有四个 `bin/*` 与两个 `lib/*.mjs` |
+
+### ③ 主端口安装（**在上传之前**，真机真实环境）
+
+| # | 步骤 | 命令 | 通过标准 |
+|---|---|---|---|
+| 9 | 装进真机 profile 并重启引擎 | `dsh plugin --profile web add <候选 tgz>` → 重启 3080/3081 | 新功能在**真实环境**可用、日常使用无碍（记录重启前后的 pid / 版本 / 关键文件哈希） |
+| 10 | CI 门禁（可与 9 并行） | push 到 `master` 后看 `.github/workflows/test.yml` | Windows 矩阵（node 20/22）**必须全绿**；Ubuntu 是实验性（`continue-on-error`），红了不阻塞，但要修测试的平台分支 |
+
+### ④ 补充打包（装机阶段暴露的东西全部落地）
+
+| # | 步骤 | 命令 | 通过标准 |
+|---|---|---|---|
+| 11 | 落地改动 → 重新打包 | 修复 / 文档 / 版本与日期回填 → **回到第 4–8 步重跑**（build → test → gen-changelog → check:vendor → pack） | **发布件 == 工作树 == 已装机验证的那一份**（内容级校验）；日期回填后 `gen-changelog --check` 仍 exit 0 |
+
+### ⑤ 上传（推送 / tag / 发布，需用户明确确认）
+
+| # | 步骤 | 命令 | 通过标准 |
+|---|---|---|---|
+| 12 | 提交 + 推送 + tag | `git add -A && git commit -m "v<版本>: …"` → `git tag v<版本>` → 推送 master 与 tag | 发布提交里同时含发布说明、刷新后的 `CHANGELOG.md`、以及 README 的图片绝对 URL（图片与 README 同 commit，不存在坏图窗口） |
+| 13 | CI 发布（OIDC，零 token） | tag 触发 `.github/workflows/release.yml` 走 `npm publish --provenance` | tag 与 `package.json` 版本一致性校验通过、日志里 token 是占位符、发布成功；CI 里也跑过与第 4–5、7 步相同的构建 / 测试 / vendor |
+| 14 | 兜底路径（仅本机、无 TOTP 时） | `npm run publish:webauth`（取未打码 `npm-notice` 链接 → Windows Hello → 每 20 秒重试真发布） | 见 §4.2 ①；**0.9.0 就是这么发的** |
+| 15 | **双轨发布必须同字节（D1，强制）** | npm 发布完成后，**从 registry 下载该版本的 tarball**，与候选件比对 `sha256` 与字节数；**一致后把这个下载下来的文件作为 GitHub Release 附件上传**，并记录两边 sha256 与字节数 | 两处 sha256 与字节数**逐字相等**。**禁止**用"本机重新打包"的 tgz 当 Release 附件（v0.9.0 就是这么错的：附件 `217,689 B` / `sha256 a29ead25…`，npm 上 `217,699 B` / `9cbd3684…`，差 10 B） |
+| 16 | 发完立刻核对 | `npm view dsh-plugin-manager-pro version` / `time.<版本>` | 等于 `package.json` 的 version；README 的版本行同步更新 |
+| 17 | 图片可达性回读（D2） | `https://api.github.com/repos/nonentity303/dsh-plugin-manager/contents/docs/images/pm-090-official2.png`（另两张同理） | HTTP **200** 且 `download_url` 可用。**推送前必然 404**（图是未跟踪的新文件）；本机 raw 域名受网络分区影响，回读用 api.github.com contents，必要时 jsDelivr 镜像，**不要**用 raw 链接自检 |
+| 18 | 冷静期提示 + 收尾 | `README.md` 安装小节保留"显式写版本号"（§8）；关掉临时 profile/端口；`git status` 干净 | 用户能按 README 就地装上当天发布的版本；工作树干净 |
+
+> **D1 的由来**：v0.9.0 的 GitHub Release 附件与 npm 发布件**不是同一份字节** —— 附件 `217,689 B` / `sha256 a29ead25…`，
+> npm `217,699 B` / `9cbd3684…`（差 10 B）。这是 F5 的同族问题：**版本号相同、内容不同**；两个渠道拿到的包不一样，
+> 用户无法用任何哈希互相验证。第 15 步就是为它加的硬关卡。
+>
+> **D2 / D3 / D4**（低优先观察，已就近写进上文）：**D2** 图片是 `raw.githubusercontent…/master/…` 绝对 URL → 推送前 404，推送后按第 17 步回读；
+> **D3** `test-bundle.mjs` 的断言不以 `OK:` 开头 → 统计别用 `^OK:`（见 §2）；**D4** 复现构建只用 canonical `node build.mjs`，别用 shell 拼 banner（见 §2bis 第 4 条）。
+>
+> **与旧版的对应**：第 4–13、15–18 条即上一版核对表的 1–13 条；变化只在于**顺序**（新增"主端口安装"为第 ③ 步、把它放在上传之前，
+> 并把"补充打包"独立成第 ④ 步）与红线三条。
+>
+> 发布说明模板：`docs/releases/<版本>.md`（历史样例：`0.9.0.md` 面向用户、`RELEASE_NOTES_0.8.x.md` 按模块分节）。
+> 版本历史汇总由 `node tools/dev/gen-changelog.mjs` 生成 `CHANGELOG.md`，**不要手改**。

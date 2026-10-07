@@ -183,7 +183,8 @@ if (!uninstallDesc) {
 	}
 	const itemFixture = {
 		packageName: "community-mod", status: "removed", message: "ok",
-		affectedEntries: ["community-mod"], removedPatchRows: 2, dependentPackages: [], verifyOk: true, residuals: [], backupPath: null
+		affectedEntries: ["community-mod"], removedPatchRows: 2, dependentPackages: [], verifyOk: true, residuals: [], backupPath: null,
+		isSelf: false, autostartCleanup: null
 	};
 	try {
 		uninstallDesc.result.schema.parse({ items: [itemFixture], snapshot: v08Snapshot });
@@ -196,6 +197,25 @@ if (!uninstallDesc) {
 	} catch (error) {
 		v08Checks.push("uninstallPackages result schema rejects rolled-back item: " + error.message);
 	}
+	// L9：自我卸载 + 自启清理三种结果（cleaned/skipped/failed/timeout）都必须能过契约
+	for (const cleanup of [
+		{ status: "cleaned", exitCode: 0, message: "开机自启已清理（exit 0）", command: "node open-boot.mjs --uninstall --profile /p" },
+		{ status: "skipped", exitCode: null, message: "包内启动器不支持 --uninstall（旧版本）", command: null },
+		{ status: "failed", exitCode: 1, message: "清理未成功（exit 1，不影响卸载）", command: "node open-boot.mjs --uninstall" },
+		{ status: "timeout", exitCode: null, message: "超过 20000ms 未返回，已终止", command: "node open-boot.mjs --uninstall" }
+	]) {
+		const selfItem = { ...itemFixture, packageName: "dsh-plugin-manager-pro", isSelf: true, autostartCleanup: cleanup };
+		try {
+			uninstallDesc.result.schema.parse({ items: [selfItem], snapshot: v08Snapshot });
+		} catch (error) {
+			v08Checks.push(`L9 autostartCleanup(${cleanup.status}) rejected by schema: ` + error.message);
+		}
+	}
+	// 负向：自启清理状态是封闭枚举，拼错的状态必须被拒
+	try {
+		uninstallDesc.result.schema.parse({ items: [{ ...itemFixture, isSelf: true, autostartCleanup: { status: "done", exitCode: 0, message: "x", command: null } }], snapshot: v08Snapshot });
+		v08Checks.push("L9 autostartCleanup should reject an unknown status (\"done\")");
+	} catch { /* 期望：schema 拒绝 */ }
 }
 
 // uninstallPreview
@@ -208,6 +228,14 @@ if (!previewDesc) {
 			packageName: "community-mod", spec: "^1.0.0", inBundles: true, patchRows: 2,
 			affectedEntries: [{ configId: "community-mod", moduleName: "community-mod", enabled: true }],
 			dependents: [{ packageName: "dep-mod", type: "dependencies", spec: "^1.0.0" }],
+			isSelf: false,
+			checks: [
+				{ id: "dependency-break", severity: "high", title: "dep-mod 依赖 community-mod", detail: "dep-mod 在 dependencies 里声明了 community-mod@^1.0.0。" },
+				{ id: "patch-residue", severity: "warning", title: "patch 残留：insert: id=x", detail: "cordis.patch.yml 里仍有与 community-mod 关联的条目。" },
+				{ id: "duplicate-service", severity: "info", title: "重复 service：chat", detail: "卸载后仍有 other-mod 声明同一 service。" }
+			],
+			verdict: "risky",
+			verdictReason: "体检发现 1 项高风险、1 项提示、1 项信息：dep-mod 依赖 community-mod。",
 			canUninstall: true
 		}]
 	};
@@ -216,6 +244,23 @@ if (!previewDesc) {
 	} catch (error) {
 		v08Checks.push("uninstallPreview schema rejects fixture: " + error.message);
 	}
+	// 三种结论都必须能过契约（safe/caution/risky）
+	for (const verdict of ["safe", "caution", "risky"]) {
+		try {
+			previewDesc.result.schema.parse({ packages: [{ ...previewFixture.packages[0], verdict, checks: [] }] });
+		} catch (error) {
+			v08Checks.push(`uninstallPreview schema rejects verdict "${verdict}": ` + error.message);
+		}
+	}
+	// 负向：结论是封闭枚举；体检分级也是封闭枚举（拼错的级别必须被拒）
+	try {
+		previewDesc.result.schema.parse({ packages: [{ ...previewFixture.packages[0], verdict: "danger" }] });
+		v08Checks.push("uninstallPreview should reject an unknown verdict (\"danger\")");
+	} catch { /* 期望：schema 拒绝 */ }
+	try {
+		previewDesc.result.schema.parse({ packages: [{ ...previewFixture.packages[0], checks: [{ id: "x", severity: "blocker", title: "t", detail: "d" }] }] });
+		v08Checks.push("uninstallPreview should reject an unknown check severity (\"blocker\")");
+	} catch { /* 期望：schema 拒绝 */ }
 }
 
 // operationHistory + undoOperation

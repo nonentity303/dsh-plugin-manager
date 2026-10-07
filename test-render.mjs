@@ -555,6 +555,194 @@ const agentRow = Array.from(root5.querySelectorAll("li")).find((li) => li.textCo
 if (agentRow !== undefined && agentRow.textContent.includes("rescueUninstall")) throw new Error("builtin row should not have uninstall button");
 console.log("RESULT: PASS - row uninstall buttons (user entries only)");
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError) {
+// ---- 12. 卸载影响预览：P1-4 三类体检 + 结论行 + L9 自启清理报告 ----
+//      验收点：预览顶部有结论行（safe/caution/risky + 一句理由）；三类检查按 severity 分级渲染；
+//              isSelf 时提示「卸载前会清理开机自启」；卸载报告渲染 L9 清理结果（含失败/跳过）。
+const root9 = document.createElement("div");
+document.body.appendChild(root9);
+const root9Instance = createRoot(root9);
+let impactError = null;
+const expandOptional = async (container) => {
+	const header = Array.from(container.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
+	if (header !== undefined) {
+		await act(async () => {
+			header.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		});
+	}
+};
+const openUninstallFlow = async (container, rowText) => {
+	const row = Array.from(container.querySelectorAll("li")).find((li) => li.textContent.includes(rowText));
+	if (row === undefined) throw new Error(`uninstall row not found: ${rowText}`);
+	const button = Array.from(row.querySelectorAll("button")).find((b) => b.textContent.includes("rescueUninstall"));
+	if (button === undefined) throw new Error(`uninstall button not found in row: ${rowText}`);
+	await act(async () => {
+		button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(30);
+};
+try {
+	const makePreview = (overrides) => ({
+		packages: [{
+			packageName: "community-mod", spec: "^1.0.0", inBundles: true, patchRows: 1,
+			affectedEntries: [{ configId: "community-mod", moduleName: "community-mod", enabled: true }],
+			dependents: [{ packageName: "dep-mod", type: "dependencies", spec: "^1.0.0" }],
+			isSelf: false,
+			checks: [
+				{ id: "dependency-break", severity: "high", title: "dep-mod 依赖 community-mod", detail: "dep-mod 在 dependencies 里声明了 community-mod@^1.0.0。" },
+				{ id: "patch-residue", severity: "warning", title: "patch 残留：insert: id=demo-row", detail: "cordis.patch.yml 里仍有与 community-mod 关联的条目。" },
+				{ id: "duplicate-port", severity: "info", title: "重复端口：3081", detail: "卸载后仍有 other-mod 声明同一端口 3081。" }
+			],
+			verdict: "risky",
+			verdictReason: "体检发现 1 项高风险、1 项提示、1 项信息：dep-mod 依赖 community-mod。",
+			canUninstall: true,
+			...overrides
+		}]
+	});
+	// —— 12a. 三类体检 + 高风险结论行 ——
+	let previewFor = makePreview({});
+	let reportFor = null;
+	const impactApi = {
+		...api,
+		uninstallPreview: async (names) => {
+			if (names[0] !== previewFor.packages[0].packageName) throw new Error(`uninstallPreview called with ${JSON.stringify(names)}`);
+			return previewFor;
+		},
+		uninstallPackages: async (names, options) => ({
+			items: [{
+				packageName: names[0], status: "removed", message: "已卸载，重启 profile 后生效。",
+				affectedEntries: names, removedPatchRows: 1, dependentPackages: [], verifyOk: true, residuals: [], backupPath: "/tmp/backup.json",
+				isSelf: false, autostartCleanup: null,
+				...(reportFor ?? {})
+			}],
+			snapshot: makeSnapshot()
+		})
+	};
+	await act(async () => {
+		root9Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
+	});
+	await expandOptional(root9);
+	await openUninstallFlow(root9, "community-mod");
+	const verdictEl = root9.querySelector("[data-check-verdict]");
+	if (verdictEl === null) throw new Error("verdict line not rendered: " + root9.textContent.slice(0, 300));
+	if (verdictEl.getAttribute("data-check-verdict") !== "risky") throw new Error(`verdict attr wrong: ${verdictEl.getAttribute("data-check-verdict")}`);
+	if (!verdictEl.textContent.includes("uninstallVerdictRisky")) throw new Error("verdict label (risky) not rendered: " + verdictEl.textContent);
+	const reasonEl = root9.querySelector("[data-check-reason]");
+	if (reasonEl === null || !reasonEl.textContent.includes("1 项高风险")) throw new Error("verdict reason not rendered: " + (reasonEl?.textContent ?? "null"));
+	const checkRows = Array.from(root9.querySelectorAll("[data-check-id]"));
+	if (checkRows.length !== 3) throw new Error(`expected 3 check rows, got ${checkRows.length}`);
+	const bySeverity = Object.fromEntries(checkRows.map((row) => [row.getAttribute("data-check-id"), row.getAttribute("data-check-severity")]));
+	if (bySeverity["dependency-break"] !== "high") throw new Error(`dependency-break severity wrong: ${JSON.stringify(bySeverity)}`);
+	if (bySeverity["patch-residue"] !== "warning") throw new Error(`patch-residue severity wrong: ${JSON.stringify(bySeverity)}`);
+	if (bySeverity["duplicate-port"] !== "info") throw new Error(`duplicate-port severity wrong: ${JSON.stringify(bySeverity)}`);
+	if (!checkRows.some((row) => row.textContent.includes("uninstallCheckHigh"))) throw new Error("high-risk badge label not rendered");
+	if (!checkRows.some((row) => row.textContent.includes("uninstallCheckInfo"))) throw new Error("info badge label not rendered");
+	if (root9.querySelector("[data-self-hint]") !== null) throw new Error("self hint must not render for a normal package");
+	console.log("RESULT: PASS - uninstall impact preview (verdict line + 3 graded checks)");
+
+	// —— 12b. 卸载报告：L9 自启清理（cleaned）+ 自我卸载提示 ——
+	await act(async () => {
+		const confirm = findButton(root9, "uninstallConfirm");
+		if (confirm === null) throw new Error("confirm button not found");
+		confirm.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(40);
+	const autostartRow = root9.querySelector("[data-autostart-cleanup]");
+	if (autostartRow !== null) throw new Error("autostart cleanup row must not render for a normal package uninstall");
+	if (root9.querySelector("[data-self-uninstalled]") !== null) throw new Error("self-uninstall hint must not render for a normal package");
+	console.log("RESULT: PASS - normal uninstall report has no autostart cleanup row");
+
+	// —— 12c. 管理器自身：isSelf 提示 + 自启清理结果 + 自我卸载说明 ——
+	previewFor = makePreview({
+		packageName: "dsh-plugin-manager-pro",
+		isSelf: true,
+		dependents: [],
+		checks: [{ id: "self-uninstall", severity: "warning", title: "将被卸载的是管理器自身", detail: "卸载前会先调用包内 bin/open-boot.mjs --uninstall 清理开机自启。" }],
+		verdict: "caution",
+		verdictReason: "体检发现 1 项提示：将被卸载的是管理器自身。"
+	});
+	reportFor = {
+		isSelf: true,
+		autostartCleanup: { status: "cleaned", exitCode: 0, message: "开机自启已清理（exit 0）", command: "node bin/open-boot.mjs --uninstall --profile /p" }
+	};
+	const root10 = document.createElement("div");
+	document.body.appendChild(root10);
+	const root10Instance = createRoot(root10);
+	// 管理器自身的行：origin=user（profile 依赖）+ protected（不能停用自身），但可以卸载（L9）
+	const selfEntries = [...entries, {
+		entryId: "e7", configId: "plugin-manager-pro", moduleName: "dsh-plugin-manager-pro", packageName: "dsh-plugin-manager-pro",
+		description: "插件管理器", necessity: "optional", enabled: true, phase: "active", error: null,
+		protected: true, protectionReason: "插件管理器不能停用自身。", archived: false, origin: "user",
+		installedVersion: "0.9.1", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
+	}];
+	const selfApi = { ...impactApi, list: async () => makeSnapshot(selfEntries) };
+	await act(async () => {
+		root10Instance.render(React.createElement(PluginManagerTab, { ...selfApi, t }));
+	});
+	await expandOptional(root10);
+	await openUninstallFlow(root10, "dsh-plugin-manager-pro");
+	const selfVerdict = root10.querySelector("[data-check-verdict]");
+	if (selfVerdict === null || selfVerdict.getAttribute("data-check-verdict") !== "caution") throw new Error(`self verdict wrong: ${selfVerdict?.getAttribute("data-check-verdict")}`);
+	const selfHint = root10.querySelector("[data-self-hint]");
+	if (selfHint === null || !selfHint.textContent.includes("uninstallSelfHint")) throw new Error("self uninstall hint missing: " + root10.textContent.slice(0, 400));
+	await act(async () => {
+		const confirm = findButton(root10, "uninstallConfirm");
+		if (confirm === null) throw new Error("confirm button not found (self)");
+		confirm.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(40);
+	const cleanupRow10 = root10.querySelector("[data-autostart-cleanup]");
+	if (cleanupRow10 === null) throw new Error("autostart cleanup row missing for self uninstall");
+	if (cleanupRow10.getAttribute("data-autostart-cleanup") !== "cleaned") throw new Error(`autostart cleanup status wrong: ${cleanupRow10.getAttribute("data-autostart-cleanup")}`);
+	if (!cleanupRow10.textContent.includes("uninstallAutostartCleaned") || !cleanupRow10.textContent.includes("uninstallAutostartTitle")) {
+		throw new Error("autostart cleanup labels missing: " + cleanupRow10.textContent);
+	}
+	if (root10.querySelector("[data-self-uninstalled]") === null) throw new Error("self-uninstalled notice missing");
+	console.log("RESULT: PASS - self uninstall (hint + L9 autostart cleanup report)");
+
+	// —— 12d. 安全结论 + 无检查项 + 旧宿主（无 checks/verdict 字段）降级 ——
+	previewFor = makePreview({ packageName: "pkg-no-version", dependents: [], checks: [], verdict: "safe", verdictReason: "没有依赖断裂、补丁残留或 service/端口冲突。" });
+	const root11 = document.createElement("div");
+	document.body.appendChild(root11);
+	const root11Instance = createRoot(root11);
+	await act(async () => {
+		root11Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
+	});
+	await expandOptional(root11);
+	await openUninstallFlow(root11, "pkg-no-version");
+	const safeVerdict = root11.querySelector("[data-check-verdict]");
+	if (safeVerdict === null || safeVerdict.getAttribute("data-check-verdict") !== "safe") throw new Error(`safe verdict wrong: ${safeVerdict?.getAttribute("data-check-verdict")}`);
+	if (root11.querySelector("[data-check-empty]") === null) throw new Error("empty-check placeholder missing");
+	if (!safeVerdict.textContent.includes("uninstallVerdictSafe")) throw new Error("safe verdict label missing");
+	// 旧宿主：预览里没有 checks/verdict/isSelf（新客户端 + 旧宿主混跑）时不得崩
+	previewFor = makePreview({ packageName: "broken-mod", dependents: [] });
+	delete previewFor.packages[0].checks;
+	delete previewFor.packages[0].verdict;
+	delete previewFor.packages[0].verdictReason;
+	delete previewFor.packages[0].isSelf;
+	const root12 = document.createElement("div");
+	document.body.appendChild(root12);
+	const root12Instance = createRoot(root12);
+	await act(async () => {
+		root12Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
+	});
+	await expandOptional(root12);
+	const recommendedHeader = Array.from(root12.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityRecommended"));
+	if (recommendedHeader !== undefined) {
+		await act(async () => {
+			recommendedHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		});
+	}
+	await openUninstallFlow(root12, "broken-mod");
+	const legacyVerdict = root12.querySelector("[data-check-verdict]");
+	if (legacyVerdict === null || legacyVerdict.getAttribute("data-check-verdict") !== "safe") throw new Error("legacy host preview should degrade to safe verdict");
+	if (root12.querySelector("[data-check-empty]") === null) throw new Error("legacy host preview should show empty-check placeholder");
+	console.log("RESULT: PASS - safe verdict / empty checks / legacy-host degradation");
+} catch (error) {
+	impactError = error;
+	console.error("UNINSTALL IMPACT ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

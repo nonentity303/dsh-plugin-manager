@@ -25,7 +25,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 const failures = [];
 const ok = (cond, label) => {
@@ -89,6 +89,29 @@ writeProfile(profileB);
 process.env.DSH_HOME = scratch;
 
 /**
+ * 受限环境（DSH 文件沙箱禁止子进程使用管道 stdio，spawn/execFile 直接 EPERM）下降级执行外部命令：
+ * 先按常规捕获输出；管道被拒时用「继承 stdio」重跑一次（进程从未启动 → 无副作用），返回 ""（无捕获）。
+ * 正常环境（本机普通 shell / CI）行为完全不变。
+ *
+ * 判定口径与 `lib/index.js` 的 spawnPnpm 降级一致：只有 `code === "EPERM"` 且**没有**退出码
+ * （`status` 为 undefined/null，即进程从未启动）才重试；真跑失败（非 0 退出码）照原样抛出。
+ * 调用方在无捕获（返回 ""）时不得依赖返回值判断成败：`packFixture` 改为用「打包后新出现的 .tgz」
+ * 定位产物，`pnpm install` 只按退出码判定（runExternal 在非 0 退出码时抛错）。
+ * 该降级的测试覆盖 = 本文件段 B 自身（沙箱内实跑真 pnpm 安装 / 重装 / 拒绝回滚）。
+ */
+const runExternal = (command, args, options = {}) => {
+	try {
+		return String(execFileSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], ...options })).trim();
+	} catch (error) {
+		if (error?.code !== "EPERM" || (error?.status !== undefined && error?.status !== null)) throw error;
+		const retry = spawnSync(command, args, { cwd: options.cwd, env: options.env, stdio: ["ignore", "inherit", "inherit"], windowsHide: true });
+		if (retry.error) throw retry.error;
+		if (retry.status !== 0) throw new Error(`${command} 退出码 ${retry.status}`);
+		return "";
+	}
+};
+
+/**
  * 用 npm pack 现场生成夹具 tarball（不依赖仓库里的历史 tgz）。
  * npm 在 Windows 上同样是 .cmd：经 cmd.exe 调用（与 H5 修复同一手法）；npm 不可用时
  * 用 tar 手工构造 npm-pack 布局（package/ 前缀）兜底。
@@ -99,18 +122,22 @@ const packFixture = (name, manifest, extraFiles = {}) => {
 	writeFileSync(join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
 	for (const [file, content] of Object.entries(extraFiles)) writeFileSync(join(dir, file), content, "utf8");
 	try {
+		const before = new Set(readdirSync(stagingRoot));
 		const out = process.platform === "win32"
-			? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `npm pack "${dir}" --pack-destination "${stagingRoot}"`], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-			: execFileSync("npm", ["pack", dir, "--pack-destination", stagingRoot], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-		const line = out.trim().split(/\r?\n/).filter((l) => l.trim() !== "").at(-1).trim();
+			? runExternal(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `npm pack "${dir}" --pack-destination "${stagingRoot}"`])
+			: runExternal("npm", ["pack", dir, "--pack-destination", stagingRoot]);
+		// 受限环境无捕获输出 → 用「打包后新出现的 .tgz」定位产物
+		const fresh = readdirSync(stagingRoot).filter((file) => file.endsWith(".tgz") && !before.has(file));
+		const line = out.trim().split(/\r?\n/).filter((l) => l.trim() !== "").at(-1)?.trim() ?? "";
 		if (line !== "" && existsSync(join(stagingRoot, line))) return line;
+		if (fresh.length === 1) return fresh[0];
 	} catch { /* 落到 tar 兜底 */ }
 	const layout = join(scratch, "fixtures", `${name}-layout`, "package");
 	mkdirSync(layout, { recursive: true });
 	writeFileSync(join(layout, "package.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
 	for (const [file, content] of Object.entries(extraFiles)) writeFileSync(join(layout, file), content, "utf8");
 	const tarball = `${manifest.name}-${manifest.version}.tgz`;
-	execFileSync("tar", ["-czf", join(stagingRoot, tarball), "-C", join(scratch, "fixtures", `${name}-layout`), "package"], { stdio: ["ignore", "pipe", "pipe"] });
+	runExternal("tar", ["-czf", join(stagingRoot, tarball), "-C", join(scratch, "fixtures", `${name}-layout`), "package"]);
 	return tarball;
 };
 
@@ -137,9 +164,9 @@ if (fixturesReady && legalName !== null) {
 
 	// 关键回归：装完后 profile 仍可正常 pnpm install（依赖里不得留悬空的 file:<临时路径>）
 	const reinstall = process.platform === "win32"
-		? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm install"], { cwd: profileB, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-		: execFileSync("pnpm", ["install"], { cwd: profileB, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-	info(`B(重装) pnpm install 退出正常: ${String(reinstall).trim().split(/\r?\n/).filter(Boolean).at(-1) ?? ""}`);
+		? runExternal(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "pnpm install"], { cwd: profileB })
+		: runExternal("pnpm", ["install"], { cwd: profileB });
+	info(`B(重装) pnpm install 退出正常: ${String(reinstall).trim().split(/\r?\n/).filter(Boolean).at(-1) || "（受限环境未捕获输出，按退出码判定）"}`);
 	ok(true, "B/H4: 安装后 profile 仍可 pnpm install（无悬空 file: 依赖）");
 	const specOfLegal = depsOf(profileB)["host-fix-legal"];
 	const stagedFile = typeof specOfLegal === "string" ? specOfLegal.replace(/^file:/, "") : "";

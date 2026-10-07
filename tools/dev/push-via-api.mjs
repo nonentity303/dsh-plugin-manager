@@ -44,9 +44,10 @@ if (parentSha) {
 const newBlobs = entries.filter((e) => e.type === "blob" && !remoteBlobs.has(e.sha));
 console.log(`blobs to create: ${newBlobs.length}`);
 for (const e of newBlobs) {
-	const content = execSync(`git cat-file -p ${e.sha}`, { encoding: "utf8", maxBuffer: 1e8 });
+	// 必须按**二进制**读取：utf8 往返会弄坏 PNG 等二进制文件（SHA 校验会因此失败）
+	const content = execSync(`git cat-file -p ${e.sha}`, { maxBuffer: 1e8 });
 	const blob = await apiReq("POST", `/repos/${repo}/git/blobs`, {
-		content: Buffer.from(content, "utf8").toString("base64"),
+		content: content.toString("base64"),
 		encoding: "base64"
 	});
 	if (blob.sha !== e.sha) throw new Error(`blob sha mismatch for ${e.path}`);

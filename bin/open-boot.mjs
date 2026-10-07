@@ -12,6 +12,20 @@
  *    显示 自检 → 修复 → 启动 的进度，结束后按任意键关闭（--no-window 可关掉）。
  *  - 常驻守护用 `--supervise`：只做「端口不可用 → 二次确认 → 隐藏拉起」，
  *    并靠锁端口保证同一时间只有一个守护。
+ *  - v0.9.1（审计③ R13 / R7 / L11 / P1-5）：
+ *    · **`--uninstall` 卸载闭环（R13）**：按 profile 停本 profile 的守护（`.open-boot.pid` + 锁端口
+ *      `port+1000` + 进程镜像三重校验，不过就拒绝且不动别的 profile 的进程、绝不 `taskkill /T` 整棵树）
+ *      → 删 `HKCU\...\Run` 下**所有** `DSHWeb*` 值（含历史 `DSHWebRescue`，并打印键名）
+ *      → 删 profile 内 `open-boot-*.vbs` shim → 清 `.open-boot.pid`（日志默认保留）；幂等 exit 0。
+ *    · **本地写接口防护（L11）**：`POST /api/boot` 与救援写接口三道检查 ——
+ *      Origin（为空或同源 `http://127.0.0.1:<port>`，其他 403）/ 一次性令牌（页面 meta
+ *      `dsh-pm-token` + 请求头 `X-DSH-PM-Token`，不匹配 401）/ 单飞（并发第二个 409）。
+ *      读取类接口（GET /api/status）保持开放，`launcherHealth` 身份握手不受影响。
+ *    · **健康留痕（P1-5）**：`--status` 每次都往 `<profile>/health.log` 追加一行
+ *      `ISO 时间 OK/FAIL boot=… engine=…`（保留最近 7 天 / 最多 1000 行），控制台新增「最近自检：…」。
+ *    · **救援入口与端口分工（R7）**：3081 是唯一网页入口，open-boot 自身提供完整救援能力
+ *      （`/rescue` 页面 + `/rescue/api/*`，复用 rescue-daemon 的 handleApi，挂在独立前缀下，
+ *      不影响 `/api/status` 的身份语义）；`rescue-daemon` 默认端口改为 3082。端口被占时明确报错，不漂移。
  *  - v0.9.0-2（审计③ 修复 L2/L3/L4/L6/L7/L8）：
  *    · 健康判定 = **HTTP 握手 + 身份校验**（裸 TCP 监听器一律判不健康）；
  *      3081 被非本工具进程占用时**明确报错**，不再"假健康"、也不再静默漂移端口。
@@ -27,8 +41,9 @@
  *   node bin/open-boot.mjs [--profile <dir>] [--port <n>] [--dsh <cmd>] [--no-window] [--cwd <dir>]
  *   node bin/open-boot.mjs --ensure         确保 3081 有服务（一次性，供桌面快捷方式用）
  *   node bin/open-boot.mjs --supervise [--interval <秒>] [--heartbeat-min <分钟>] [--quiet]
- *   node bin/open-boot.mjs --status         打印启动器/守护/引擎状态（退出码 0=启动器健康）
+ *   node bin/open-boot.mjs --status         打印启动器/守护/引擎状态（退出码 0=启动器健康；写 health.log）
  *   node bin/open-boot.mjs --install-autostart | --uninstall-autostart | --autostart-status
+ *   node bin/open-boot.mjs --uninstall [--profile <dir>] [--port <n>]   卸载启动器（停守护 + 清自启 + 删 shim + 清 pid）
  *   node bin/open-boot.mjs --help
  *
  * 零新依赖（复用 lib/preflight.mjs 与 lib/enginectl.mjs）。
@@ -41,51 +56,241 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
 import {
-	ENGINE_PORT, LAUNCHER_APP, chdirStable, engineHealth, isAlive, launcherHealth,
-	portOwner, probe, processImage, readPidInfo, resolveEngineCwd,
-	startEngineWithQuarantine, waitForEngine
+	ENGINE_PORT, LAUNCHER_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
+	launcherHealth, looksLikeProfileDir, newApiToken, portOwner, portOwnerProbe, probe, processImage,
+	processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine,
+	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine
 } from "../lib/enginectl.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SELF = fileURLToPath(import.meta.url);
 const AUTOSTART_NAME = "DSHWebFront";
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+/** 自启注册表值前缀：本工具写过的一律归它管（含历史遗留 `DSHWebRescue`，审计③ R13）。 */
+const RUN_VALUE_PREFIX = /^DSHWeb/i;
 const SUP_LOG = "open-boot-supervisor.log";
+/** P1-5 健康留痕：`--status` 每次追加一行，保留最近 7 天 / 最多 1000 行。 */
+const HEALTH_LOG = "health.log";
+const HEALTH_MAX_LINES = 1000;
+const HEALTH_MAX_AGE_DAYS = 7;
+/** R7 端口分工：3081 = 本启动器（唯一网页入口），3082 = rescue-daemon（独立备份入口）。 */
+const ENTRY_URL = "http://127.0.0.1:3081/";
+const RESCUE_DAEMON_PORT = 3082;
 
 function readVersion() {
 	try { return JSON.parse(readFileSync(join(dirname(SELF), "..", "package.json"), "utf8")).version || null; }
 	catch { return null; }
 }
 
+/**
+ * 开关表（t24 表驱动解析）：**解析器的唯一事实来源**。每项声明
+ *   - `name` / `aliases`：精确匹配的开关名（**大小写敏感**：`--UNINSTALL` 不是已知开关 → 拒绝 + did-you-mean）
+ *   - `kind`：`"value"`（需要取值）/ `"mode"`（选择子命令/模式，互斥）/ `"flag"`（普通布尔）
+ *   - `validate`：取值校验（返回值见 `lib/enginectl.mjs` 的共享件），所有取值开关都必须声明
+ *   - `mode`：模式名（仅 kind="mode"，用于互斥检查）
+ *   - `apply(args, value?)`：把解析结果写进 args
+ *
+ * 解析规则（结构上堵死"静默回落默认目标"这一类，前三次入口分别是 t14-F1 / t18-F1 / t21-F1）：
+ *   ① 取值开关的取值 **缺失 / 全空白 / 以 `-` 开头** → 用法错误。最后一类是关键：`--dsh --profile`
+ *      以前会把 `--profile` 吞成 `--dsh` 的取值，让后面的开关"凭空消失"、`args.unknown` 保持为空，
+ *      于是静默回落到**默认 profile + 3081** 并对全局 `DSHWeb*` 执行删除后报成功。
+ *   ② 任何以 `-` 开头且不在表里的 token → **所有模式**一律用法错误 + did-you-mean（不再"警告并忽略"）。
+ *   ③ 不以 `-` 开头的 token 是**位置参数**：保留原状 —— 全局子命令拒绝（见 unknownTokenPolicy），
+ *      其余模式警告并忽略（可被未知拼写的调用方脚本容忍）。
+ *   ④ 取值开关统一支持 `--flag=值` 内联写法（不再只有 `--profile=` 例外）；非取值开关写 `=` → 明确报错。
+ *   ⑤ 模式开关互斥：同时出现多个不同模式（`--help` 除外，help 优先）→ 用法错误并列出冲突的开关。
+ */
+const SWITCH_TABLE = [
+	// ---- 取值开关（kind: "value"）：取值必须过共享校验件 ----
+	{
+		name: "--profile", kind: "value",
+		validate: (raw) => validateCliValue(raw, { flag: "--profile", hint: "写法：--profile <目录> 或 --profile=<目录>" }),
+		apply: (args, value) => { args.profile = resolve(value.trim()); }
+	},
+	{
+		name: "--port", kind: "value",
+		validate: (raw) => validatePortValue(raw),
+		apply: (args, value) => { args.port = Number(value.trim()); }
+	},
+	{
+		name: "--dsh", kind: "value",
+		validate: (raw) => validateCliValue(raw, { flag: "--dsh", hint: "写法：--dsh <命令>，例如 --dsh \"npx dsh\"" }),
+		apply: (args, value) => { args.dsh = value.trim(); }
+	},
+	{
+		name: "--cwd", kind: "value",
+		validate: (raw) => validateCliValue(raw, { flag: "--cwd", hint: "写法：--cwd <目录>" }),
+		apply: (args, value) => { args.cwd = resolve(value.trim()); }
+	},
+	{
+		name: "--interval", kind: "value",
+		validate: (raw) => validateIntegerValue(raw, { flag: "--interval", min: 5, max: 86400 }),
+		apply: (args, value) => { args.interval = Number(value.trim()); }
+	},
+	{
+		name: "--wait-ms", kind: "value",
+		validate: (raw) => validateIntegerValue(raw, { flag: "--wait-ms", min: 1, max: 86400000 }),
+		apply: (args, value) => { args.waitMs = Number(value.trim()); }
+	},
+	{
+		name: "--heartbeat-min", kind: "value",
+		validate: (raw) => validateIntegerValue(raw, { flag: "--heartbeat-min", min: 1, max: 1440 }),
+		apply: (args, value) => { args.heartbeatMin = Number(value.trim()); }
+	},
+	// ---- 模式开关（kind: "mode"）：互斥 ----
+	{ name: "--uninstall", kind: "mode", mode: "uninstall", apply: (args) => { args.uninstall = true; } },
+	{ name: "--install-autostart", kind: "mode", mode: "autostart:install", apply: (args) => { args.autostart = "install"; } },
+	{ name: "--uninstall-autostart", kind: "mode", mode: "autostart:uninstall", apply: (args) => { args.autostart = "uninstall"; } },
+	{ name: "--autostart-status", kind: "mode", mode: "autostart:status", apply: (args) => { args.autostart = "status"; } },
+	{ name: "--status", kind: "mode", mode: "status", apply: (args) => { args.status = true; } },
+	{ name: "--supervise", kind: "mode", mode: "supervise", apply: (args) => { args.supervise = true; } },
+	{ name: "--ensure", kind: "mode", mode: "ensure", apply: (args) => { args.ensure = true; } },
+	{ name: "--help", kind: "mode", mode: "help", aliases: ["-h"], apply: (args) => { args.help = true; } },
+	// ---- 普通布尔开关（kind: "flag"）----
+	{ name: "--quiet", kind: "flag", apply: (args) => { args.quiet = true; } },
+	{ name: "--no-window", kind: "flag", apply: (args) => { args.window = false; } },
+	{ name: "--front", kind: "flag", legacy: true, apply: () => { /* v0.7.1 起已移除 3080 接管模式，忽略该参数 */ } }
+];
+
+/** 开关名 → 规格（精确匹配，大小写敏感）。 */
+const SWITCH_BY_NAME = new Map();
+for (const spec of SWITCH_TABLE) {
+	SWITCH_BY_NAME.set(spec.name, spec);
+	for (const alias of spec.aliases ?? []) SWITCH_BY_NAME.set(alias, spec);
+}
+
+/** 已知开关名列表（did-you-mean 的候选集；只列主名，便于提示）。 */
+const KNOWN_SWITCH_NAMES = SWITCH_TABLE.map((spec) => spec.name);
+
+/** Levenshtein 距离（did-you-mean 用；token 很短，成本可忽略）。 */
+function editDistance(a, b) {
+	const rows = a.length + 1;
+	const cols = b.length + 1;
+	let prev = Array.from({ length: cols }, (_, j) => j);
+	for (let i = 1; i < rows; i++) {
+		const cur = [i];
+		for (let j = 1; j < cols; j++) {
+			const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+			cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+		}
+		prev = cur;
+	}
+	return prev[cols - 1];
+}
+
+/**
+ * did-you-mean：给出最接近的已知开关（比较时**忽略大小写**，但匹配本身大小写敏感）。
+ * 前缀关系（`--uninstal` ⊂ `--uninstall`）也算接近，避免长开关被距离阈值挡掉。
+ */
+export function suggestClosestSwitch(token, { max = 3 } = {}) {
+	const needle = String(token).toLowerCase();
+	const scored = KNOWN_SWITCH_NAMES.map((name) => {
+		const lower = name.toLowerCase();
+		let score = editDistance(needle, lower);
+		if (lower.startsWith(needle) || needle.startsWith(lower)) score = Math.min(score, 1);
+		return { name, score };
+	}).sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+	const limit = Math.max(2, Math.floor(needle.length / 3));
+	return scored.filter((item) => item.score <= limit).slice(0, max).map((item) => item.name);
+}
+
+/** 未知开关的报错文案（含 did-you-mean 与大小写敏感说明）。 */
+function unknownSwitchMessage(token) {
+	const suggestions = suggestClosestSwitch(token);
+	const tail = suggestions.length > 0
+		? `；是否想输入 ${suggestions.join(" 或 ")}？（开关名匹配**大小写敏感**）`
+		: "（开关名匹配大小写敏感；用 --help 查看全部开关）";
+	return `未知开关：${token}${tail}`;
+}
+
+/**
+ * 位置参数策略（t20 起，t24 收窄为**只处理位置参数**：开关形态的未知 token 已在解析阶段一律拒绝）。
+ *
+ * 三个**全局子命令**（`--uninstall` / `--install-autostart` / `--uninstall-autostart`）会写或删
+ * `HKCU\...\Run` 下的 `DSHWeb*`、并可能停进程：它们的 `--profile` 缺省值是**默认 profile**（合法目标），
+ * 所以多余的位置参数（往往是拼错的开关留下的残渣）必须拒绝，否则一次笔误就是一次全局改动。
+ * 其余模式（server/`--ensure`/`--supervise`/`--status`/`--autostart-status`）保持"警告并忽略"，
+ * 以免打断既有的调用方脚本。
+ */
+export function unknownTokenPolicy(args) {
+	if (!args || !Array.isArray(args.unknown) || args.unknown.length === 0) return { reject: false, message: null };
+	const tokens = args.unknown.join(" ");
+	const isGlobal = Boolean(args.uninstall) || args.autostart === "install" || args.autostart === "uninstall";
+	if (isGlobal) {
+		return {
+			reject: true,
+			message: `全局子命令不接受多余的位置参数：${tokens}（请检查开关拼写；这三个子命令会改动全局自启项，`
+				+ `多余的 token 不会被静默忽略，也不会回落到默认 profile）`
+		};
+	}
+	return { reject: false, message: `无法识别的位置参数（已忽略）：${tokens}（这些模式允许位置参数存在；用 --help 查看用法）` };
+}
+
+/**
+ * 解析命令行（表驱动，见 SWITCH_TABLE）。
+ *
+ * 取值校验统一走 `lib/enginectl.mjs` 的共享件；任何用法错误都记为 `args.usageError` 并**立即停止解析**，
+ * 由 `main()` 在任何动作之前打印用法并 exit 1（零副作用）。
+ */
 function parseArgs(argv) {
 	const args = {
 		profile: PROFILE_DEFAULT, port: 3081, dsh: "dsh", cwd: null,
 		supervise: false, ensure: false, status: false, help: false,
 		interval: 60, heartbeatMin: 10, quiet: false, window: true, waitMs: 90000,
-		autostart: null, unknown: []
+		autostart: null, uninstall: false, usageError: null, unknown: [], modes: []
 	};
+	/** 记录用法错误并立刻停止解析（不做任何后续动作）。 */
+	const fail = (message) => { args.usageError = message; return args; };
+
 	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === "--profile" && argv[i + 1]) { args.profile = resolve(argv[++i]); }
-		else if (arg === "--port" && argv[i + 1]) { args.port = Number(argv[++i]) || 3081; }
-		else if (arg === "--dsh" && argv[i + 1]) { args.dsh = argv[++i]; }
-		else if (arg === "--cwd" && argv[i + 1]) { args.cwd = resolve(argv[++i]); }
-		else if (arg === "--interval" && argv[i + 1]) { args.interval = Math.max(5, Number(argv[++i]) || 60); }
-		// 注意：这里只能自增一次（历史 bug：多了一个 i++，会把紧跟其后的标志位吞掉，见审计③ L6）
-		else if (arg === "--wait-ms" && argv[i + 1]) { args.waitMs = Number(argv[++i]) || 90000; }
-		else if (arg === "--heartbeat-min" && argv[i + 1]) { args.heartbeatMin = Math.max(1, Number(argv[++i]) || 10); }
-		else if (arg === "--supervise") { args.supervise = true; }
-		else if (arg === "--ensure") { args.ensure = true; }
-		else if (arg === "--status") { args.status = true; }
-		else if (arg === "--quiet") { args.quiet = true; }
-		else if (arg === "--no-window") { args.window = false; }
-		else if (arg === "--install-autostart") { args.autostart = "install"; }
-		else if (arg === "--uninstall-autostart") { args.autostart = "uninstall"; }
-		else if (arg === "--autostart-status") { args.autostart = "status"; }
-		else if (arg === "--help" || arg === "-h") { args.help = true; }
-		else if (arg === "--front") { /* v0.7.1 起已移除 3080 接管模式，忽略该参数 */ }
-		else { args.unknown.push(arg); }
+		const token = argv[i];
+		let spec = SWITCH_BY_NAME.get(token) ?? null;
+		let inlineValue;
+		// ④ `--flag=值` 内联写法（取值开关统一支持；非取值开关写 = 明确报错）
+		if (!spec && /^--[A-Za-z][A-Za-z0-9-]*=/.test(token)) {
+			const head = token.slice(0, token.indexOf("="));
+			const rest = token.slice(token.indexOf("=") + 1);
+			const inlineSpec = SWITCH_BY_NAME.get(head) ?? null;
+			if (inlineSpec) {
+				if (inlineSpec.kind !== "value") return fail(`开关 ${head} 不接受取值（写法：${head}）`);
+				spec = inlineSpec;
+				inlineValue = rest;
+			}
+		}
+		if (!spec) {
+			// ② 像开关的未知 token：所有模式一律拒绝 + did-you-mean
+			if (typeof token === "string" && token.startsWith("-")) return fail(unknownSwitchMessage(token));
+			// ③ 位置参数：交给 unknownTokenPolicy 按模式处理
+			args.unknown.push(token);
+			continue;
+		}
+		if (spec.kind === "value") {
+			let raw = inlineValue;
+			if (raw === void 0) {
+				const error = spec.validate(argv[i + 1]); // ① 缺失/空白/以 - 开头 → 用法错误（开关不会被吞）
+				if (error) return fail(error);
+				raw = argv[i + 1];
+				i++;
+			} else {
+				const error = spec.validate(raw);
+				if (error) return fail(error);
+			}
+			spec.apply(args, raw);
+			continue;
+		}
+		spec.apply(args);
+		if (spec.kind === "mode") args.modes.push({ flag: spec.name, mode: spec.mode });
+	}
+
+	// ⑤ 模式互斥：多个不同模式同时出现 → 用法错误（列出冲突开关）；`--help` 优先，不参与冲突
+	if (args.help !== true) {
+		const chosen = args.modes.filter((item) => item.mode !== "help");
+		const distinct = [...new Set(chosen.map((item) => item.mode))];
+		if (distinct.length > 1) {
+			return fail(`互斥的子命令/模式同时出现：${chosen.map((item) => item.flag).join(" + ")}（一次只能选一个；用 --help 查看用法）`);
+		}
 	}
 	return args;
 }
@@ -96,10 +301,11 @@ const HELP_TEXT = `浏览器启动器 / 3081 常驻入口（dsh-plugin-manager-p
   node bin/open-boot.mjs [选项]                 启动 3081 网页入口（前台）
   node bin/open-boot.mjs --supervise            常驻守护：静默确保 3081 有服务（推荐自启）
   node bin/open-boot.mjs --ensure               一次性确保 3081 有服务（桌面快捷方式用）
-  node bin/open-boot.mjs --status               打印启动器/守护/引擎状态（退出码 0=启动器健康）
+  node bin/open-boot.mjs --status               打印启动器/守护/引擎状态（退出码 0=启动器健康；追加 health.log）
   node bin/open-boot.mjs --install-autostart    写开机自启（Windows：HKCU Run + 包装 .vbs）
-  node bin/open-boot.mjs --uninstall-autostart  移除开机自启
+  node bin/open-boot.mjs --uninstall-autostart  只移除开机自启（等价于 --uninstall 的自启部分）
   node bin/open-boot.mjs --autostart-status     查看自启状态（含包装脚本/守护存活校验）
+  node bin/open-boot.mjs --uninstall            卸载本次安装的全部痕迹（停守护 → 删 DSHWeb* 自启 → 删 shim → 清 pid）
   node bin/open-boot.mjs --help                 显示本帮助
 
 选项：
@@ -111,6 +317,40 @@ const HELP_TEXT = `浏览器启动器 / 3081 常驻入口（dsh-plugin-manager-p
   --interval <秒>        守护检查间隔（默认 60，最小 5）
   --heartbeat-min <分>   守护心跳日志间隔（默认 10 分钟）
   --quiet                不往控制台打印（日志仍写 profile/open-boot-supervisor.log）
+
+--uninstall 语义（冻结契约，供管理器卸载钩子调用）：
+  1) 只停**本 profile 的**守护：依据 .open-boot.pid + 锁端口（--port+1000）+ 进程镜像三重校验；
+     校验不过一律拒绝并打印原因（绝不 taskkill /T 整棵树、绝不误杀别的 profile 的守护）。
+  2) 删 HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run 下**所有** DSHWeb* 值（含历史 DSHWebRescue），并打印键名。
+  3) 删 profile 内 open-boot-autostart.vbs / open-boot-ui.vbs（shim）。
+  4) 清理 <profile>\\.open-boot.pid；日志（open-boot*.log / health.log / rescue-daemon.log）默认保留。
+  5) 幂等：条件满足时重复执行仍然 exit 0。
+  退出码：0=完成（含"无可清理项"、归属校验不通过而跳过他人进程）；
+          1=清理过程出错（注册表/脚本删除失败、已确认的进程停不下来、pid 文件删不掉）；
+          2=**归属未确认**（netstat/tasklist 探测不可用）：未停止任何进程、**保留** .open-boot.pid、
+            不报告"卸载完成"（读不到 ≠ 没有守护）。可换到不受限的会话重跑，或按输出里的人工核对建议处理。
+
+端口分工（v0.9.1 起）：
+  3080 = dsh 引擎；3081 = 本启动器（**唯一网页入口**：/ 启动页、/rescue 救援页、/api/* 与 /rescue/api/*）；
+  3082 = rescue-daemon（独立备份救援入口，不再与 3081 争抢）。
+
+写接口同源白名单（L11）：http://127.0.0.1:<port> ／ http://localhost:<port> ／ http://[::1]:<port>
+  （同机同端口的等价主机名；其他 Origin 一律 403。端口取本服务监听端口。）
+
+输入校验（表驱动解析：t14-F1 / t18-F1 / t21-F1 三次实测的"静默回落默认目标"家族）：
+  取值开关（--profile / --port / --dsh / --cwd / --interval / --wait-ms / --heartbeat-min）的取值：
+    · **缺失 / 全空白 / 以 - 开头** → 用法错误（以 - 开头一定不是真取值，而是被吞掉的下一个开关）；
+    · 数值开关还要求纯数字且在范围内（--port 1-65535；--interval 5-86400；--wait-ms 1-86400000；--heartbeat-min 1-1440）；
+    · 统一支持内联写法 --flag=值（如 --profile=<目录> / --port=3099）；非取值开关写 = 会明确报错。
+  未知开关：任何以 - 开头且不在已知开关表里的 token（**所有模式**，例如 --status --typo）→ 用法错误 + did-you-mean。
+    开关名匹配**大小写敏感**（--UNINSTALL 不是 --uninstall，会被拒绝并提示最接近的写法）。
+  位置参数（不以 - 开头的多余 token）：全局子命令（--uninstall / --install-autostart / --uninstall-autostart）拒绝；
+    其余模式（前台 server / --ensure / --supervise / --status / --autostart-status）**警告并忽略**（兼容既有调用方脚本）。
+  互斥：模式开关一次只能选一个（--uninstall / --install-autostart / --uninstall-autostart / --autostart-status /
+    --status / --supervise / --ensure），多个同时出现 → 用法错误并列出冲突的开关；--help 例外（优先，直接打用法）。
+  所有用法错误统一为：stderr 打印本用法、退出码 1，且**不执行任何动作**（不动注册表 / pid / 进程 / 日志）。
+  另外，执行任何**全局性**动作（写或删 HKCU\...\Run 下的 DSHWeb*、写 profile 内 .vbs）之前，
+  会先校验目标目录确实像 profile（存在 + 是目录 + 含 package.json / cordis*.yml）：不合法 → 拒绝 + 退出 1。
 `;
 
 // ---------------------------------------------------------------- 日志 / 路径
@@ -153,6 +393,71 @@ function lastHeartbeat(args) {
 const pidPathOf = (args) => join(args.profile, ".open-boot.pid");
 const logPathOf = (args) => join(args.profile, "open-boot.log");
 const engineLogPathOf = (args) => join(args.profile, "rescue-daemon.log");
+const healthLogPath = (profileDir) => join(profileDir, HEALTH_LOG);
+
+/**
+ * 端口上的服务是不是"本启动器"：握手失败时**二次确认**一次。
+ * 原因（2026-10-06 实测）：机器负载高时单次 1.5s 握手会偶发超时，而 `--status`/`--autostart-status`
+ * 会据此打印"3081 被别人的进程占用"这种**吓人的误报**（并把 FAIL 写进 health.log）。
+ * 这里沿用 ensureServer 的同一约定：有监听者但握手失败 → 等 500ms 后用更长的超时再确认。
+ */
+async function launcherHealthWithRetry(port) {
+	const first = await launcherHealth(port);
+	if (first.ok) return first;
+	if (!(await probe(port))) return first;
+	await sleep(500);
+	return await launcherHealth(port, 3000);
+}
+
+// ---------------------------------------------------------------- 健康留痕（P1-5）
+/**
+ * 轮转：只保留最近 `maxAgeDays` 天（按行首 ISO 时间判断）且最多 `maxLines` 行。
+ * 行首没有可解析时间戳的行按"用户手工内容"处理，不因年龄被丢（仍受行数上限约束）。
+ */
+export function pruneHealthEntries(lines = [], { maxLines = HEALTH_MAX_LINES, maxAgeDays = HEALTH_MAX_AGE_DAYS, now = Date.now() } = {}) {
+	const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
+	const kept = [];
+	for (const raw of lines) {
+		if (typeof raw !== "string") continue;
+		const line = raw.trim();
+		if (line === "") continue;
+		const stamp = /^(\d{4}-\d{2}-\d{2}T\S+)/.exec(line);
+		if (stamp) {
+			const at = Date.parse(stamp[1]);
+			if (Number.isFinite(at) && at < cutoff) continue;
+		}
+		kept.push(line);
+	}
+	return maxLines > 0 && kept.length > maxLines ? kept.slice(-maxLines) : kept;
+}
+
+/** 追加一行自检结论到 `<profile>/health.log`（不存在则创建；写失败不抛）。 */
+export function appendHealthLog(profileDir, entry) {
+	const path = healthLogPath(profileDir);
+	let existing = [];
+	try { existing = readFileSync(path, "utf8").split(/\r?\n/); } catch { /* 首次写入 */ }
+	const merged = pruneHealthEntries([...existing, entry]);
+	try {
+		mkdirSync(profileDir, { recursive: true });
+		writeFileSync(path, merged.join("\n") + "\n", "utf8");
+	} catch (error) {
+		return { ok: false, path, lines: 0, entry, message: `写健康日志失败：${error.message}` };
+	}
+	return { ok: true, path, lines: merged.length, entry, maxLines: HEALTH_MAX_LINES, maxAgeDays: HEALTH_MAX_AGE_DAYS };
+}
+
+/** 读 health.log 的最后一条记录（无文件/空文件 → null）。 */
+export function readLastHealthEntry(profileDir) {
+	try {
+		const lines = pruneHealthEntries(readFileSync(healthLogPath(profileDir), "utf8").split(/\r?\n/));
+		return lines.length > 0 ? lines[lines.length - 1] : null;
+	} catch { return null; }
+}
+
+/** 组装一条自检结论行：`ISO 时间 OK/FAIL boot=<up|down|occupied>@<port> engine=<up|down|occupied>@<enginePort>`。 */
+export function healthEntry({ ok, bootState, port, engineState, enginePort }) {
+	return `${new Date().toISOString()} ${ok ? "OK" : "FAIL"} boot=${bootState}@${port} engine=${engineState}@${enginePort}`;
+}
 
 /** 读一个 JSON 文件（不存在/坏格式返回 null）。 */
 function readJsonFile(path) {
@@ -160,6 +465,7 @@ function readJsonFile(path) {
 }
 
 function modeOf(args) {
+	if (args.uninstall) return "uninstall";
 	if (args.autostart) return `autostart:${args.autostart}`;
 	if (args.help) return "help";
 	if (args.status) return "status";
@@ -456,7 +762,7 @@ async function supervise(args) {
 async function reportStatus(args) {
 	const lockPort = args.port + 1000;
 	const lines = [];
-	const launcher = await launcherHealth(args.port);
+	const launcher = await launcherHealthWithRetry(args.port);
 	const tcp = await probe(args.port);
 	const owner = tcp ? portOwner(args.port) : null;
 	if (launcher.ok) {
@@ -487,9 +793,22 @@ async function reportStatus(args) {
 	const hb = lastHeartbeat(args);
 	lines.push(`日志：${join(args.profile, SUP_LOG)}；${logPathOf(args)}；${engineLogPathOf(args)}`);
 	lines.push(`最后一次心跳：${hb || "（无心跳记录）"}`);
+
+	// P1-5 健康留痕：把本次结论追加进 <profile>/health.log（ISO 时间 + OK/FAIL + engine/boot 端口状态），
+	// 控制台同时给出「最近自检」行（本条 + 上一条，均取自该日志）。--status 仍然不改 profile 配置。
+	const bootState = launcher.ok ? "up" : tcp ? "occupied" : "down";
+	const engineState = engine.ok ? "up" : engineTcp ? "occupied" : "down";
+	const entry = healthEntry({ ok: launcher.ok, bootState, port: args.port, engineState, enginePort: ENGINE_PORT });
+	const previous = readLastHealthEntry(args.profile);
+	const written = appendHealthLog(args.profile, entry);
+	lines.push(`最近自检：${entry}${previous ? `（上一次：${previous}）` : "（此前无记录，本次为第一条）"}`);
+	lines.push(written.ok
+		? `自检日志：${written.path}（共 ${written.lines} 行；轮转保留最近 ${HEALTH_MAX_AGE_DAYS} 天 / 最多 ${HEALTH_MAX_LINES} 行）`
+		: `自检日志：写入失败 —— ${written.message}`);
+
 	const tail = readSupTail(args, 5);
 	if (tail) lines.push(`日志尾部：\n${tail}`);
-	return { ok: launcher.ok, message: lines.join("\n") };
+	return { ok: launcher.ok, message: lines.join("\n"), healthEntryText: entry, healthLog: written.path, previousHealthEntry: previous };
 }
 
 // ---------------------------------------------------------------- 开机自启
@@ -564,6 +883,50 @@ function regQuery(name) {
 	return { status: 0, value: match ? match[1].trim() : "" };
 }
 
+/** 列出 `HKCU\...\Run` 下的全部值（name/type/data）。非 Windows 返回 `[]`；**读取失败返回 null**（≠ 没有值）。 */
+export function listRunValues() {
+	if (process.platform !== "win32") return [];
+	const out = spawnSync("reg", ["query", RUN_KEY], { windowsHide: true, encoding: "utf8", timeout: 10000 });
+	if (out.status !== 0 || !out.stdout) return null;
+	const values = [];
+	for (const line of out.stdout.split(/\r?\n/)) {
+		// 值行形如：`    DSHWebFront    REG_SZ    "C:\Windows\System32\wscript.exe" //nologo "…vbs"`
+		const m = /^\s{2,}(\S+)\s+(REG_[A-Z_]+)\s+(.*)$/.exec(line);
+		if (m) values.push({ name: m[1], type: m[2], data: m[3].trim() });
+	}
+	return values;
+}
+
+/**
+ * R13：删除 Run 键下**所有** `DSHWeb*` 值（含历史遗留 `DSHWebRescue`），返回删掉的键名。
+ * 幂等：没有匹配项时返回空数组且 ok=true；注册表**读不到**时不谎报"已清干净"，而是明确警告
+ * （受限会话/安全策略下 reg.exe 可能不可用 —— 那种情况必须人工核对）。
+ */
+export function removeDsWebRunValues() {
+	if (process.platform !== "win32") {
+		return { ok: true, skipped: true, readable: false, removed: [], failed: [], message: "非 Windows：跳过注册表清理" };
+	}
+	const values = listRunValues();
+	if (values === null) {
+		return {
+			ok: true, skipped: false, readable: false, removed: [], failed: [],
+			message: `⚠ 无法读取注册表 ${RUN_KEY}（reg query 失败或被安全策略拦截）：DSHWeb* 自启残留**未确认**，请人工用 reg query 核对`
+		};
+	}
+	const targets = values.filter((value) => RUN_VALUE_PREFIX.test(value.name));
+	const removed = [];
+	const failed = [];
+	for (const value of targets) {
+		const out = spawnSync("reg", ["delete", RUN_KEY, "/v", value.name, "/f"], { windowsHide: true, encoding: "utf8", timeout: 10000 });
+		if (out.status === 0) removed.push(value.name);
+		else failed.push({ name: value.name, message: (out.stderr || out.stdout || (out.error ? out.error.message : "")).trim() });
+	}
+	return {
+		ok: failed.length === 0, skipped: false, readable: true, removed, failed,
+		message: removed.length > 0 ? `已删除注册表自启值：${removed.join(", ")}` : "未发现 DSHWeb* 自启值（无需删除）"
+	};
+}
+
 /**
  * `--autostart-status`（审计③ L3）：除了注册表值，还校验
  *   ① 包装脚本是否存在 ② 守护是否持有锁端口 ③ 3081 上是不是本启动器
@@ -586,7 +949,7 @@ async function autostartStatus(args) {
 	const lockPort = args.port + 1000;
 	const lockOwner = portOwner(lockPort);
 	lines.push(`  守护进程：${lockOwner ? `✔ pid ${lockOwner} 持有锁端口 ${lockPort}` : `✘ 无进程持有锁端口 ${lockPort}（守护未运行；下次登录会由自启拉起）`}`);
-	const launcher = await launcherHealth(args.port);
+	const launcher = await launcherHealthWithRetry(args.port);
 	if (launcher.ok) lines.push(`  启动器（${args.port}）：✔ 在跑（${launcher.identity}）`);
 	else if (await probe(args.port)) lines.push(`  启动器（${args.port}）：✘ 端口被 pid ${portOwner(args.port) ?? "未知"} 占用，不是本启动器`);
 	else lines.push(`  启动器（${args.port}）：✘ 未运行`);
@@ -597,6 +960,11 @@ async function autostartStatus(args) {
 function installAutostart(args) {
 	if (process.platform !== "win32") {
 		return { ok: false, message: "开机自启安装目前仅支持 Windows；其他平台请手动把 `node bin/open-boot.mjs --supervise` 加入系统自启。" };
+	}
+	// 同样是全局性动作（写 HKCU\...\Run\DSHWebFront）+ 往 profile 写 shim：目标必须像样的 profile（t14-F1）
+	const target = looksLikeProfileDir(args.profile);
+	if (!target.ok) {
+		return { ok: false, message: `拒绝安装开机自启：${target.reason}\n  写 HKCU\\...\\Run 与 profile 内 .vbs 都属于全局动作，必须给出合法的 --profile 目标（退出码 1，未做任何改动）。` };
 	}
 	const shim = autostartShimPath(args);
 	const uiShim = uiShimPath(args);
@@ -609,8 +977,11 @@ function installAutostart(args) {
 
 	const wscript = join(process.env.SystemRoot || "C:\\Windows", "System32", "wscript.exe");
 	const value = `"${wscript}" //nologo "${shim}"`;
-	const out = spawnSync("reg", ["add", RUN_KEY, "/v", AUTOSTART_NAME, "/t", "REG_SZ", "/d", value, "/f"], { windowsHide: true, encoding: "utf8" });
-	if (out.status !== 0) return { ok: false, message: `写入注册表失败：${(out.stderr || out.stdout || "").trim()}` };
+	const out = spawnSync("reg", ["add", RUN_KEY, "/v", AUTOSTART_NAME, "/t", "REG_SZ", "/d", value, "/f"], { windowsHide: true, encoding: "utf8", timeout: 10000 });
+	if (out.status !== 0) {
+		const detail = (out.stderr || out.stdout || (out.error ? `${out.error.code || ""} ${out.error.message}` : "")).trim();
+		return { ok: false, message: `写入注册表失败：${detail || "reg add 未返回任何输出（可能是安全策略/受限会话拦截了 reg.exe）"}` };
+	}
 	return {
 		ok: true,
 		message: `开机自启已安装：${AUTOSTART_NAME} → ${shim}\n` +
@@ -623,18 +994,268 @@ function installAutostart(args) {
 }
 
 function uninstallAutostart(args) {
-	if (process.platform !== "win32") return { ok: false, message: "开机自启管理目前仅支持 Windows。" };
-	const shim = autostartShimPath(args);
-	const out = spawnSync("reg", ["delete", RUN_KEY, "/v", AUTOSTART_NAME, "/f"], { windowsHide: true, encoding: "utf8" });
-	for (const file of [shim, uiShimPath(args)]) {
-		try { if (existsSync(file)) unlinkSync(file); } catch { /* 删不掉不影响主流程 */ }
+	// 删 DSHWeb* 是全局动作：目标必须像样的 profile（t14-F1），否则拒绝执行（不删注册表、不删 shim）
+	const target = looksLikeProfileDir(args.profile);
+	if (!target.ok) {
+		return { ok: false, message: `拒绝移除开机自启：${target.reason}\n  删除 HKCU\\...\\Run 下的 DSHWeb* 属于全局动作，必须给出合法的 --profile 目标（退出码 1，未做任何改动）。` };
 	}
-	return { ok: out.status === 0, message: out.status === 0 ? `开机自启已移除：${AUTOSTART_NAME}（常驻守护进程会在注销/重启后消失）` : "开机自启未安装（无需移除）" };
+	const shim = autostartShimPath(args);
+	const uiShim = uiShimPath(args);
+	const reg = removeDsWebRunValues();
+	const deleted = [];
+	const failed = [];
+	for (const file of [shim, uiShim]) {
+		if (!existsSync(file)) continue;
+		try { unlinkSync(file); deleted.push(file); }
+		catch (error) { failed.push(`${file}（${error.message}）`); }
+	}
+	const ok = reg.ok && failed.length === 0;
+	const parts = [reg.message];
+	parts.push(deleted.length > 0 ? `已删除包装脚本：${deleted.map((p) => p.split(/[\\/]/).pop()).join(", ")}` : "未发现包装脚本（open-boot-*.vbs）");
+	if (reg.failed.length > 0) parts.push(`注册表删除失败：${reg.failed.map((f) => `${f.name}（${f.message}）`).join("；")}`);
+	if (failed.length > 0) parts.push(`脚本删除失败：${failed.join("；")}`);
+	if (process.platform !== "win32") parts.push("（非 Windows：开机自启管理不适用）");
+	return { ok, message: parts.join("\n"), reg, deleted, failed };
+}
+
+// ---------------------------------------------------------------- 卸载闭环（R13）
+/**
+ * 按 profile 收集"可确认属于本 profile"的守护/启动器进程。
+ *
+ * 审计③ R13 的核心风险是**误杀**：`.open-boot.pid` 只有一个文件、锁端口是 port+1000，
+ * 一旦拿错 profile（或 pid 被系统复用）就可能把别人的守护/无关进程杀掉。
+ * 因此这里做**三重校验**，任何一项不过就一律不动：
+ *   ① `.open-boot.pid`：存在、带本工具身份标记（app=LAUNCHER_APP）、记录的 profile 与端口都与本次目标一致；
+ *   ② 端口归属：pid 必须持有启动器端口（`--port`）或锁端口（`--port + 1000`）；
+ *   ③ 进程镜像：必须是 node（`node` / `node.exe`）。
+ * 另外：**绝不**用 `taskkill /T`（审计③ 装机教训：`/T` 会连整棵树一起杀掉），只用 `process.kill(pid)`。
+ *
+ * 探测可用性（t8 终审 F2）：三重校验依赖 netstat（端口归属）与 tasklist（进程镜像）。
+ * 这两个探测**可能被环境拦截**（受限会话、命令不存在）：此时"读不到"≠"没有守护"。
+ * 因此每个候选进程都带 `verified`：
+ *   - `verified=true`  → 探测成功：`owned=true` 可停；`owned=false` 是"**确认非本进程/确认已不存在**"，可安全清理；
+ *   - `verified=false` → **归属未确认**（探测不可用）：一律不动，交给 `uninstallLauncher` 保留 pid 文件并警告。
+ * @param {object} args 解析后的参数（profile/port）
+ * @param {object} probes 可注入探针（测试/受限环境模拟）：{ portOwner, processImage, isAlive }
+ */
+export function collectOwnedDaemons(args, probes = {}) {
+	const lockPort = Number(args.port) + 1000;
+	const ownerOf = probes.portOwner ?? portOwnerProbe;
+	const imageOf = probes.processImage ?? processImageProbe;
+	const aliveOf = probes.isAlive ?? isAlive;
+	const info = readJsonFile(pidPathOf(args));
+	const blocked = [];
+	const candidates = [];
+	if (!info) {
+		// 没有 pid 文件 = 无可定位的守护：跳过停止步骤（不是"校验失败"，但仍不结束任何进程）
+		return {
+			info: null, lockPort, candidates, blocked, owned: [], unverified: [],
+			note: `没有 ${pidPathOf(args)}：无可定位的守护（跳过停止步骤，不会结束任何进程）`,
+			lockPortOwner: portOwner(lockPort)
+		};
+	}
+	if (info.app !== LAUNCHER_APP) blocked.push(`.open-boot.pid 缺少本工具身份标记（app=${info.app ?? "无"}）`);
+	const infoProfile = info.profile ? resolve(info.profile) : null;
+	if (!infoProfile) blocked.push(".open-boot.pid 未记录 profile");
+	else if (infoProfile !== resolve(args.profile)) blocked.push(`.open-boot.pid 记录的 profile 是 ${info.profile}（本次目标是 ${args.profile}）`);
+	const infoPort = Number(info.port);
+	if (!Number.isInteger(infoPort)) blocked.push(".open-boot.pid 未记录端口");
+	else if (infoPort !== Number(args.port)) blocked.push(`.open-boot.pid 记录的端口是 ${infoPort}（本次目标是 ${args.port}）`);
+	if (blocked.length > 0) return { info, lockPort, candidates: [], blocked, owned: [], unverified: [] };
+
+	for (const item of [
+		{ pid: Number(info.launcherPid), role: "常驻守护（--supervise，应持有锁端口）" },
+		{ pid: Number(info.pid), role: "启动器服务（网页入口）" }
+	]) {
+		if (!Number.isInteger(item.pid) || item.pid <= 0) continue;
+		if (!aliveOf(item.pid)) {
+			candidates.push({ ...item, alive: false, verified: true, owned: false, reason: `pid ${item.pid} 已不存在（无需结束）` });
+			continue;
+		}
+		const imageProbe = imageOf(item.pid);
+		const lockProbe = ownerOf(lockPort) ?? { ok: true, pid: null, reason: null };
+		const portProbe = ownerOf(infoPort) ?? { ok: true, pid: null, reason: null };
+		const holdsLock = lockProbe.pid === item.pid;
+		const holdsPort = portProbe.pid === item.pid;
+		const failures = [imageProbe, lockProbe, portProbe].filter((p) => p && p.ok === false);
+		const verified = failures.length === 0;
+		const imageOk = imageProbe.ok === true && typeof imageProbe.image === "string" && /^node(\.exe)?$/.test(imageProbe.image);
+		const owned = verified && imageOk && (holdsLock || holdsPort);
+		let reason;
+		if (owned) reason = `进程镜像 ${imageProbe.image}；${holdsLock ? `持有锁端口 ${lockPort}` : `持有端口 ${infoPort}`}`;
+		else if (!verified) reason = `归属未确认：探测不可用（${failures.map((p) => p.reason).filter(Boolean).join("；") || "netstat/tasklist 无输出"}）`;
+		else reason = `确认非本进程：进程镜像是 ${imageProbe.image ?? "未知（该 pid 已不存在）"}`
+			+ (holdsLock || holdsPort ? "" : `，且既没持有锁端口 ${lockPort} 也没持有 ${infoPort}（pid 可能已被系统复用）`);
+		candidates.push({
+			...item, alive: true, image: imageProbe.image ?? null, holdsLock, holdsPort, verified, owned, reason
+		});
+	}
+	const unverified = candidates.filter((c) => c.alive && c.verified === false);
+	return { info, lockPort, candidates, blocked, owned: candidates.filter((c) => c.owned), unverified };
+}
+
+/** 结束一个已通过归属校验的 pid（**不带 /T**，只杀这一个进程）。 */
+async function stopOwnedPid(pid, { timeoutMs = 6000 } = {}) {
+	const startedAt = Date.now();
+	try { process.kill(pid); }
+	catch (error) { return { ok: false, pid, message: `无法结束 pid ${pid}：${error.message}` }; }
+	while (Date.now() - startedAt < timeoutMs) {
+		if (!isAlive(pid)) return { ok: true, pid, message: `已结束 pid ${pid}（等 ${Date.now() - startedAt}ms 确认退出）` };
+		await sleep(200);
+	}
+	return { ok: false, pid, message: `已发送结束信号但 pid ${pid} 仍在（可能需要管理员权限）` };
+}
+
+/**
+ * `--uninstall`（R13，冻结契约）：卸载启动器在本 profile 留下的全部痕迹。
+ * 顺序很重要：**先停常驻守护**（否则它 60s 内会把启动器再拉起来），再停启动器服务。
+ *
+ * 退出码（t8 终审 F2 起）：
+ *   0 = 完成（含"无可清理项"、"归属校验不通过而跳过他人进程"）；
+ *   1 = 清理过程出错（注册表删除失败 / shim 删不掉 / 已确认的进程停不下来 / pid 文件删不掉）；
+ *   2 = **归属未确认**：netstat/tasklist 探测不可用 → 未停止任何进程、**保留 pid 文件**、
+ *       不报告"卸载完成"（此时"读不到"≠"没有守护"，不能假装成功）。
+ * @param {object} probes 可注入探针（测试/受限环境模拟）：{ portOwner, processImage, isAlive }
+ * @returns {Promise<{ok, exitCode, message, stopped, blocked, skipped, unverified, removedValues, deletedShims, pidCleared}>}
+ */
+export async function uninstallLauncher(args, probes = {}) {
+	const aliveOf = probes.isAlive ?? isAlive;
+	const lines = [];
+	const result = { ok: true, exitCode: 0, stopped: [], blocked: [], skipped: [], unverified: [], removedValues: [], deletedShims: [], pidCleared: false };
+	lines.push(`卸载启动器：profile ${args.profile}；启动器端口 ${args.port}；锁端口 ${args.port + 1000}`);
+	lines.push(`端口分工：${args.port} = 本启动器（唯一网页入口）；${RESCUE_DAEMON_PORT} = rescue-daemon 备份入口；${ENGINE_PORT} = 引擎（**不动**）`);
+
+	// 0) 目标合法性闸门（t14-F1）：全局性动作（删 HKCU 下的 DSHWeb*）之前必须先确认目标像样的 profile。
+	//    目标不合法时**一个动作都不做**（不删注册表、不删 shim、不碰 pid、不结束进程），退出码 1。
+	const target = looksLikeProfileDir(args.profile);
+	if (!target.ok) {
+		result.ok = false;
+		result.exitCode = 1;
+		result.profileRejected = target.reason;
+		lines.push(`✘ 拒绝执行：${target.reason}`);
+		lines.push("   原因：卸载会删除 HKCU\\...\\Run 下**全局**的 DSHWeb* 自启值，必须先有明确且合法的 profile 目标。");
+		lines.push("   请检查 --profile 是否漏了取值（例如后面紧跟另一个开关）、是否写成了 = 形式、或目录是否真的存在。");
+		lines.push("   退出码 1（用法/目标错误）；本次执行未改动任何注册表值、pid 文件与进程。");
+		result.message = lines.join("\n");
+		return result;
+	}
+
+	// 1) 停本 profile 的守护（三重校验，不过就一律不动）
+	const owned = collectOwnedDaemons(args, probes);
+	if (owned.blocked.length > 0) {
+		result.blocked = owned.blocked;
+		lines.push("1) 停守护：⚠ 归属校验不通过，**拒绝处理任何进程**（不会 taskkill /T，也不会动别的 profile 的守护）：");
+		for (const reason of owned.blocked) lines.push(`   · ${reason}`);
+		lines.push("   → 若确认这些进程就是本 profile 的启动器，请人工结束后再重跑 --uninstall。");
+	} else if (owned.note) {
+		lines.push(`1) 停守护：${owned.note}`);
+		if (owned.lockPortOwner) {
+			lines.push(`   ⚠ 锁端口 ${owned.lockPort} 仍被 pid ${owned.lockPortOwner} 占用：无法确认归属，未结束该进程（如需清理请人工确认）。`);
+		}
+	} else if (owned.candidates.length === 0) {
+		lines.push("1) 停守护：.open-boot.pid 里没有任何进程记录（无需停止）");
+	} else {
+		lines.push("1) 停守护（先守护、后启动器；逐个进程三重校验通过才动）：");
+		// 先停持有锁端口的守护，再停启动器服务
+		const ordered = [...owned.candidates].sort((a, b) => Number(Boolean(b.holdsLock)) - Number(Boolean(a.holdsLock)));
+		for (const item of ordered) {
+			if (item.verified === false) {
+				// 探测不可用 → 归属未确认：不动、不删 pid 文件、不报告完成（F2）
+				result.unverified.push({ ...item });
+				lines.push(`   · ⚠ 归属未确认，跳过 pid ${item.pid}（${item.role}）：${item.reason}`);
+				continue;
+			}
+			if (!item.owned) {
+				result.skipped.push({ ...item });
+				lines.push(`   · 跳过 pid ${item.pid}（${item.role}）：${item.reason}`);
+				continue;
+			}
+			const stopped = await stopOwnedPid(item.pid);
+			lines.push(`   · ${stopped.ok ? "✔" : "✘"} pid ${item.pid}（${item.role}）：${stopped.message}；依据：${item.reason}`);
+			if (stopped.ok) result.stopped.push({ pid: item.pid, role: item.role });
+			else { result.ok = false; result.blocked.push(stopped.message); }
+		}
+	}
+
+	// 2) 删 HKCU\...\Run 下所有 DSHWeb* 值
+	const reg = removeDsWebRunValues();
+	result.removedValues = reg.removed;
+	lines.push(`2) 自启注册表：${reg.message}`);
+	if (reg.failed.length > 0) {
+		result.ok = false;
+		for (const item of reg.failed) lines.push(`   ✘ ${item.name}：${item.message}`);
+	}
+	lines.push(`   （${RUN_KEY}）`);
+
+	// 3) 删 profile 内的 shim
+	const shims = [autostartShimPath(args), uiShimPath(args)];
+	const deleted = [];
+	const failedShims = [];
+	for (const file of shims) {
+		if (!existsSync(file)) continue;
+		try { unlinkSync(file); deleted.push(file); }
+		catch (error) { failedShims.push(`${file}（${error.message}）`); }
+	}
+	result.deletedShims = deleted;
+	lines.push(deleted.length > 0
+		? `3) 包装脚本：已删除 ${deleted.map((p) => p.split(/[\\/]/).pop()).join(", ")}`
+		: "3) 包装脚本：未发现 open-boot-autostart.vbs / open-boot-ui.vbs（无需删除）");
+	if (failedShims.length > 0) { result.ok = false; lines.push(`   ✘ 删除失败：${failedShims.join("；")}`); }
+
+	// 4) 清 pid 文件（日志默认保留）。注意：下面三种情况都要**保留** pid 文件 —— 它是用户手工收尾的唯一线索：
+	//    a) 归属未确认（探测不可用）：不知道守护是否还在，不能删线索、更不能报"完成"（F2）；
+	//    b) 已确认属于本 profile 的进程没停下来（例如权限不足）；
+	//    c) 删除本身失败。
+	const stillOwned = (owned.candidates || []).filter((item) => item.owned && aliveOf(item.pid));
+	const unverifiedAlive = owned.unverified || [];
+	try {
+		if (unverifiedAlive.length > 0) {
+			result.pidCleared = false;
+			result.pidRetained = true;
+			lines.push(`4) PID 文件：**保留** ${pidPathOf(args)} —— 归属未确认（探测不可用），未停止任何进程，也不把这次执行当作"卸载完成"；`);
+			lines.push(`   人工核对建议：netstat -ano -p tcp | findstr :${args.port} ／ tasklist /FI "PID eq <pid>" ／ 或在任务管理器确认 pid ${unverifiedAlive.map((item) => item.pid).join(", ")} 后手工结束并重跑 --uninstall`);
+		} else if (stillOwned.length > 0) {
+			result.pidCleared = false;
+			result.pidRetained = true;
+			lines.push(`4) PID 文件：保留 ${pidPathOf(args)}（仍有本 profile 的进程在跑：${stillOwned.map((item) => `pid ${item.pid}`).join(", ")}；解决后请重跑 --uninstall）`);
+		} else if (existsSync(pidPathOf(args))) {
+			unlinkSync(pidPathOf(args));
+			result.pidCleared = true;
+			lines.push(`4) PID 文件：已清理 ${pidPathOf(args)}`);
+		} else {
+			lines.push("4) PID 文件：不存在（无需清理）");
+		}
+	} catch (error) {
+		result.ok = false;
+		lines.push(`4) PID 文件：清理失败 —— ${error.message}`);
+	}
+
+	lines.push("5) 日志默认保留（open-boot*.log / health.log / rescue-daemon.log 未被删除；需要彻底清理可直接删 profile 目录）");
+	// 退出码：1（出错）> 2（归属未确认）> 0（完成）。只有 0 才叫"卸载完成"。
+	result.exitCode = result.ok === false ? 1 : (unverifiedAlive.length > 0 ? 2 : 0);
+	result.ok = result.exitCode === 0;
+	if (result.exitCode === 0) {
+		lines.push("✔ 卸载完成（幂等：重复执行仍然 exit 0）");
+	} else if (result.exitCode === 2) {
+		lines.push(`⚠ 卸载未完成（exit 2）：${unverifiedAlive.length} 个进程的归属无法确认（netstat/tasklist 探测不可用）→`
+			+ " 已保留 pid 文件、未停止任何进程。请按上面的「人工核对建议」确认后重跑，或在不受限的会话里重跑 --uninstall。");
+	} else {
+		lines.push("✘ 卸载未完全成功，见上面的 ✘ 行（exit 1）");
+	}
+	result.message = lines.join("\n");
+	return result;
 }
 
 // ---------------------------------------------------------------- 网页入口
-const PAGE_HTML = `<!doctype html>
+/**
+ * 启动页 HTML（自包含）。
+ * L11：一次性令牌通过 `<meta name="dsh-pm-token">` 注入页面，页面对 `/api/boot` 的写请求
+ * 必须带 `X-DSH-PM-Token`；令牌只存在于页面与请求头，**不写日志、不落 profile 文件**。
+ */
+function bootPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, entryUrl = ENTRY_URL } = {}) {
+	return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>DSH 启动器</title>
+<meta name="dsh-pm-token" content="${token}">
 <style>
 body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:40px 24px;display:flex;justify-content:center}
 .card{max-width:560px;width:100%;background:#1a1d24;border:1px solid #2a2e38;border-radius:12px;padding:24px;text-align:center}
@@ -642,33 +1263,36 @@ h1{font-size:20px;color:#fff;margin:0 0 6px}.sub{color:#8b93a3;font-size:13px;ma
 .spinner{width:34px;height:34px;border:3px solid #2a2e38;border-top-color:#60a5fa;border-radius:50%;margin:0 auto 16px;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;font-size:12px;text-align:left;white-space:pre-wrap;max-height:280px;overflow:auto}
-.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}
+.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}a{color:#60a5fa}
 </style></head><body><div class="card">
 <h1>🚀 DSH 启动器</h1>
 <div class="sub">正在执行 自检 → 修复 → 启动，完成后自动打开主界面…</div>
 <div class="spinner" id="spin"></div>
 <pre id="out"></pre>
+<div class="sub" style="margin:16px 0 0">引擎起不来？打开 <a href="/rescue">救援中心</a>（检查 / 修复 / 启动 / 停止 / 状态）</div>
 <script>
 const out = document.getElementById("out");
+const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
 function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + String(line).replace(/</g,'&lt;') + (cls?'</span>':'') + "\\n"; }
 (async () => {
 	try {
-		const r = await fetch("/api/boot", { method: "POST" }).then((x) => x.json());
+		const r = await fetch("/api/boot", { method: "POST", headers: { "X-DSH-PM-Token": TOKEN } }).then((x) => x.json());
 		if (r.ok && r.alreadyRunning) {
 			log("✓ " + r.message, "ok");
-			location.href = "http://127.0.0.1:${ENGINE_PORT}/";
+			location.href = "http://127.0.0.1:${enginePort}/";
 			return;
 		}
+		if (r.code === 409) { log("⚠ " + (r.error || "已有启动流程在执行中"), "warn"); return; }
 		if (r.verifyOk === false) log("自检：⚠ 发现 " + (r.issues||[]).length + " 个问题", "warn");
 		else if (r.verifyOk === true) log("自检：✓ 配置正常", "ok");
 		if (r.fixed) log("修复：" + (r.fixed.message || "完成"), "ok");
 		if (r.window && r.window.ok) log("⧉ " + r.window.message + "（窗口里可看到完整进度，结束时按任意键关闭）", "warn");
-		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${ENGINE_PORT}/", 600); }
-		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${ENGINE_PORT}/", 600); }
+		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 600); }
+		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 600); }
 		else {
 			log("✗ " + (r.message || JSON.stringify(r)), "bad");
 			if (r.logPath) log("日志：" + r.logPath, "warn");
-			log("可运行 node bin/open-boot.mjs --status 查看启动器/守护/引擎状态", "warn");
+			log("可运行 node bin/open-boot.mjs --status 查看启动器/守护/引擎状态，或打开 " + location.origin + "/rescue 救援中心", "warn");
 			document.getElementById("spin").style.display = "none";
 		}
 	} catch (e) {
@@ -678,38 +1302,86 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 })();
 </script>
 </div></body></html>`;
+}
 
 function startServer(args) {
 	const startedAt = new Date().toISOString();
+	// L11 ②：一次性令牌（每次启动随机生成）——只注入页面 meta 与请求头，**不写日志、不落 profile 文件**
+	const token = newApiToken();
+	// L11 ③：boot 与救援 /api/start 共用同一个单飞闸门
+	const flight = createSingleFlight("open-boot:boot");
+	const rescueCtx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
+	const sendJson = (res, code, body) => {
+		res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+		res.end(JSON.stringify(body));
+	};
+	/** L11 ①②：写接口的 Origin + 令牌检查。返回 true 表示已拒绝并应答。 */
+	const rejectWrite = (req, res) => {
+		const failure = guardWriteRequest(req, { port: args.port, token });
+		if (!failure) return false;
+		sendJson(res, failure.status, { ok: false, code: failure.code, error: failure.message });
+		return true;
+	};
+	const sendHtml = (res, html) => {
+		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+		res.end(html);
+	};
+
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
-		if (url.pathname === "/" || url.pathname === "/rescue") {
-			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(PAGE_HTML);
+		const pathname = url.pathname;
+		if (pathname === "/") {
+			sendHtml(res, bootPageHtml({ token, enginePort: ENGINE_PORT }));
 			return;
 		}
-		if (url.pathname === "/api/boot" && req.method === "POST") {
+		// R7：3081 = 唯一网页入口，且**自身提供完整救援能力**。
+		// 救援 API 复用 rescue-daemon 的 handleApi，挂在独立前缀 /rescue/api/* 下，
+		// 因此 `/api/status` 的身份语义（app=dsh-open-boot）不受影响（launcherHealth 照旧可用）。
+		if (pathname === "/rescue" || pathname === "/rescue/") {
+			sendHtml(res, rescuePageHtml({
+				apiPrefix: "/rescue", enginePort: ENGINE_PORT, entryUrl: `http://127.0.0.1:${args.port}/`, token
+			}));
+			return;
+		}
+		if (pathname === "/rescue/api" || pathname.startsWith("/rescue/api/")) {
+			const sub = pathname.slice("/rescue".length) || "/api/status";
+			if (req.method === "POST" && rejectWrite(req, res)) return;
+			await handleRescueApi(sub, req.method, req, res, url, rescueCtx);
+			return;
+		}
+		if (pathname === "/api/boot" && req.method === "POST") {
+			if (rejectWrite(req, res)) return;
+			const entered = flight.tryEnter("open-boot:/api/boot");
+			if (!entered.ok) {
+				// L11 ③：并发第二个写请求 → 409（不会重复拉起引擎/重复弹窗）
+				sendJson(res, 409, {
+					ok: false, code: 409, busy: true,
+					error: `已有启动流程在执行中（已进行 ${Math.round(entered.waited / 1000)}s）：本次请求被拒，不会重复拉起引擎。` +
+						`请等待当前流程结束后重试。`
+				});
+				return;
+			}
 			try {
 				const result = await boot(args);
-				res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-				res.end(JSON.stringify(result));
+				sendJson(res, 200, result);
 			} catch (error) {
-				res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
-				res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+				sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			} finally {
+				flight.leave(entered.entry);
 			}
 			return;
 		}
-		if (url.pathname === "/api/status") {
-			// app/identity 字段供 enginectl.launcherHealth 做 HTTP 握手身份校验
+		if (pathname === "/api/status") {
+			// app/identity 字段供 enginectl.launcherHealth 做 HTTP 握手身份校验（读取类接口不加防护）
 			const engine = await engineHealth(ENGINE_PORT);
-			res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-			res.end(JSON.stringify({
+			sendJson(res, 200, {
 				app: LAUNCHER_APP, identity: LAUNCHER_APP, pid: process.pid, port: args.port,
 				profile: args.profile, startedAt, version: readVersion(),
 				engineUp: engine.ok, enginePort: ENGINE_PORT,
 				engineMarker: engine.marker || null, engineHttpStatus: engine.status ?? null,
-				window: args.window
-			}));
+				window: args.window,
+				rescuePage: "/rescue", rescueApiPrefix: "/rescue/api"
+			});
 			return;
 		}
 		res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
@@ -719,7 +1391,8 @@ function startServer(args) {
 	server.on("error", async (error) => {
 		if (error.code === "EADDRINUSE") {
 			// 审计③ L4/L12：不再静默 +1 漂移端口（那会让浏览器主页指向别人的服务）。
-			const mine = await launcherHealth(args.port);
+			// 注意用二次确认：负载高时单次 1.5s 握手会超时，否则会把"自己的实例"误报成别人的进程。
+			const mine = await launcherHealthWithRetry(args.port);
 			if (mine.ok) {
 				console.error(`[open-boot] 端口 ${args.port} 上已有${mine.identity}在跑（pid ${mine.json?.pid ?? "?"}），本进程退出。`);
 				process.exit(0);
@@ -738,6 +1411,9 @@ function startServer(args) {
 	server.listen(args.port, "127.0.0.1", () => {
 		console.log(`[open-boot] 就绪：http://127.0.0.1:${args.port}/（浏览器主页设为此地址即可"打开即自检启动"）`);
 		console.log(`[open-boot] profile: ${args.profile}；引擎端口: ${ENGINE_PORT}；拉起引擎时${args.window ? "弹窗显示进度" : "静默启动"}；cwd: ${process.cwd()}`);
+		console.log(`[open-boot] 救援能力（唯一网页入口）：http://127.0.0.1:${args.port}/rescue（/rescue/api/*：verify|fix|start|stop|status）；` +
+			`rescue-daemon 备份入口默认 ${RESCUE_DAEMON_PORT}（不再抢占 ${args.port}）`);
+		console.log(`[open-boot] 写接口防护：/api/boot 与 /rescue/api/* 的 POST 需同源 Origin + 一次性令牌（页面自动带上，不写日志/不落盘）`);
 	});
 	return server;
 }
@@ -746,17 +1422,33 @@ function startServer(args) {
 async function main(argv = process.argv.slice(2)) {
 	const args = parseArgs(argv);
 	if (args.help) { console.log(HELP_TEXT); return 0; }
-	if (args.unknown.length > 0) {
-		console.error(`[open-boot] ⚠ 无法识别的参数（已忽略）：${args.unknown.join(" ")}（用 --help 查看用法）`);
+	// 用法错误（如 --profile 缺值/被开关占用）：**在任何动作之前**返回 —— 不装崩溃日志、不 build 目录、
+	// 不写日志、不动注册表/pid/进程；用法打 stderr，退出码归入既有的 1=出错。
+	if (args.usageError) {
+		console.error(`[open-boot] ✘ 用法错误：${args.usageError}`);
+		console.error(HELP_TEXT);
+		return 1;
 	}
-	// 只读查询（--status/--autostart-status）不改 profile、不写日志；
+	// 未识别 token：全局子命令直接用法错误（t20），其余模式保持"警告并忽略"
+	const unknownPolicy = unknownTokenPolicy(args);
+	if (unknownPolicy.message) {
+		if (unknownPolicy.reject) {
+			console.error(`[open-boot] ✘ 用法错误：${unknownPolicy.message}`);
+			console.error(HELP_TEXT);
+			return 1;
+		}
+		console.error(`[open-boot] ⚠ ${unknownPolicy.message}`);
+	}
+	// 只读查询（--status/--autostart-status）不装崩溃日志（那会在退出时写 supervisor 日志）；
+	// --uninstall 是短命令，也不需要崩溃落盘（否则清完 pid 又会新写一行日志）。
 	// 长命/启动类模式才装崩溃日志并切到稳定 cwd（审计③ L2/L3）。
-	const queryOnly = args.status || args.autostart === "status";
-	if (!queryOnly) {
+	const lightRun = args.status || args.autostart === "status" || args.uninstall;
+	if (!lightRun) {
 		installCrashLogging(args);
 		chdirStable(args.cwd);
 	}
 
+	if (args.uninstall) { const r = await uninstallLauncher(args); console.log(r.message); return r.exitCode ?? (r.ok ? 0 : 1); }
 	if (args.autostart === "install") { const r = installAutostart(args); console.log(r.message); return r.ok ? 0 : 1; }
 	if (args.autostart === "uninstall") { const r = uninstallAutostart(args); console.log(r.message); return r.ok ? 0 : 1; }
 	if (args.autostart === "status") { const r = await autostartStatus(args); console.log(r.message); return r.ok ? 0 : 1; }
@@ -791,4 +1483,7 @@ if (isDirectRun()) {
 	if (code !== null) process.exit(code);
 }
 
-export { HELP_TEXT, autostartStatus, buildShimLines, installAutostart, installCrashLogging, main, parseArgs, reportStatus, uninstallAutostart, writeShim };
+export {
+	HELP_TEXT, autostartStatus, bootPageHtml, buildShimLines, healthLogPath, installAutostart, installCrashLogging,
+	main, parseArgs, reportStatus, startServer, uninstallAutostart, writeShim
+};

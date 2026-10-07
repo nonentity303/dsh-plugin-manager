@@ -316,9 +316,46 @@ function parseRegQueryOutput(text) {
 	const values = [];
 	for (const line of String(text || "").split(/\r?\n/)) {
 		const m = /^\s{2,}(\S+)\s+(REG_[A-Z_]+)\s+(.*)$/.exec(line);
-		if (m) values.push({ name: m[1], type: m[2], data: m[3].trim() });
+		if (!m) continue;
+		// 键存在但没有具名值时，`reg query` 会打出一行 `(Default) REG_SZ (value not set)`：
+		// 那是"未设置的默认值"，不是一条真值 → 不计入（保证"键在但无值"落到空集语义）。
+		if (m[1] === "(Default)" && /^\(value not set\)$/i.test(m[3].trim())) continue;
+		values.push({ name: m[1], type: m[2], data: m[3].trim() });
 	}
 	return values.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/**
+ * t27：「注册表键/值不存在」不等于「读取被拦截」。
+ *
+ * CI（全新 Windows runner）首次真实运行挂在 1/345：
+ * `open-boot --autostart-status: 只读 … — before=(读取失败) after=(读取失败)`。
+ * 根因：全新用户配置里 `HKCU\...\Run` 可能**压根不存在**（或没有值），`reg query` 以退出码 1 +
+ * `ERROR: The system was unable to find the specified registry key or value.`（中文系统为「错误: 系统找不到指定的注册表项或值。」）
+ * 结束 —— 而旧助手把任何非零退出都当"读取失败"（null），于是 before/after 都是 null，断言误报。
+ * 但"读不到就判失败"本身是对的（防 `[] == []` 假通过），所以要分三类：
+ *   ① 键/值不存在（exit≠0 且输出含 unable to find / 找不到 / 系统找不到）→ **空集**（0 个值），不是失败；
+ *   ② 键存在但无值（exit 0，只有键路径或 `(Default) … (value not set)`）→ **空集**；
+ *   ③ 真被拦截/超时/其它非零退出（spawn EPERM、ETIMEDOUT、无 not-found 标记的错误）→ **读取失败（null）**。
+ * 纯函数：任意机器都能稳定单测（不需要真实注册表状态）。
+ */
+const REG_NOT_FOUND_MARKERS = [/unable to find/i, /cannot find/i, /找不到/, /无法找到/i, /not found/i];
+
+/** @returns {{kind:"values"|"empty"|"failure", values:Array|null, reason:string|null}} */
+function classifyRegQuery({ status, stdout, stderr, error } = {}) {
+	if (error) return { kind: "failure", values: null, reason: `${error.code || "spawn-error"} ${error.message}`.trim() };
+	const text = `${stdout || ""}\n${stderr || ""}`;
+	if (status === 0) return { kind: "values", values: parseRegQueryOutput(stdout || ""), reason: null };
+	const message = (stderr || stdout || "").trim();
+	if (REG_NOT_FOUND_MARKERS.some((re) => re.test(text))) {
+		return { kind: "empty", values: [], reason: `键/值不存在（reg query exit ${status}）：${message.slice(0, 160)}` };
+	}
+	return { kind: "failure", values: null, reason: `读取失败（reg query exit ${status}）：${message.slice(0, 160) || "无输出"}` };
+}
+
+/** 读取结果 → 值数组；只有"真失败"才是 null（`[]` 表示"确实没有值"）。 */
+function regValuesOrNull(classified) {
+	return classified.kind === "failure" ? null : classified.values;
 }
 
 /**
@@ -330,12 +367,15 @@ function regSignature(values, prefix = null) {
 	return JSON.stringify(picked.map((v) => `${v.name}\t${v.type}\t${v.data}`));
 }
 
-/** 读整把 Run 键（已排序）；读不到返回 null（≠ 空键）。 */
+/**
+ * 读整把 Run 键（已排序）。
+ * 语义（t27）：**键不存在 / 键存在但无值 → 空集 `[]`**；**真被拦截/出错 → null**（读取失败）。
+ * 二者的区别正是 CI 上 1/345 的根因：全新 runner 没有 Run 键，旧实现把"键不存在"当成了"读取失败"。
+ */
 function regListRunValues() {
 	if (!WIN) return null;
 	const out = spawnSync("reg", ["query", RUN_KEY], { windowsHide: true, encoding: "utf8" });
-	if (out.status !== 0 || !out.stdout) return null;
-	return parseRegQueryOutput(out.stdout);
+	return regValuesOrNull(classifyRegQuery({ status: out.status, stdout: out.stdout, stderr: out.stderr, error: out.error }));
 }
 
 /** 整把 Run 键的签名（只读性断言用；读不到返回 null）。 */
@@ -371,6 +411,60 @@ const dshWebEntriesText = (values) => {
 		regSignature(orderA) !== regSignature(parseRegQueryOutput(dump([dshLine(original), oneDrive.replace("/background", "/foreground"), webRescue]))));
 	ok("注册表比较: 解析器忽略键路径/空行，只取值行（按 name 排序）",
 		parseRegQueryOutput(dump([oneDrive, dshLine(original)])).map((v) => v.name).join(",") === "DSHWebFront,OneDrive");
+}
+
+// t27：把「键/值不存在」与「读取被拦截」分开（CI 全新 runner 上 1/345 的根因）；
+// 这里是**纯函数**单测：喂真实形态的输入，不依赖本机注册表状态。
+{
+	// ① 键不存在 —— 真实输出（本机 2026-10-06 实测，与全新 runner 同形）：
+	//    reg query "HKCU\...\Run\__t27_nonexistent__"  → exit 1，stdout 空，
+	//    stderr: ERROR: The system was unable to find the specified registry key or value.
+	const realNotFoundEn = {
+		status: 1, stdout: "",
+		stderr: "ERROR: The system was unable to find the specified registry key or value.\r\n",
+		error: undefined
+	};
+	// 同一条命令在中文系统上的形态（本地化不影响判定）
+	const realNotFoundZh = { status: 1, stdout: "", stderr: "错误: 系统找不到指定的注册表项或值。\r\n", error: undefined };
+	// ② 键存在但没有具名值：exit 0 + 只有键路径和未设置的默认值
+	const keyExistsNoValues = {
+		status: 0,
+		stdout: "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    (Default)    REG_SZ    (value not set)\r\n",
+		stderr: "", error: undefined
+	};
+	// 键存在且只有键路径（另一种"无值"形态）
+	const keyExistsBare = { status: 0, stdout: "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n", stderr: "", error: undefined };
+	// ③ 真被拦截 / 超时 / 其它非零退出
+	const blocked = { status: null, stdout: "", stderr: "", error: { code: "EPERM", message: "spawnSync reg EPERM" } };
+	const timedOut = { status: null, stdout: "", stderr: "", error: { code: "ETIMEDOUT", message: "spawnSync reg ETIMEDOUT" } };
+	const otherExit = { status: 2, stdout: "", stderr: "reg: something else went wrong", error: undefined };
+
+	const c1en = classifyRegQuery(realNotFoundEn);
+	const c1zh = classifyRegQuery(realNotFoundZh);
+	const c2 = classifyRegQuery(keyExistsNoValues);
+	const c2b = classifyRegQuery(keyExistsBare);
+	ok("t27①: 键不存在（真实 runner 输出：exit 1 + unable to find）→ 空集，不是读取失败",
+		c1en.kind === "empty" && Array.isArray(c1en.values) && c1en.values.length === 0 && regValuesOrNull(c1en) !== null,
+		`kind=${c1en.kind} values=${JSON.stringify(c1en.values)} reason=${c1en.reason}`);
+	ok("t27①: 中文系统的「系统找不到指定的注册表项或值」同样判为空集",
+		c1zh.kind === "empty" && regValuesOrNull(c1zh).length === 0, `kind=${c1zh.kind} reason=${c1zh.reason}`);
+	ok("t27②: 键存在但无值（exit 0 + (Default)…(value not set) / 只有键路径）→ 空集",
+		c2.kind === "values" && c2.values.length === 0 && c2b.kind === "values" && c2b.values.length === 0,
+		`c2=${JSON.stringify(c2.values)} c2b=${JSON.stringify(c2b.values)}`);
+	ok("t27③: 真被拦截/超时/其它非零退出 → 读取失败（null），不回退成 [] == [] 假通过",
+		regValuesOrNull(classifyRegQuery(blocked)) === null
+		&& regValuesOrNull(classifyRegQuery(timedOut)) === null
+		&& regValuesOrNull(classifyRegQuery(otherExit)) === null
+		&& classifyRegQuery(blocked).kind === "failure" && classifyRegQuery(otherExit).kind === "failure",
+		`blocked=${classifyRegQuery(blocked).reason} other=${classifyRegQuery(otherExit).reason}`);
+	// 关键回归：①情形下「只读」断言成立（两边都是空集、签名相同、且都不是 null）
+	ok("t27: ①情形下 --autostart-status「只读」断言成立（before/after 都是空集、签名相同、非 null）",
+		regValuesOrNull(c1en) !== null && regValuesOrNull(c1zh) !== null
+		&& regSignature(regValuesOrNull(c1en)) === regSignature(regValuesOrNull(c1zh))
+		&& regKeySignature !== null,
+		`sig(en)=${regSignature(regValuesOrNull(c1en))} sig(zh)=${regSignature(regValuesOrNull(c1zh))}`);
+	ok("t27: ③情形下「只读」断言仍然会失败（读取失败 → null，不放宽）",
+		regValuesOrNull(classifyRegQuery(blocked)) === null && regValuesOrNull(classifyRegQuery(timedOut)) === null);
 }
 
 // ---------------------------------------------------------------- 1. enginectl

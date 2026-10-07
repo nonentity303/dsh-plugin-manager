@@ -130,6 +130,7 @@ const SKIP_KINDS = {
 	"并发冲突（共享端口/资源被别的实例占用）": 0,
 	"环境异常（用例前提被本会话破坏：端口被占/被代理应答）": 0,
 	"环境异常（资源暂时不可用：ENOBUFS/ETIMEDOUT 等）": 0,
+	"环境分支不适用（另一分支断言在本环境生效）": 0,
 	"环境缺失（平台不支持/命令不存在）": 0,
 	"其它": 0
 };
@@ -214,6 +215,18 @@ function raiseBoundaryEvidence(...sources) {
 		.join(" | ")
 		.replace(/\s+/g, " ")
 		.slice(0, 400);
+}
+
+/**
+ * t15：C-06/P-03 的**环境感知**判据（纯函数，便于双向负控）—— 快路径是否命中取决于环境：
+ *  - 命中（默认候选里有真实存在的目录）→ 本环境必须**不发起同步探测**：`pending=true` + `attempts=0` + note 说明后台探测；
+ *  - 未命中（runner 的全新用户配置：`%APPDATA%\npm\node_modules` 等一个都不存在）→ 按设计走**同步探测回退**：
+ *    `attempts>=1` + `pending=false`；诚实性（有结论或明确诊断）由调用方另行断言。
+ * CI 上曾因把"命中"写死而 1/445 假失败（GitHub Windows runner 属未命中环境）。
+ */
+function fastPathVerdict({ fastPathAvailable, pending, attempts, note } = {}) {
+	if (fastPathAvailable) return pending === true && attempts === 0 && /后台异步进行/.test(String(note ?? ""));
+	return attempts >= 1 && pending === false;
 }
 
 /**
@@ -2547,7 +2560,7 @@ console.log("== 17. 跨平台与工具类修复（t4：C-05 弹窗假成功 / C-
 	const platformMod = await import("./lib/platform.js");
 	const {
 		npmGlobalRootChain, npmGlobalRootReport, npmGlobalRoots, probeNpmGlobalRootDetailed, resolveNpmCliPath,
-		npmRootFromPrefix, scanVersionDirs, NPM_GLOBAL_ROOT_COVERAGE
+		npmRootFromPrefix, scanVersionDirs, scanVersionManagerDirs, NPM_GLOBAL_ROOT_COVERAGE
 	} = platformMod;
 
 	// ---- 17.1 C-05：命令构造是纯函数，且两个平台的旧形态都被拿掉 ----
@@ -2692,9 +2705,84 @@ console.log("== 17. 跨平台与工具类修复（t4：C-05 弹窗假成功 / C-
 			npmGlobalRoots().length > 0 && report.existing.length > 0,
 			`roots=${npmGlobalRoots().length} existing=${report.existing.length} problems=${report.problems.join(" / ").slice(0, 160)}`,
 			[...(report.probe.attempts ?? []).map((a) => a.error).filter(Boolean), ...report.problems].join(" | "));
-		ok("C-06/P-03: 首次调用不阻塞——快路径命中时**不发起同步探测**（probe.attempts 为空 + pending 标记）",
-			report.probe.pending === true ? report.probe.attempts.length === 0 && /后台异步进行/.test(report.probe.note ?? "") : report.problems.length > 0,
-			JSON.stringify({ pending: report.probe.pending, attempts: report.probe.attempts.length, problems: report.problems.length }));
+		// t15：这条曾在 CI（GitHub Windows runner）上 1/445 假失败 —— runner 是全新用户配置，
+		// 「平台默认候选目录」一个都不存在 → 按 t4 的设计走**同步探测回退**（attempts=1、pending=false），
+		// 而旧断言写死了"快路径必命中、不发起同步探测"。现在改成**环境感知**：
+		// 先独立算一遍"快路径是否可命中"（与 platform.js 的 peek 同输入：env/home/scans + 空 probes），再按环境断言。
+		const npmRootHome = homedir();
+		const npmRootScans = scanVersionManagerDirs(process.platform, npmRootHome);
+		const fastPathPeek = npmGlobalRootChain({
+			platform: process.platform, env: process.env, home: npmRootHome, probes: {}, scans: npmRootScans
+		});
+		const fastPathAvailable = fastPathPeek.existing.length > 0;
+		const branchNote = fastPathAvailable
+			? `本环境默认候选存在（existing=${fastPathPeek.existing.length}）→ 断言 ①：快路径零同步探测`
+			: `本环境默认候选一个都不存在（existing=0，与 GitHub runner 同形）→ 断言 ②：按设计走同步探测回退`;
+		console.log(`NOTE t15 C-06/P-03 环境分支：${branchNote}`);
+		if (fastPathAvailable) {
+			sandboxAwareOk("C-06/P-03①: 默认候选存在 → 快路径命中，**不发起同步探测**（probe.attempts 为空 + pending 带 note；P-03 核心目标）",
+				fastPathVerdict({ fastPathAvailable: true, pending: report.probe.pending, attempts: report.probe.attempts.length, note: report.probe.note }),
+				`fastPathAvailable=true existing=${fastPathPeek.existing.length} pending=${report.probe.pending} attempts=${report.probe.attempts.length} note=${String(report.probe.note ?? "").slice(0, 70)}`,
+				null);
+		} else {
+			envSkip("C-06/P-03①: 默认候选存在 → 快路径命中，不发起同步探测",
+				`本环境默认候选一个都不存在（existing=0）→ 本分支不适用，由 ② 分支断言`, "环境分支不适用（另一分支断言在本环境生效）");
+		}
+		if (!fastPathAvailable) {
+			// 诚实性：要么给了候选（且存在的候选/明确诊断至少有一个），要么明确说"探测不可用" —— 不得在没有任何来源时报"已确认"
+			const reportHonest = report.probe.pending === false && (report.roots.length > 0
+				? (report.existing.length > 0 || report.problems.length > 0)
+				: report.problems.some((p) => /探测不可用|候选链为空/.test(p)));
+			sandboxAwareOk("C-06/P-03②: 默认候选不存在（runner 同形）→ **走同步探测回退**，且报告诚实（attempts>=1、pending=false、有结论或明确诊断）",
+				fastPathVerdict({ fastPathAvailable: false, pending: report.probe.pending, attempts: report.probe.attempts.length, note: report.probe.note }) && reportHonest,
+				`fastPathAvailable=false pending=${report.probe.pending} attempts=${report.probe.attempts.length} roots=${report.roots.length} existing=${report.existing.length} source=${report.probe.source ?? "(null)"} problems=${report.problems.join(" / ").slice(0, 120)}`,
+				raiseBoundaryEvidence(...report.probe.attempts.map((a) => a.error).filter(Boolean)));
+		} else {
+			envSkip("C-06/P-03②: 默认候选不存在 → 走同步探测回退且报告诚实",
+				`本环境默认候选存在（existing=${fastPathPeek.existing.length}）→ 本分支不适用，由 ① 分支断言`, "环境分支不适用（另一分支断言在本环境生效）");
+		}
+		// t15 环境 B（**注入式空候选列表 = runner 同形**）：不依赖机器状态地复现"一个默认候选目录都不存在"
+		// 时的形态 —— 同步探测回退（attempts>=1、pending=false）+ 报告诚实（候选都不存在时必须有明确诊断，
+		// 不得静默返回空、也不得在没有任何来源时报"已确认"）。
+		{
+			const runnerProbe = probeNpmGlobalRootDetailed({ env: process.env, platform: process.platform });
+			const runnerShaped = npmGlobalRootChain({
+				platform: process.platform, env: process.env, home: npmRootHome, scans: npmRootScans,
+				probes: { root: runnerProbe.root, source: runnerProbe.source, attempts: runnerProbe.attempts },
+				exists: () => false // ← 注入"一个候选都不存在"（GitHub runner 的全新用户配置同形）
+			});
+			const runnerHonest = runnerShaped.probe.pending === false && (runnerShaped.roots.length > 0
+				? (runnerShaped.existing.length > 0 || runnerShaped.problems.length > 0)
+				: runnerShaped.problems.some((p) => /探测不可用|候选链为空/.test(p)));
+			ok("t15 环境 B（注入式空候选 = runner 同形）: 走同步探测回退 + 报告诚实（不静默、不谎称已确认）",
+				fastPathVerdict({ fastPathAvailable: false, pending: runnerShaped.probe.pending, attempts: runnerShaped.probe.attempts.length, note: runnerShaped.probe.note }) && runnerHonest,
+				`roots=${runnerShaped.roots.length} existing=${runnerShaped.existing.length} pending=${runnerShaped.probe.pending} attempts=${runnerShaped.probe.attempts.length} problems=${runnerShaped.problems.join(" / ").slice(0, 130)}`);
+		}
+		// t15 双向负控（可证伪）：假定两种"实现退化"发生，上面的断言必须**真的会 FAIL**（记录真实失败输出后回滚计数）
+		{
+			const failuresBefore = failures.length;
+			const checksBefore = checks;
+			const skippedBefore = skipped.length;
+			ASSERT_SILENT = true;
+			ok("C-06/P-03 负控样本①（总是同步探测）", fastPathVerdict({ fastPathAvailable: true, pending: false, attempts: 1, note: null }),
+				JSON.stringify({ pending: false, attempts: 1, note: null }));
+			const ctrl1 = failures[failures.length - 1] ?? "(未记录失败)";
+			ok("负控样本②（候选不存在却仍报 pending）", fastPathVerdict({ fastPathAvailable: false, pending: true, attempts: 0, note: "后台异步进行" }),
+				JSON.stringify({ pending: true, attempts: 0 }));
+			const ctrl2 = failures[failures.length - 1] ?? "(未记录失败)";
+			ASSERT_SILENT = false;
+			failures.length = failuresBefore;
+			skipped.length = skippedBefore;
+			checks = checksBefore;
+			// 真实失败输出（带 NEGCTRL 前缀，读日志的人不会把负控误判成套件失败）
+			console.log(`NEGCTRL t15①: 期望 FAIL 并已记录 → ${ctrl1}`);
+			console.log(`NEGCTRL t15②: 期望 FAIL 并已记录 → ${ctrl2}`);
+			ok("t15 双向负控（可证伪）: ①「总是同步探测」被判 FAIL；②「候选不存在仍报 pending」被判 FAIL；两个正样本（本环境的两种合法形态）判 OK",
+				ctrl1.includes("负控样本①") && ctrl2.includes("负控样本②")
+				&& fastPathVerdict({ fastPathAvailable: true, pending: true, attempts: 0, note: "在后台异步进行中" }) === true
+				&& fastPathVerdict({ fastPathAvailable: false, pending: false, attempts: 1, note: null }) === true,
+				`ctrl1="${ctrl1.slice(0, 80)}" | ctrl2="${ctrl2.slice(0, 80)}"`);
+		}
 		const perfScript = `
 			const m = await import(${JSON.stringify(new URL("./lib/platform.js", import.meta.url).href)});
 			const t1 = Date.now();

@@ -6,7 +6,7 @@
 
 > Community plugin — not an official DSH package. npm: `dsh-plugin-manager-pro` · GitHub: [nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · Cross-platform (Windows / macOS / Linux).
 >
-> **Current version 0.9.1** (source of truth: `version` in `package.json`; the previous published release is 0.9.0, shipped to npm and GitHub Releases on 2026-09-30).
+> **Published release 0.9.1** (npm `latest`); the repo's `package.json` `version` is now **`0.9.1-rc2`** — a **pre-release** shipped under the **`next`** dist-tag (`npm i dsh-plugin-manager-pro@next`) that does **not** move `latest`; the previous published release is 0.9.0 (npm + GitHub Releases, 2026-09-30).
 > Check what is published any time with `npm view dsh-plugin-manager-pro version`; tags: <https://github.com/nonentity303/dsh-plugin-manager/tags>.
 > ⚠️ A brand-new release is blocked by pnpm's 24 h cool-down (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
 
@@ -61,7 +61,7 @@ The leading competitor [LX2000WASD/dsh-web-plugin-manager](https://github.com/LX
 
 Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plugin manager" and all five sections — that is Figure 1.
 
-> **Which version should I install?** DSH **0.1.6 or later → 0.9.1**; **old engines (before 0.1.6) → 0.8.2**. Full matrix under "Requirements".
+> **Which version should I install?** DSH **0.1.6 or later → 0.9.1** (to try the pre-release: `npm i dsh-plugin-manager-pro@next` = **0.9.1-rc2**, shipped under the `next` dist-tag, does not move `latest`); **old engines (before 0.1.6) → 0.8.2**. Full matrix under "Requirements".
 
 ![Impact preview of a transactional uninstall plus the rescue/diagnostics entries in the same card](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm4-uninstall-preview.png)
 
@@ -183,20 +183,22 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 
 - Windows 10/11 · macOS · Linux (`/rescue` and the three CLI tools are cross-platform; **`--install-autostart` is Windows-only**, on macOS/Linux use `--supervise` with your own service manager).
 - Node.js ≥ 18 · DeepSeek Harness `dsh` (global or via npx) · `pnpm` (required by `dsh plugin` and the update features).
+  - **`engines.node` in `package.json` is the only statement of record** (currently `>=18.0.0`). Note: **0.9.1 fails to load on Node 18/20** (a top-level named import of `node:module`'s `findPackageJSON`, which only exists since Node **22.14** → link-time `SyntaxError`, the whole plugin never loads); **on Node 18/20 use 0.9.1-rc2 or newer** — it uses a namespace import + runtime feature detection + a fallback resolver, guarded by the static gate `node tools/dev/compat-scan.mjs --root .` (measured on this version: `blocker=0`, exit 0; on the published 0.9.1 tarball: `blocker=1`).
 - **The engine version decides which manager version you install** (table below) — installing the wrong one means no plugin page, or a profile that will not start.
 
 ### Engine compatibility matrix (engine × manager)
 
 | Your DSH engine | Manager version | Status | Verified | Notes / sources |
 |---|---|---|---|---|
-| **0.1.7-rc.2** | **0.9.1** (current; previous release 0.9.0) | ✅ works | 0.9.0: 2026-09-28 rehearsal + clean-environment install; 0.9.1: all four test suites green (incl. **348 launcher assertions** — 19 of them are SKIPped as a sandbox boundary in restricted sessions; SKIPs count neither as pass nor as fail; **the count of record is the output of `node test-launcher.mjs --strict`**) | Isolated rehearsal environment (separate `DSH_HOME` + ports): engine boots cleanly, sidebar "Plugin manager", all five sections (Figures 1–3 come from it). Sources: `docs/releases/0.9.0.md`, `docs/releases/0.9.0-verify.md`, `docs/releases/RELEASE_NOTES_0.8.3-1.md`, [docs/RELEASING.md](docs/RELEASING.md) |
-| **0.1.6 and later** (incl. 0.1.6-alpha.2) | **0.9.1** (recommended) | ✅ recommended (takes over the built-in page) | 0.1.7-rc.2 verified; **0.1.6-alpha.x not tested individually** | The official page became part of the engine in 0.1.6; the `ui-plugin-manager` row our `cordis.patch.yml` disables is exactly that page (`@deepseek-ai/dsh-client-ui-plugin-manager`) |
+| **0.1.7-rc.2** | **0.9.1** (published) · **0.9.1-rc2** (pre-release, `next` dist-tag) | ✅ works | 0.9.0: 2026-09-28 rehearsal + clean-environment install; 0.9.1: all four test suites green; **0.9.1-rc2 (pre-release)**: launcher suite independently verified **448 checks / 418 OK / 30 SKIP(env) / 0 FAIL**, exit 0 (2026-10-07; all 30 SKIPs are sandbox boundaries, **not product failures**); static compat gate `compat-scan` on the candidate tarball **exit 0 / blocker 0** (the published 0.9.1 tarball reports blocker 1 / exit 2); it also carries the performance fixes (client bundle **792,931 → 255,903 B**, host hot-snapshot median **18.8 → 1.1 ms**); **the count of record is the output of `node test-launcher.mjs --strict`** (it moves with the tree) | Isolated rehearsal environment (separate `DSH_HOME` + ports): engine boots cleanly, sidebar "Plugin manager", all five sections (Figures 1–3 come from it). Sources: `docs/releases/0.9.0.md`, `docs/releases/0.9.0-verify.md`, `docs/releases/RELEASE_NOTES_0.8.3-1.md`, [docs/RELEASING.md](docs/RELEASING.md) |
+| **0.1.6 and later** (incl. 0.1.6-alpha.2) | **0.9.1** (recommended) / **0.9.1-rc2** (pre-release) | ✅ recommended (takes over the built-in page) | 0.1.7-rc.2 verified; **0.1.6-alpha.x not tested individually** | The official page became part of the engine in 0.1.6; the `ui-plugin-manager` row our `cordis.patch.yml` disables is exactly that page (`@deepseek-ai/dsh-client-ui-plugin-manager`) |
 | **0.1.0-rc.6 ~ 0.1.5** (engines before 0.1.6) | **0.8.2** | ✅ works (legacy "Settings → Plugins" tab) | 0.8.2 released 2026-09-04; the pre-upgrade baseline on this machine was engine 0.1.1-rc.2 + 0.8.x | 0.8.x and 0.9 are two different clients (`docs/releases/0.9.0.md` ⑤); **the 0.1.5 line was not tested individually** |
 | **0.1.7-rc.2** | **0.8.2 / early 0.8.3 builds** | ❌ plugin never activates | measured in the 2026-09-28 rehearsal | Two independent causes: ① since 0.1.7 the typert strict codec must provide a `create()` factory; ② `dsh.client.inject` referenced `@deepseek-ai/dsh-client-runtime`, removed in 0.1.7. Fixed in 0.8.3-1 and 0.9.x |
 | **0.1.6 and later** | **any third-party manager that declares the same loader entry id** (e.g. LX2000WASD 0.6.x) | ❌ profile will not start | competitor announcement, 2026-09 | `TypeError: duplicate loader entry id: plugin-manager` (the official `dsh-base` row id is `plugin-manager`); this manager uses its own id `plugin-manager-pro` |
 | Already on 0.9.x with an engine before 0.1.6 | rollback: `dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2` | ⚠️ recovery path | — | see the rollback command under "Install" |
 
 > **One line**: **newer engines want 0.9.1; only very old engines (before 0.1.6) need 0.8.2.** The 0.1.6 boundary is the only certain one; the transitional 0.1.6-alpha.x versions were not tested individually.
+> **On Node 18/20 (or to try the pre-release) install `0.9.1-rc2`**: `npm i dsh-plugin-manager-pro@next` — 0.9.1 **fails to load on Node 18/20**, which is the first blocker this pre-release fixes (see `docs/releases/0.9.1-rc2.md`).
 > The "verified" records come from the rehearsal environment, the clean-environment install report and the real-machine install archive (`docs/releases/0.9.0-verify.md`; developer workspace `upgrade-rehearsal/`, `audit/install-090/` — the latter two are not part of the npm package). The process is repeated for every engine patch release per `docs/RELEASING.md`.
 
 ## 🔐 Permissions and data scope
@@ -231,6 +233,10 @@ dsh plugin --profile web add dsh-plugin-manager-pro
 
 # 2) right after a release (or during the 24 h cool-down) — pin the version, always reliable
 dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1
+
+# 2b) pre-release: try 0.9.1-rc2 (shipped under the `next` dist-tag, does not move `latest`; use this on Node 18/20)
+dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1-rc2
+# equivalent npm form: npm i dsh-plugin-manager-pro@next
 
 # 3) offline tarball (downloaded from the GitHub Release page, or built with npm pack)
 dsh plugin --profile web add ./dsh-plugin-manager-pro-0.9.1.tgz

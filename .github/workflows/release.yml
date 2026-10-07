@@ -8,6 +8,12 @@ name: Release to npm
 #   2) 本工作流被 tag 触发 → 回归测试 → npm publish（带 provenance 签名）
 #   也可以到 Actions 页面手动 Run workflow（workflow_dispatch）发当前 master 上的版本。
 #
+# 预发布版（版本号形如 0.9.1-rc2，含 `-`）：
+#   · tag 用 `v0.9.1-rc2`；tag 与 package.json 的 version 必须逐字一致（含 `-rc2` 后缀）
+#   · 发布时自动改用 **dist-tag `next`**，`latest` 保持指向最近的正式版 —— 这样
+#     `npm i dsh-plugin-manager-pro` 不会把 RC 发给普通用户；尝鲜用 `@next` 或 `@0.9.1-rc2`
+#   · 预发布版不写 GitHub Release 的「Latest」标记（Release 由人工/队长在核对后创建）
+#
 # ⚠️ 一次性前置（npm 网站，不在本仓库里）：
 #   npmjs.com → 包 dsh-plugin-manager-pro → Settings → Trusted Publisher → GitHub Actions
 #     Organization or user : nonentity303
@@ -74,21 +80,75 @@ jobs:
       - name: vendor 一致性（迁移包不在 CI 上 → 自动 SKIP）
         run: npm run check:vendor
 
-      - name: 发布到 npm（OIDC，无需 token）
-        run: npm publish --provenance --access public
+      # Node 兼容性静态门禁（0.9.1 的 G1 就是这类问题：源码 import 了 Node 22.14+ 才有的导出，
+      # 而 engines 声明 >=18 → 旧 Node 上插件加载即崩，本地 Node 24 与 CI Node 22 都测不出来）。
+      # 扫描规则针对"版本敏感 API"；exit 2 = 命中 blocker（必须清零才能发布）。
+      - name: Node 兼容性静态门禁（blocker 级 API 必须清零）
+        run: node tools/dev/compat-scan.mjs --root . --quiet
 
-      - name: 发布后核对 registry
+      # 预发布版（版本号含 `-`，如 0.9.1-rc2）必须发到 `next` 标签，否则会把 `latest` 顶成预发布版，
+      # 让 `npm i dsh-plugin-manager-pro` 的用户拿到 RC —— 这是硬红线（见 docs/RELEASING.md §10）。
+      - name: 计算 dist-tag（预发布 → next，正式版 → latest）
+        id: disttag
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($v -match '-') {
+            "dist_tag=next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "预发布版 $v → dist-tag = next（latest 保持不变）"
+          } else {
+            "dist_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "正式版 $v → dist-tag = latest"
+          }
+
+      - name: 发布到 npm（OIDC，无需 token）
+        run: npm publish --provenance --access public --tag ${{ steps.disttag.outputs.dist_tag }}
+
+      # G2/G3 加固（0.9.1 首次真实运行暴露）：
+      #   · packument 立刻可见，但 tarball 在 CDN 上可能滞后数分钟 → 旧版 10×15s 轮询会误报失败
+      #   · 现在分两段判定：packument（发布是否成功）+ tarball 可达（传播）；只有 packument 缺失才算失败
+      #   · 并补上双渠道同字节核对（本地 npm pack vs registry 下载件）—— D1 纪律自动化
+      - name: 发布后核对 registry（packument + tarball + 双渠道同字节）
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
-          $want = $pkg.version
-          $got = $null
-          for ($i = 1; $i -le 10; $i++) {
-            $got = (npm view "$($pkg.name)@$want" version 2>$null | Out-String).Trim()
-            if ($got -eq $want) { break }
-            Write-Host "第 $i 次未查到，等 15s 重试…"
-            Start-Sleep -Seconds 15
+          $name = $pkg.name; $want = $pkg.version
+          $seen = $false
+          for ($i = 1; $i -le 30; $i++) {
+            $got = (npm view "$name@$want" version 2>$null | Out-String).Trim()
+            if ($got -eq $want) { $seen = $true; break }
+            Write-Host "第 $i 次 packument 未查到，等 20s 重试…"
+            Start-Sleep -Seconds 20
           }
-          if ($got -ne $want) { throw "发布后核对失败：registry 上没有 $($pkg.name)@$want" }
-          Write-Host "✅ registry 已确认：$($pkg.name)@$got"
-          npm view $pkg.name dist-tags.latest
+          if (-not $seen) { throw "发布失败：registry packument 在约 10 分钟内始终没有 $name@$want" }
+          Write-Host "✅ packument 已确认：$name@$want（dist-tag: ${{ steps.disttag.outputs.dist_tag }}）"
+
+          $url = "https://registry.npmjs.org/$name/-/$name-$want.tgz"
+          $ready = $false
+          for ($i = 1; $i -le 30; $i++) {
+            try {
+              $r = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 30 -SkipHttpErrorCheck
+              if ($r.StatusCode -eq 200) { $ready = $true; break }
+            } catch { }
+            Write-Host "第 $i 次 tarball 未就绪（CDN 传播中），等 20s 重试…"
+            Start-Sleep -Seconds 20
+          }
+          if (-not $ready) {
+            Write-Warning "⚠ 版本已发布，但 tarball 在 CDN 上仍未就绪（>10 分钟）：不判发布失败，请稍后手动回读 $url"
+            exit 0
+          }
+          Write-Host "✅ tarball 已就绪：$url"
+
+          $tmp = Join-Path $env:RUNNER_TEMP "packcheck"
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+          npm pack --pack-destination $tmp | Out-Null
+          $local = (Get-ChildItem $tmp -Filter *.tgz | Select-Object -First 1).FullName
+          $remote = Join-Path $tmp "registry.tgz"
+          Invoke-WebRequest -Uri $url -OutFile $remote -TimeoutSec 180
+          $h1 = (Get-FileHash $local -Algorithm SHA256).Hash
+          $h2 = (Get-FileHash $remote -Algorithm SHA256).Hash
+          Write-Host "本地 npm pack : $((Get-Item $local).Length) B  sha256=$h1"
+          Write-Host "registry 下载 : $((Get-Item $remote).Length) B  sha256=$h2"
+          if ($h1 -ne $h2) { throw "双渠道不同字节：本地 pack=$h1 / registry=$h2（D1 红线）" }
+          Write-Host "✅ 双渠道同字节（Release 附件请用 registry 下载的同一份）"
+          npm view $name dist-tags

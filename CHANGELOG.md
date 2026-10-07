@@ -12,6 +12,49 @@
 
 > 尚未发布的改动不在本文件；开发中的版本号见 `package.json` 的 `version`（发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)）。
 
+## [0.9.1-rc2] - 2026-10-07（预发布）
+
+> 一句话：0.9.1 在 Node 18/20 上装完就加载失败；0.9.1-rc2 把这个 blocker、弱网下"把网络失败说成无更新"的四连、以及跨平台六条一起修掉。 兼容性（Node 18 重新可用 / macOS·Linux 命令形态）+ 弱网（失败不再假装"无更新"、超时不再假超时）；界面零改版。 尝鲜安装：`npm i dsh-plugin-manager-pro@next`（等价于 `@0.9.1-rc2`）。 发布日期：2026-10-07（预发布；实际以 npm `next` 的时间戳与 G…
+
+### Fixed · 修复
+
+- **G1（blocker，Node 18/20 装完就加载失败）— 现象**：0.9.1 的 `lib/index.js` 顶层写 `import { findPackageJSON } from "node:module"`，而该导出 **Node 22.14.0 才有**。ESM「具名导入一个不存在的导出」在**链接期**抛 `SyntaxError: The requested module 'node:module' does not provide an export named 'findPackageJSON'`，模块体一行都不执行 → **插件整体加载失败**；而 `package.json` 那时已声明 `engines.node >= 18.0.0`。
+- **修法**：顶层改为**命名空间导入**（`import * as nodeModule from "node:module"`）+ **运行时特性检测**：Node ≥ 22.14 仍走官方 `findPackageJSON`（行为完全不变）；旧版本走随包的**回退解析器**（`createRequire` → 包入口逐级向上找 `package.json` → 手工沿 `node_modules` 链与 pnpm 隔离目录兜底，覆盖"`exports` 没有导出 `./package.json`"的现代包）。
+- **为什么不是"把 engines 提到 22.14"**：`@deepseek-ai/dsh` 自身**没有 `engines` 字段**，"引擎支持 18"这个外部依据并不存在，但反过来也没有依据要求 22.14 —— 于是本版用回退实现把 18 变成真的，**保留 `engines.node >= 18.0.0` 并让它可被门禁验证**。
+- **门禁证据（静态扫描）**：`node tools/dev/compat-scan.mjs --root .` → `blocker=0 high=0 medium=0 low=19 ok=14`、**exit 0**（0.9.1 发布件上是 `blocker=1`、exit 2）；`declared engines.node = >=18.0.0`、`effective floor = (none above floor)`。残留 19 条 low 全部是 `z.union(...)` 被误判为 `Set#union` 的**同名误报**（zod 的 union），脚本自己标了"待人工核实"。
+- **独立验证（第①步闸门，对打包后的 tgz）**：`rc2-compat-scan.mjs --tgz` → **exit 0**、`blocker=0 high=0 medium=0 low=19 ok=14`、`effective floor = (none above floor)`；对照 **0.9.1 发布件 → exit 2、`blocker=1`**（`lib/index.js:1 node:module → { findPackageJSON } min node >= 22.14.0`）。（出处：闸门报告 §4.1）
+- **独立验证（Node 20 形状模拟，A/B 负控）**：用 `node:module` 的 `registerHooks()` 把裸 `node:module` 重定向到一个**故意不导出 `findPackageJSON`** 的 shim，再动态 import 包入口 —— **rc2 候选件 `IMPORT_OK`**（导出 `Config`/`PluginManagerPro`/`__internals`/`default`，且 `snapshot()` 正常列出真实装机插件），**0.9.1 发布件 `IMPORT_FAILED`**（`SyntaxError: The requested module 'node:module' does not provide an export named 'findPackageJSON'`）；旧形状下 `resolver_mode=fallback`、`stats={official:0, fallback:4}`，当前 Node 24 未 hook 时仍走官方路径（`resolver_mode=findPackageJSON`，行为不变）。（出处：闸门报告 §4.2；实测形状模拟，非真实 Node 20 进程）
+- **F6（high，`--uninstall` 删掉别的 profile 的开机自启）— 现象**：`npx dsh-pm-launcher --uninstall` 旧实现把 `HKCU\...\Run` 下**所有** `DSHWeb*` 值一律删掉 —— 与 `--profile` 指向哪个 profile 无关。于是在临时/非默认 profile 上做卸载，会顺手删掉**真机 profile**的开机自启项（用户下次开机才发现"自启没了"）。
+- **修法（按 profile 作用域）**：只删**指向目标 profile 目录内**的值，以及**死指针**（数据里的 `.vbs` 已不存在，含历史 `DSHWebRescue`）；其余一律**报告但不删**（指向别的 profile、别的工具写的 `DSHWeb*`、数据里没有 `.vbs` 路径）。
+- **删前留证**：真要删之前先把整个 Run 键 `reg export` 到 `<profile>\.plugin-manager\registry-backup-<时间戳>.reg`（失败只告警、不阻断主流程）；输出分「已删除」「已跳过」两块，逐条带键名、类型、数据与**判定理由** —— 卸载日志本身就可当审计证据。
+- **安全性**：缺少 `--profile` 时**拒绝清理**（不再有"删所有 DSHWeb*"的路径）；注册表读不到时不谎报"已清干净"，而是明确告警要求人工核对。
+- **回归证据**：启动器套件新增第 16 组（`t31/F6`）断言 —— 含真实注册表诱饵用例"指向目标 profile 的值被删 / 指向别的 profile 的值仍在"（可证伪：旧行为会一并删掉）。
+- **C-02 网络失败不再污染「无更新」负缓存**：三种版本查询在 catch 到网络异常后不再写长期负缓存（旧行为：一次 DNS 抖动 → 30 分钟 / dshfind 源 1 小时内的"重试"根本不联网）。现在网络类失败只进 **30 秒合流窗口**（作用仅是让并发请求别同时轰同一个源），且**显式手势（点"检查更新"/"更新"）会穿透**它，保证真的再联网一次；只有**确定性结论**（拿到版本号、404 明确无此包）才允许进负缓存。来源配置一改，缓存/合流窗口/退避状态**全部作废**。
+- **C-03 检查更新有总预算、到点真的会停**：`refresh()` 新增**总预算 90 秒**（deadline 折算进每个单请求的超时，到点在飞请求 `abort`、后续批次不再发起），客户端"检查更新"超时 **240 秒 → 120 秒**（客户端预算 ≥ 宿主预算，不再出现"界面报超时、后台还在跑半小时"）。网络类失败按源**指数退避**（15 秒 → 10 分钟），同一次全量里同一源连续失败 5 次即**本批熔断**。
+- **C-04 市场目录不再被全局串行队列顶成假超时**：`marketCatalog()` **移出全局 FIFO**（它只读网络 + 内存缓存，没有需要互斥的写操作），**缓存命中在排队之前**就返回，并按 key 去重；客户端超时 **20 秒 → 45 秒**（旧值低于宿主两次网络最坏的 8+10 秒，网络完全正常也会假超时）。
+- **C-09 区分「包里没有」与「网络不可达」**：版本查询返回 `reason`（`not-found` / `network` / `timeout` / `backoff` / 无源），经 `snapshot.entries[].updateReason` 透传到界面文案 —— 404 走「更新源没有此插件/无更新」，网络类失败走「网络不可达，可重试」，403 走「更新源限流冷却中，稍后自动重试」，不再一律「版本未知」（文案原文见下一条）。
+- **界面文案（实测原文，不是设计稿）**：行级 `network` / `timeout` → **「网络不可达，可重试」**（设计上两者**共用一句**，区别只在 `updateReason`）；`not-found` → **「更新源没有此插件/无更新」**；`backoff` → **「更新源限流冷却中，稍后自动重试」**；无 reason 时回落到「版本未知」；**汇总行** → **「网络较慢：检查更新已在总预算内中止（3s / 3s，已查 5/5），结果可能不完整（失败不会被缓存），网络恢复后可直接重试。」**（`refreshAborted` 行；0.9.1 完全没有这一行）。**注意：已发布的实现里并没有「超时已取消」这类字符串** —— 独立验证按实际实现取证（`src/client.jsx:2400/269`），本说明不写用户看不到的文案。（出处：闸门报告 §3.1）
+- **独立验证（第①步闸门，真实本机 socket、零注入 fetch）**：`404` → 37 ms、5/5 `updateReason=not-found`、`VERSION_CACHE` 5 条（**确定性结论允许写负缓存**）、失败窗口 0 条；连接被拒（ECONNREFUSED）→ 4 ms、5/5 `network`、`VERSION_CACHE=0`、dshfind 1 小时搜索缓存 0 条、失败只进 30 秒合流（5 条）；**源恢复后立即 5/5 拿到真结论**（没有假负缓存）；**黑洞 + 2.5 秒预算 → 2,506 ms 返回、`aborted=true`、5/5 `timeout`、`VERSION_CACHE=0`**；`403` → 5/5 `backoff` 且有冷却记录；默认预算 + 黑洞 → 8,017 ms 返回（单请求 8 秒 `AbortSignal` 先到），**相对客户端 120 秒超时有 112 秒余量**。（出处：闸门报告 §3.1）
+- **市场页独立验证（同闸门）**：目录请求自带 **8 秒**硬超时；先在黑洞桩上排一个 **20 秒预算**的检查更新，再并发调市场 → **6,107 ms 返回**（`source=live`、4,414 条），此刻检查更新仍在飞（`refresh_still_running_when_market_returned: true`）→ **确实没有排进全局 FIFO**；再点一次 → 0 ms 命中 10 分钟目录缓存；失败态渲染「重试」按钮 + **「网络不可达，可重试：目录请求全部失败（断网/代理/限流都可能），点击重试重新加载。」**。（出处：闸门报告 §3.2）
+- **C-05（high）弹窗启动不再静默假成功**：命令构造抽成纯函数 —— macOS 不再把 shell 命令行递给 `open -a Terminal`（`open` 只接受文件/URL，旧写法必然报错却告知"已弹出"），改为生成 `.command` 脚本（`chmod 755`、纯 ASCII）+ `open -a Terminal <脚本>`，并留 `osascript` 兜底；Linux 不再依赖已被移除的 `gnome-terminal -e`（`gnome-terminal` 用 `--`，其余终端保留 `-e` 的候选链）。**启动后校验子进程的 error 事件与退出码**（端口出现监听者作强证据），失败返回 `ok:false` 让调用方退回静默启动；顺带修掉"子进程 error 无人监听会崩宿主进程"的隐患。
+- **C-06（medium）全局根探测在 Windows 上从"必然失败"变为可用**：旧写法 `spawnSync("npm", …)` 在 Windows 上必然 `ENOENT`（Node 不按 PATHEXT 解析 `npm`→`npm.cmd`），而 `npm.cmd` 在 Node ≥18.20/20.12/22 又因安全加固抛 `EINVAL` —— 两条直连路都不通。现在改走 **`process.execPath` + `npm-cli.js`**（零 shell、零转义），并做多级兜底：`root -g` → `prefix -g` 派生根 → 平台默认路径 → 版本管理器扫描，**每个候选都做存在性校验**。
+- **C-07（medium）端口归属探测有兜底链**：原来是"没有 `lsof` 就等于探测不可用"（精简发行版/容器/Alpine 常无 `lsof`）→ `--uninstall`/守护流程退化为"归属未确认，拒绝处理"并被卡住。现在按 **`lsof` → `ss -ltnp` → `/proc/net/tcp`（inode → `/proc/*/fd` 反查）**依次降级；三条都不可用时明确报"探测不可用，**不能据此断言端口空闲**"（保守，不假成功）。
+- **C-13 / C-14（low）全局安装根覆盖与诊断**：`win32` 分支缺 `APPDATA` 时不再静默返回空候选 —— 回退 `USERPROFILE` / `LOCALAPPDATA` / 主目录推导路径，并把"缺哪个变量、退了哪条路"写进报告的 `problems`（显式诊断）；缺足够多时明说"全局插件探测不可用"，而不是"你没有全局插件"。覆盖面补上 macOS `/opt/homebrew`（Apple Silicon Homebrew）、Linux XDG 路径、Windows Volta / nvm-windows / pnpm 全局；每个候选标注是否**实测过**，未实测的明确写"未实测"。
+- **C-15（low）`tools/dev/pack.mjs` 在 Node ≥ 22 上可用**：旧写法 `npm.cmd` 必抛 `EINVAL`（本机实测），现改走 `node + npm-cli.js`，并补 `--help` / `--dry-run` / `--no-build`。实测 `--help` 与真实 `npm pack --dry-run` 均 **exit 0**。（该脚本**不进 npm 包**，只影响仓库侧打包流程。）
+- **独立验证（第①步闸门）**：Windows 实测 —— 退出码正/负控（`exit 0 → ok:true`；`exit 3 → ok:false, exitCode=3`；**命令不存在 → ENOENT 且宿主进程不崩**；端口出现监听者 → `ok:true`）；`--status` **exit 0 / 211 ms**（0.9.1 是同级的 184 ms，无回归）；P-03 全局根探测首调 **0.61 ms**（零 spawn）+ 约 0.5 s 后权威根自愈；`pack.mjs --help` 与 `--dry-run --no-build` 均 exit 0。**纯函数矩阵**（对候选件）覆盖：darwin 缺脚本**必须 `ok:false`**（不许退回 `open -a Terminal <shell 命令行>`）、darwin 有脚本走 `open -a Terminal <*.command>` + `osascript` 兜底、linux `gnome-terminal --`（其余终端保留 `-e`）、C-07 三级兜底链与三个解析器、C-13 三级环境变量兜底 + 5 条诊断、C-14 覆盖矩阵。**macOS / Linux 未真机运行**（纯函数 + 依赖注入），`NPM_GLOBAL_ROOT_COVERAGE` 里非 win32 项自身即标「未实测」。（出处：闸门报告 §3.3 / §3.4）
+- **P-01 客户端 bundle 未 minify**：bundle **792,931 → 255,903 B（−67.7 %）**、行数 **18,482 → 81**、gzip（level 9）**120,937 → 66,250（−45.2 %）**、brotli **97,342 → 56,152**、zod locale 引用 **106 → 0**。（独立验证：闸门报告 §5.1，字节取自两个 tgz 的 `lib/client.js`）
+- **P-02 每次 `snapshot()` 重做 1,016 次文件系统探测**：**热快照 fs 探测 1,016 → 0**（独立 fs 计数钩子，7 次抽样全 0）；热快照中位 **18.8 → 1.1 ms**、冷快照 **101 → 61.7 ms**。（闸门报告 §5.2 / §5.3）
+- **P-03 回归消解（本版自己的修法一度引入）**：C-06 改走 `node + npm-cli.js` 后，首屏曾多出 ~190 ms 同步阻塞；现在快路径命中**零 spawn**，全局根探测首调 **0.61 ms**，约 0.5 s 后权威根自愈（期间 `problems` 明说"后台异步进行中"，不冒充权威）。（闸门报告 §3.3）
+- **P-04 `--status` 开销**：候选件实测 **exit 0 / 211 ms**（0.9.1 同级 184 ms，**无回归**）。（闸门报告 §3.3）
+- **代价如实写**：`snapshot_json_bytes` **93,582 → 97,621 B**（+4.0 KB，新增 `updateReason` 等字段）、`construct_ms` **1.7 → 2.4 ms**、`uninstallPreview_ms` 9.6 → 9.1 ms。
+- **P-05 的界面项未改**：199 行全展开仍是 **4,544 个 DOM 节点**（无虚拟化）—— 本版**不改界面**；「清空搜索每键延迟」的真浏览器复测未取得（见 §⑧ 未实测边界 1）。
+- **C-16**：`package.json` 的 `files` **显式列出 `README.en.md`**。此前英文 README 能进包只是靠 npm 对 `README*` 的自动附带规则（0.9.0 的包里有、0.9.1 才有），换打包器或 npm 改规则就会**静默消失**。核验：`npm pack --dry-run --json` → `version=0.9.1-rc2`、`entryCount=20`、清单含 `README.en.md`。
+- **C-11 口径统一**：`engines.node = ">=18.0.0"` 与实现实际要求**一致**（由 G1 的回退路径保证），并由 `tools/dev/compat-scan.mjs` 静态门禁守住（blocker/high 命中即 exit 2/1）。引擎侧没有可用锚点：`@deepseek-ai/dsh` 自身无 `engines` 字段 —— 所以本插件的 Node 下限**只由自身扫描 + 门禁决定**，README 里已写明。
+- **README（中/英）**：引擎兼容性矩阵、Node 口径与断言数按**本轮实测**更新；预发布版的装法与 semver 提醒写进首屏"我该装哪一版"。
+- **`CHANGELOG.md` 生成口径**：生成器（`tools/dev/gen-changelog.mjs`）支持预发布版本号（`-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`），排序改为**发布顺序（新→旧）**、预发布段头带**（预发布）**标注，并新增**静默漏版护栏**（`docs/releases/` 下有"版本号打头却没被识别"的文件时直接 exit 1，避免 `--check` 假绿）。
+
+> 完整发布说明：[`docs/releases/0.9.1-rc2.md`](docs/releases/0.9.1-rc2.md)
+
 ## [0.9.1] - 2026-10-07
 
 > 一句话：0.9.1 把「装坏了能救」往前推了一步——卸载前先体检、卸载后能清干净、本地写接口有防护、自检有留痕，并把工程文档补齐（架构 / 命令行口径 / CHANGELOG / 英文版）。 启动器与救砖链的命令行闭环 + 卸载侧安全网 + 文档工程化；界面零改版。 发布日期：2026-10-07（npm 发布时刻 2026-10-07T01:23:37Z；npm 与 GitHub Release 附件为同一份字节，sha256 `88C182B852AA5CCB73E67EA6298E102935BC39E…

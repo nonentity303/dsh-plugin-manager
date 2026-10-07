@@ -26,6 +26,12 @@
  *    · **救援入口与端口分工（R7）**：3081 是唯一网页入口，open-boot 自身提供完整救援能力
  *      （`/rescue` 页面 + `/rescue/api/*`，复用 rescue-daemon 的 handleApi，挂在独立前缀下，
  *      不影响 `/api/status` 的身份语义）；`rescue-daemon` 默认端口改为 3082。端口被占时明确报错，不漂移。
+ *  - v0.9.1-rc2（兼容性审计 C-05，high）：
+ *    · **弹窗启动不再静默假成功**：命令构造抽成纯函数 `bootWindowPlan()`（macOS 用 `.command` 脚本 +
+ *      `open`/`osascript`；Linux 按终端特性给 `--`/`-e` + 兜底链），并**校验子进程退出码/error 事件**
+ *      （`launchViaCandidates`/`verifyLauncherExit`），失败逐个记原因后返回 ok:false → 退回静默启动。
+ *      旧实现的 `open -a Terminal <shell 命令行>`（open 只接受文件/URL）与 `gnome-terminal -e`
+ *      （GNOME 42+ 已移除）在用户机器上直接报错却被告知"已弹出启动窗口"。
  *  - v0.9.0-2（审计③ 修复 L2/L3/L4/L6/L7/L8）：
  *    · 健康判定 = **HTTP 握手 + 身份校验**（裸 TCP 监听器一律判不健康）；
  *      3081 被非本工具进程占用时**明确报错**，不再"假健康"、也不再静默漂移端口。
@@ -49,7 +55,7 @@
  * 零新依赖（复用 lib/preflight.mjs 与 lib/enginectl.mjs）。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createLockServer } from "node:net";
 import { homedir } from "node:os";
@@ -58,16 +64,30 @@ import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
 import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
 import {
-	ENGINE_PORT, LAUNCHER_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
-	launcherHealth, looksLikeProfileDir, newApiToken, portOwner, portOwnerProbe, probe, processImage,
-	processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine,
+	ENGINE_PORT, LAUNCHER_APP, bootWindowPlan, chdirStable, createSingleFlight, detectAvailableTerminals, engineHealth,
+	guardWriteRequest, isAlive, launchViaCandidates, launcherHealth, looksLikeProfileDir, newApiToken, portOwner,
+	portOwnerProbe, probe, processImage, processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine,
 	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine
 } from "../lib/enginectl.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SELF = fileURLToPath(import.meta.url);
 const AUTOSTART_NAME = "DSHWebFront";
-const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+/**
+ * 自启注册表键。**生产路径 = HKCU Run 键**（下面这条默认值，语义与退出码契约都不变）。
+ *
+ * `DSH_PM_RUN_KEY` 是**测试注入点**（t10 测试卫生）：套件默认把作用域指向
+ * `HKCU\Software\DSHPluginManagerTest\Run-<pid>` 这样的测试专用子键，从而
+ * 「默认跑测试绝不动用户的真实自启项」，同时仍然走**完全相同的 reg.exe 代码路径**
+ * （作用域判定 / 死指针清理 / 归属未确认 exit 2 的语义一条都不少）。
+ * 只接受 `HKCU\` 下的路径 —— 防止被误指向 HKLM/HKCR 等全局位置或畸形键名；
+ * 未设该环境变量时行为与历史版本逐字节一致（默认值见下）。
+ */
+const RUN_KEY = (() => {
+	const override = process.env.DSH_PM_RUN_KEY;
+	if (typeof override === "string" && /^HKCU\\/i.test(override.trim())) return override.trim();
+	return "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+})();
 /** 自启注册表值前缀：本工具写过的一律归它管（含历史遗留 `DSHWebRescue`，审计③ R13）。 */
 const RUN_VALUE_PREFIX = /^DSHWeb/i;
 const SUP_LOG = "open-boot-supervisor.log";
@@ -502,41 +522,64 @@ function installCrashLogging(args) {
 /**
  * 弹出一个**可见**的启动窗口跑 dsh-boot 启动序列（自检→修复→启动→等待）。
  * 这是「平时隐藏，拉起引擎时弹窗」约定的落点；失败时返回 ok:false 由调用方退回静默启动。
+ *
+ * v0.9.1-rc2（兼容性审计 C-05，high）：**不再静默假成功**——
+ *  - 命令构造抽成纯函数 `enginectl.bootWindowPlan()`（macOS 用 `.command` 脚本 + `open`/`osascript`，
+ *    Linux 按终端特性给 `--`/`-e` 形态与兜底链；旧实现的 `open -a Terminal <shell 命令行>` 与
+ *    `gnome-terminal -e` 都是**不成立的命令形态**，会在用户机器上直接报错却被告知"已弹出"）；
+ *  - 启动后**校验子进程的 error 事件与退出码**（`launchViaCandidates` + `verifyLauncherExit`），
+ *    外加"端口是否真的出现监听者"的正向证据；任何一条候选立刻失败 → 逐个记原因并返回 ok:false。
+ * @param {object} args parseArgs 结果（profile/dsh/waitMs/cwd…）
+ * @param {object} [deps] 测试注入点：{ platform, execPath, plan, launch, probePort, probeFn, spawnFn }
  */
-function spawnBootWindow(args) {
+export async function spawnBootWindow(args, deps = {}) {
 	const bootScript = join(dirname(SELF), "dsh-boot.mjs");
 	if (!existsSync(bootScript)) return { ok: false, message: "缺少 bin/dsh-boot.mjs" };
 	// 窗口进程的 cwd 用稳定目录（审计③ L2）：不要把 cwd 留在本包/profile 目录里，
 	// 否则引擎会继承一个"锁住包目录"的工作目录，pnpm 更新/卸载会 EPERM。
 	const workDir = resolveEngineCwd(args.cwd);
 	const bootArgs = [bootScript, "--profile", args.profile, "--dsh", args.dsh, "--wait-ms", String(args.waitMs), "--pause"];
-	try {
-		if (process.platform === "win32") {
-			// `cmd /c start "" ...` 是 Windows 上唯一可靠的「新建可见控制台」方式。
-			// 注意不要用隐藏 PowerShell（部分杀软会直接拦截并删除脚本）。
-			const child = spawn("cmd", ["/c", "start", "", "/D", workDir, process.execPath, ...bootArgs], {
-				detached: true, stdio: "ignore", windowsHide: false
-			});
-			child.unref();
-			return { ok: true, message: `已弹出启动窗口（cmd start，工作目录 ${workDir}）` };
-		}
-		if (process.platform === "darwin") {
-			const line = [process.execPath, ...bootArgs].map((part) => `'${String(part).replace(/'/g, "'\\''")}'`).join(" ");
-			const child = spawn("open", ["-a", "Terminal", line], { detached: true, stdio: "ignore", cwd: workDir });
-			child.unref();
-			return { ok: true, message: "已弹出启动窗口（Terminal.app）" };
-		}
-		// Linux：挑一个存在的终端模拟器
-		for (const term of ["x-terminal-emulator", "gnome-terminal", "konsole", "xfce4-terminal", "xterm"]) {
-			if (spawnSync("sh", ["-c", `command -v ${term}`], { stdio: "ignore" }).status !== 0) continue;
-			const child = spawn(term, ["-e", process.execPath, ...bootArgs], { detached: true, stdio: "ignore", cwd: workDir });
-			child.unref();
-			return { ok: true, message: `已弹出启动窗口（${term}）` };
-		}
-		return { ok: false, message: "未找到可用的终端模拟器" };
-	} catch (error) {
-		return { ok: false, message: error instanceof Error ? error.message : String(error) };
+	const platform = deps.platform ?? process.platform;
+	const execPath = deps.execPath ?? process.execPath;
+	const scriptPath = join(args.profile, "open-boot-window.command");
+	const plan = deps.plan ?? bootWindowPlan({
+		platform, execPath, bootArgs, workDir, scriptPath,
+		available: platform === "linux" ? detectAvailableTerminals() : null
+	});
+	if (!plan.ok) {
+		return { ok: false, platform, plan, message: `弹窗启动不可用：${plan.reason}（改为静默启动）` };
 	}
+	if (plan.script) {
+		// macOS：先把命令写成 .command 脚本（chmod 755），再让 open 打开**文件**（C-05 的关键修正）
+		try {
+			mkdirSync(args.profile, { recursive: true });
+			writeFileSync(scriptPath, plan.script, { mode: 0o755 });
+			chmodSync(scriptPath, 0o755);
+		} catch (error) {
+			return { ok: false, platform, plan, message: `无法写 macOS 启动脚本 ${scriptPath}：${error instanceof Error ? error.message : String(error)}（改为静默启动）` };
+		}
+	}
+	const stderrPath = join(args.profile, "open-boot-window.stderr.log");
+	const launch = deps.launch ?? launchViaCandidates;
+	const result = await launch(plan.candidates, {
+		probePort: deps.probePort === void 0 ? ENGINE_PORT : deps.probePort,
+		probeFn: deps.probeFn ?? probe,
+		spawnFn: deps.spawnFn,
+		graceMs: deps.graceMs,
+		cwd: workDir,
+		stderrPath,
+		readStderrText: () => { try { return readFileSync(stderrPath, "utf8"); } catch { return ""; } }
+	});
+	if (result.ok) {
+		return {
+			ok: true, platform, plan, via: result.via, attempts: result.attempts, verdict: result.verdict,
+			message: `已弹出启动窗口（${plan.kind === "windows" ? "cmd /c start" : result.via}；证据：${result.evidence}）`
+		};
+	}
+	return {
+		ok: false, platform, plan, attempts: result.attempts,
+		message: `弹窗启动**失败**（不再谎报成功），改为静默启动：${result.reason}`
+	};
 }
 
 // ---------------------------------------------------------------- boot 流程
@@ -569,7 +612,8 @@ async function boot(args, onLog = () => {}) {
 
 	let windowInfo = null;
 	if (args.window) {
-		windowInfo = spawnBootWindow(args);
+		// C-05：spawnBootWindow 现在会**校验子进程的 error/退出码**，只有真的起来才 ok:true
+		windowInfo = await spawnBootWindow(args);
 		onLog(windowInfo.ok ? windowInfo.message : `弹窗失败（${windowInfo.message}），改为静默启动`);
 	}
 
@@ -898,33 +942,157 @@ export function listRunValues() {
 }
 
 /**
- * R13：删除 Run 键下**所有** `DSHWeb*` 值（含历史遗留 `DSHWebRescue`），返回删掉的键名。
- * 幂等：没有匹配项时返回空数组且 ok=true；注册表**读不到**时不谎报"已清干净"，而是明确警告
- * （受限会话/安全策略下 reg.exe 可能不可用 —— 那种情况必须人工核对）。
+ * 从自启值数据里解析"被启动的脚本路径"（本工具生成的形态：
+ * `"C:\Windows\System32\wscript.exe" //nologo "<abs>\open-boot-autostart.vbs"`）。
+ * 容错：优先取最后一个 `.vbs` 引号路径；退化为任意 `.vbs` 绝对路径；解析不出返回 null。
  */
-export function removeDsWebRunValues() {
-	if (process.platform !== "win32") {
-		return { ok: true, skipped: true, readable: false, removed: [], failed: [], message: "非 Windows：跳过注册表清理" };
+export function extractShimPath(data) {
+	const text = String(data ?? "");
+	const quoted = [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+	const quotedVbs = [...quoted].reverse().find((p) => /\.vbs$/i.test(p));
+	if (quotedVbs) return quotedVbs;
+	const bare = /([A-Za-z]:\\[^"]*?\.vbs)(?=\s|$|"|;)/i.exec(text);
+	return bare ? bare[1] : null;
+}
+
+/** 路径是否位于目录内（大小写无关；Windows 路径统一成正斜杠比较）。 */
+function isInsideDir(child, dir) {
+	const norm = (p) => resolve(p).replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+	const c = norm(child);
+	const d = norm(dir);
+	return c === d || c.startsWith(`${d}/`);
+}
+
+/**
+ * t31（F6）：判定一个 `DSHWeb*` 自启值该怎么处理 —— **按 profile 作用域**，纯函数便于单测。
+ *
+ * 之前 `--uninstall` 会删掉 Run 键下**所有** `DSHWeb*`，与 `--profile` 指向哪个 profile 无关：
+ * 在一次临时/非默认 profile 的卸载里，会顺手删掉**另一个 profile**（例如真机）的开机自启项。
+ * 现在的判定：
+ *   · 数据指向的脚本在**目标 profile 目录内** → 删（属于本 profile）；
+ *   · 脚本文件**不存在**（死指针，含历史 `DSHWebRescue` 指向的已消失路径）→ 删（留着只会误导）；
+ *   · 其它（指向别的 profile / 其它工具写的 `DSHWeb*` / 数据里没有 .vbs 路径）→ **保留并报告**。
+ * @returns {{action:"delete"|"keep", reason:string, shim:string|null}}
+ */
+export function classifyAutostartValue(value, { profileDir } = {}) {
+	const shim = extractShimPath(value?.data);
+	if (!shim) {
+		return { action: "keep", reason: "跳过：数据里没有 .vbs 脚本路径（不是本工具写的形态）", shim: null };
 	}
-	const values = listRunValues();
+	if (profileDir && isInsideDir(shim, profileDir)) {
+		return {
+			action: "delete",
+			reason: existsSync(shim)
+				? `属于本 profile（${dirname(shim)}）`
+				: `属于本 profile 且脚本已不存在（死指针）：${shim}`,
+			shim
+		};
+	}
+	if (!existsSync(shim)) return { action: "delete", reason: `死指针：脚本文件不存在（${shim}）`, shim };
+	return { action: "keep", reason: `跳过：属于其它 profile（${dirname(shim)}）`, shim };
+}
+
+/** 文件名安全的时间戳：`YYYYMMDD-HHmmss`（注册表备份用）。 */
+function fileStamp(date = new Date()) {
+	const p = (n) => String(n).padStart(2, "0");
+	return `${date.getFullYear()}${p(date.getMonth() + 1)}${p(date.getDate())}-${p(date.getHours())}${p(date.getMinutes())}${p(date.getSeconds())}`;
+}
+
+/** t31：删除前把整个 Run 键导出到 `<profile>\.plugin-manager\registry-backup-<ts>.reg`（失败只告警，不阻断）。 */
+export function backupRunKey(profileDir, { timeoutMs = 15000, now = new Date() } = {}) {
+	const dir = join(profileDir, ".plugin-manager");
+	const file = join(dir, `registry-backup-${fileStamp(now)}.reg`);
+	if (process.platform !== "win32") return { ok: false, path: file, message: "非 Windows：跳过注册表备份" };
+	try { mkdirSync(dir, { recursive: true }); }
+	catch (error) { return { ok: false, path: file, message: `⚠ 注册表备份失败（不阻断）：无法创建 ${dir}（${error.message}）` }; }
+	const out = spawnSync("reg", ["export", RUN_KEY, file, "/y"], { windowsHide: true, encoding: "utf8", timeout: timeoutMs });
+	const detail = out.error ? `${out.error.code || "spawn-error"} ${out.error.message}`.trim() : (out.stderr || "").trim();
+	if (out.error || out.status !== 0 || !existsSync(file)) {
+		return { ok: false, path: file, message: `⚠ 注册表备份失败（不阻断）：${detail || `reg export exit ${out.status}`}` };
+	}
+	return { ok: true, path: file, message: `已备份注册表 Run 键 → ${file}` };
+}
+
+/**
+ * t31（F6）：**按 profile 作用域**清理 `DSHWeb*` 自启值（含死指针），其余值报告而不删。
+ *
+ * @param {object} args 解析后的参数（必须带 profile）
+ * @param {object} deps 可注入依赖（测试用）：{ listValues, deleteValue, exportKey }
+ * @returns {{ok, readable, removed, deleted, kept, failed, backup, message}}
+ */
+export function removeProfileRunValues(args = {}, deps = {}) {
+	const listValues = deps.listValues ?? listRunValues;
+	const deleteValue = deps.deleteValue ?? ((name) => spawnSync("reg", ["delete", RUN_KEY, "/v", name, "/f"], { windowsHide: true, encoding: "utf8", timeout: 10000 }));
+	const exportKey = deps.exportKey ?? backupRunKey;
+	if (!args || typeof args.profile !== "string" || args.profile.trim() === "") {
+		return {
+			ok: false, readable: false, removed: [], deleted: [], kept: [], failed: [], backup: null,
+			message: "⚠ 拒绝清理自启值：缺少明确的 --profile 目标（按 profile 作用域清理必须知道自己在为哪个 profile 卸载）"
+		};
+	}
+	if (process.platform !== "win32") {
+		return { ok: true, skipped: true, readable: false, removed: [], deleted: [], kept: [], failed: [], backup: null, message: "非 Windows：跳过注册表清理" };
+	}
+	const values = listValues();
 	if (values === null) {
 		return {
-			ok: true, skipped: false, readable: false, removed: [], failed: [],
+			ok: true, skipped: false, readable: false, removed: [], deleted: [], kept: [], failed: [], backup: null,
 			message: `⚠ 无法读取注册表 ${RUN_KEY}（reg query 失败或被安全策略拦截）：DSHWeb* 自启残留**未确认**，请人工用 reg query 核对`
 		};
 	}
-	const targets = values.filter((value) => RUN_VALUE_PREFIX.test(value.name));
-	const removed = [];
+	const planned = values
+		.filter((value) => RUN_VALUE_PREFIX.test(value.name))
+		.map((value) => ({ ...value, verdict: classifyAutostartValue(value, { profileDir: args.profile }) }));
+	const toDelete = planned.filter((item) => item.verdict.action === "delete");
+	const kept = planned
+		.filter((item) => item.verdict.action === "keep")
+		.map((item) => ({ name: item.name, type: item.type, data: item.data, reason: item.verdict.reason, shim: item.verdict.shim }));
+
+	// 删除前先备份（仅当真要删；失败只告警，不阻断）
+	const backup = toDelete.length > 0
+		? exportKey(args.profile)
+		: { ok: true, skipped: true, path: null, message: "没有需要删除的值（无需备份）" };
+
+	const deleted = [];
 	const failed = [];
-	for (const value of targets) {
-		const out = spawnSync("reg", ["delete", RUN_KEY, "/v", value.name, "/f"], { windowsHide: true, encoding: "utf8", timeout: 10000 });
-		if (out.status === 0) removed.push(value.name);
-		else failed.push({ name: value.name, message: (out.stderr || out.stdout || (out.error ? out.error.message : "")).trim() });
+	for (const item of toDelete) {
+		const out = deleteValue(item.name) || {};
+		const detail = (out.stderr || out.stdout || (out.error ? out.error.message : "")).trim();
+		if (out.status === 0 || deps.deleteValue) deleted.push({ name: item.name, type: item.type, data: item.data, reason: item.verdict.reason, shim: item.verdict.shim });
+		else failed.push({ name: item.name, message: detail || `reg delete exit ${out.status}` });
+	}
+
+	// 输出：已删除 / 已跳过 两块逐条（键名 + 类型 + 数据 + 判定理由）→ 卸载输出本身可当审计证据
+	const lines = [];
+	lines.push(`按 profile 作用域清理（目标 profile：${args.profile}）`);
+	if (backup?.message) lines.push(`备份：${backup.message}`);
+	if (deleted.length > 0) {
+		lines.push(`已删除（${deleted.length}）：`);
+		for (const item of deleted) lines.push(`   · ${item.name}  ${item.type}  ${item.data}  —— ${item.reason}`);
+	} else {
+		lines.push("已删除（0）：没有属于本 profile 的 DSHWeb* 值");
+	}
+	if (kept.length > 0) {
+		lines.push(`已跳过（${kept.length}，未删除）：`);
+		for (const item of kept) lines.push(`   · ${item.name}  ${item.type}  ${item.data}  —— ${item.reason}`);
+	}
+	if (failed.length > 0) {
+		lines.push(`删除失败（${failed.length}）：`);
+		for (const item of failed) lines.push(`   ✘ ${item.name}：${item.message}`);
 	}
 	return {
-		ok: failed.length === 0, skipped: false, readable: true, removed, failed,
-		message: removed.length > 0 ? `已删除注册表自启值：${removed.join(", ")}` : "未发现 DSHWeb* 自启值（无需删除）"
+		ok: failed.length === 0, skipped: false, readable: true,
+		removed: deleted.map((item) => item.name), deleted, kept, failed, backup,
+		message: lines.join("\n")
 	};
+}
+
+/**
+ * @deprecated t31 起名字不再准确（不再"删所有 DSHWeb*"，而是按 profile 作用域）。
+ * 保留导出仅为兼容既有引用；新代码请用 `removeProfileRunValues(args)`。
+ */
+export function removeDsWebRunValues(args) {
+	return removeProfileRunValues(args);
 }
 
 /**
@@ -1001,7 +1169,7 @@ function uninstallAutostart(args) {
 	}
 	const shim = autostartShimPath(args);
 	const uiShim = uiShimPath(args);
-	const reg = removeDsWebRunValues();
+	const reg = removeProfileRunValues(args);
 	const deleted = [];
 	const failed = [];
 	for (const file of [shim, uiShim]) {
@@ -1177,9 +1345,11 @@ export async function uninstallLauncher(args, probes = {}) {
 		}
 	}
 
-	// 2) 删 HKCU\...\Run 下所有 DSHWeb* 值
-	const reg = removeDsWebRunValues();
+	// 2) 按 profile 作用域清理 HKCU\...\Run 下的 DSHWeb* 值（t31/F6：只删属于本 profile 的 + 死指针）
+	const reg = removeProfileRunValues(args);
 	result.removedValues = reg.removed;
+	result.keptRunValues = reg.kept;
+	result.registryBackup = reg.backup?.path ?? null;
 	lines.push(`2) 自启注册表：${reg.message}`);
 	if (reg.failed.length > 0) {
 		result.ok = false;

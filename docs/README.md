@@ -5,7 +5,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **架构**：三进程（引擎 3080 / open-boot 3081 / 救援守护 3082）、守护锁 `port+1000`、插件页五分区与槽位契约、开关持久化与侧车、健康判定口径、卸载事务数据流、文件地图 |
 | [LAUNCHER.md](LAUNCHER.md) | **命令行口径**：三个 bin 的全部命令与退出码、`--uninstall` 卸载闭环、开机自启、`health.log` 留痕与轮转、端口表与冲突行为、写接口防护、故障排查，附「文档条目 → 代码位置」核对表 |
 | [RELEASING.md](RELEASING.md) | **发布流程**：版本号、构建、打包、`vendor` 刷新与断言、lockfile/包管理器约定、publish 与 2FA/OIDC、24 小时冷静期、引擎升级彩排、发布核对表 |
-| [releases/](releases/) | 每个版本的发布说明（`0.9.0.md` 为当前已发布版本；历史 `RELEASE_NOTES_*.md` 原样归档；`0.9.0-verify.md` 是干净环境装机验收报告） |
+| [releases/](releases/) | 每个版本的发布说明（**`0.9.1-rc2.md` = 当前仓库版本（预发布，dist-tag `next`，不顶 `latest`）**；`0.9.1.md` = 当前正式版（npm `latest`）；历史 `RELEASE_NOTES_*.md` 原样归档；`0.9.0-verify.md` 是干净环境装机验收报告）。预发布版由 `gen-changelog.mjs` 一并收录，段头带「（预发布）」标注 |
 | [review/](review/) | 审计与评审期的分析材料（`BUG_ANALYSIS_*.md`、`OPTIMIZATION_PLAN.md`、`PROBLEMS_README.md`、`IMPROVEMENTS_VERIFIED.md`）——历史快照，**不代表当前实现状态** |
 | [images/](images/) | README 用的实拍图（三张 0.9 界面截图，`README.md` 以绝对 URL 引用；**不进 npm 包**——`files` 白名单不含 `docs/`） |
 

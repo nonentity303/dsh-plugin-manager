@@ -41,9 +41,29 @@ const code = readFileSync("lib/client.js", "utf8");
 vm.runInContext(code, sandbox, { filename: "lib/client.js" });
 if (!handoff) throw new Error("bundle did not register");
 const exportsObj = handoff.factory((id) => require(id));
-const { PluginManagerTab, marketFilterItems } = exportsObj;
+const { PluginManagerTab, marketFilterItems, shouldDebounceSearch, SEARCH_DEBOUNCE_MS } = exportsObj;
 if (typeof PluginManagerTab !== "function") throw new Error("no PluginManagerTab export");
 if (typeof marketFilterItems !== "function") throw new Error("no marketFilterItems export");
+if (typeof shouldDebounceSearch !== "function") throw new Error("no shouldDebounceSearch export (P-05)");
+
+// ---- 2b. P-05：搜索防抖的纯函数语义（可证伪：修复前没有「输入值 ≠ 生效过滤值」这个概念，
+//          过滤在每次 onChange 同步执行；现在必须由 shouldDebounceSearch 决定是否起定时器）
+{
+	const cases = [
+		{ query: "theme", filterQuery: "", want: true, why: "刚输入、过滤值还没跟上 → 必须起防抖定时器" },
+		{ query: "theme", filterQuery: "theme", want: false, why: "过滤值已跟上 → 不再起定时器（不做多余重建）" },
+		{ query: "", filterQuery: "theme", want: true, why: "清空搜索（本项最贵：199 行重建）→ 同样走防抖等停顿" },
+		{ query: "", filterQuery: "", want: false, why: "初始态一致 → 不起定时器" }
+	];
+	for (const c of cases) {
+		const got = shouldDebounceSearch(c.query, c.filterQuery);
+		if (got !== c.want) throw new Error(`P-05 shouldDebounceSearch(${JSON.stringify(c.query)}, ${JSON.stringify(c.filterQuery)}) = ${got}，期望 ${c.want}（${c.why}）`);
+	}
+	if (!(SEARCH_DEBOUNCE_MS >= 100 && SEARCH_DEBOUNCE_MS <= 150)) {
+		throw new Error(`P-05 防抖窗口不在审计建议的 100–150 ms 区间：${SEARCH_DEBOUNCE_MS}`);
+	}
+	console.log(`RESULT: PASS - P-05 search debounce pure logic (${cases.length} cases, window ${SEARCH_DEBOUNCE_MS}ms)`);
+}
 
 // ---- 3. 构造一个真实感 snapshot（覆盖 needsUpdate/managed/protected 各状态；e1/e2 架构自带，e3-e6 用户安装）
 const entries = [
@@ -51,8 +71,8 @@ const entries = [
 	{ entryId: "e2", configId: "ui-theme", moduleName: "@deepseek-ai/dsh-client-ui-theme", packageName: "@deepseek-ai/dsh-client-ui-theme", description: "主题", necessity: "recommended", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "builtin", installedVersion: "0.1.0-rc.6", latestVersion: "0.1.0-rc.9", updateSource: "官方源 (npm)", needsUpdate: true, managed: false },
 	{ entryId: "e3", configId: "community-mod", moduleName: "community-mod", packageName: "community-mod", description: "社区插件", necessity: "optional", enabled: false, phase: null, error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.2.0", updateSource: "官方源 (npm)", needsUpdate: true, managed: true },
 	{ entryId: "e4", configId: "broken-mod", moduleName: "broken-mod", packageName: "broken-mod", description: "坏插件", necessity: "recommended", enabled: false, phase: "failed", error: "boom", protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: "1.0.0", updateSource: "官方源 (npm)", needsUpdate: false, managed: true },
-	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "0.1.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true },
-	{ entryId: "e6", configId: "vision-router", moduleName: "dsh-vision-router", packageName: "dsh-vision-router", description: "视觉路由（自带配置）", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.3.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
+	{ entryId: "e5", configId: "pkg-no-version", moduleName: "pkg-no-version", packageName: "pkg-no-version", description: "无版本", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "0.1.0", latestVersion: null, updateSource: null, updateReason: "not-found", needsUpdate: null, managed: true },
+	{ entryId: "e6", configId: "vision-router", moduleName: "dsh-vision-router", packageName: "dsh-vision-router", description: "视觉路由（自带配置）", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.3.0", latestVersion: null, updateSource: null, updateReason: "network", needsUpdate: null, managed: true }
 ];
 const makeSnapshot = (entriesMut) => ({
 	profileName: "web",
@@ -134,14 +154,24 @@ try {
 	if (!rootEl.textContent.includes("community-mod")) throw new Error("originAll reset failed");
 	console.log("RESULT: PASS - origin filter (user/builtin/all) + user badges");
 
+	// C-09 文案（弱网）：版本未知必须区分「网络不可达，可重试」(e6 updateReason=network)
+	// 与「源里没有此插件/无更新」(e5 updateReason=not-found)，不能再一律显示「版本未知」
+	if (!rootEl.textContent.includes("versionNetworkError")) throw new Error("network-reason version hint missing (C-09): " + rootEl.textContent.slice(0, 300));
+	if (!rootEl.textContent.includes("versionNotFound")) throw new Error("not-found version hint missing (C-09)");
+	console.log("RESULT: PASS - C-09 version hints (network / not-found) rendered distinctly");
+
 	// 搜索
+	// 注意（P-05）：这里**不能**用 jsdom 驱动文本输入做行为断言 —— 实测 React 18.3.1 + jsdom 24
+	// 不投递 input/change 事件（onChange 永不触发；值跟踪器也已被直接赋值污染），
+	// 因此「清空搜索每键延迟」只在真浏览器里测（audit/verify-090/rc2-perf-probe.mjs --section browser）。
+	// 防抖逻辑本身用纯函数断言（见下方 P-05 段）。
 	const searchInput = document.querySelector('input[type="search"]');
 	if (!searchInput) throw new Error("search input not found");
 	await act(async () => {
 		searchInput.value = "theme";
 		searchInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 	});
-	console.log("search render OK");
+	console.log("search render OK（jsdom 不投递 input 事件，行为断言见纯函数段）");
 
 	// 点开关（搜索过滤后可见的行）
 	const checkbox = document.querySelector('input[type="checkbox"]');
@@ -743,6 +773,46 @@ try {
 	process.exitCode = 1;
 }
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError) {
+// ---- 13. 弱网（C-04/C-09）：目录整体失败（source=error）时必须给「网络不可达，可重试」文案 + 重试按钮，
+//          而不是把真实原因（断网/代理）藏起来显示成「操作超时」。
+const root13 = document.createElement("div");
+document.body.appendChild(root13);
+const root13Instance = createRoot(root13);
+let marketError3 = null;
+try {
+	const apiErrCatalog = {
+		...api,
+		marketCatalog: async () => ({ source: "error", updated: null, count: 0, categories: null, items: [] }),
+		marketInstall: async () => ({ status: "failed", packageName: null, url: null, method: null, message: "n/a" })
+	};
+	await act(async () => {
+		root13Instance.render(React.createElement(PluginManagerTab, { ...apiErrCatalog, t }));
+	});
+	await settle();
+	await act(async () => {
+		findButton(root13, "market").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(60);
+	// 模块级目录缓存可能已被前面的用例填充：点「刷新目录」强制重新拉取（走 source=error 分支）
+	const refreshCatalogBtn = root13.querySelector('button[title="marketRefresh"]');
+	if (refreshCatalogBtn !== null) {
+		await act(async () => {
+			refreshCatalogBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		});
+		await settle(60);
+	}
+	const text13 = root13.textContent;
+	if (!text13.includes("marketSourceErrorHint")) {
+		throw new Error("market network-error hint missing (C-09): " + text13.slice(0, 300));
+	}
+	if (!text13.includes("marketRetry")) throw new Error("market retry button missing after network error");
+	console.log("RESULT: PASS - market catalog network-error hint + retry (C-04/C-09)");
+} catch (error) {
+	marketError3 = error;
+	console.error("MARKET NETWORK-ERROR PATH ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError && !marketError3) {
 	console.log("ALL RENDER TESTS PASSED");
 }

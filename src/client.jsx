@@ -96,10 +96,30 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
+/**
+ * P-05：搜索过滤的防抖窗口（毫秒）。审计实测：199 行全展开时「清空搜索」每键要重建 199 行
+ * （60.5–86.2 ms/键，唯一可感知的掉帧点）；输入收窄时 1.3–14 ms/键本来就够快。
+ * 120 ms 让连打（含 6 次 Backspace 清空）只重建一次，同时低于人手感知的「输入滞后」阈值。
+ */
+const SEARCH_DEBOUNCE_MS = 120;
+
+/**
+ * P-05：是否需要为搜索输入起一个防抖定时器（纯函数，可直接单测）。
+ * 输入值（query）与已生效的过滤值（filterQuery）不一致 → 需要等停顿后再重建列表；
+ * 一致 → 列表已是最新，不需要定时器（避免多余重建）。
+ */
+function shouldDebounceSearch(query, filterQuery) {
+	return query !== filterQuery;
+}
+
 function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t, embedded = false, onlyUpdatable = false, renderSlot, configSurfaces }) {
 	const [request, setRequest] = useState(0);
 	const [onlyUpdatableSelf, setOnlyUpdatableSelf] = useState(false);
 	const [query, setQuery] = useState("");
+	// P-05：输入框即时值（query）与**真正驱动过滤**的值（filterQuery）分离。
+	// 过滤要重建全部行（199 行全展开 = 4,544 DOM 节点，实测清空搜索 60.5–86.2 ms/键），
+	// 所以让它在输入停顿 SEARCH_DEBOUNCE_MS 之后只跑一次；输入框本身仍每键即时响应（不丢字、不丢光标）。
+	const [filterQuery, setFilterQuery] = useState("");
 	const [originFilter, setOriginFilter] = useState("all");
 	const [open, setOpen] = useState(new Set(["core"]));
 	const [showSources, setShowSources] = useState(false);
@@ -140,11 +160,24 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		};
 	}, [list, request]);
 
-	const searching = query.trim() !== "";
+	const searching = filterQuery.trim() !== "";
+
+	/**
+	 * P-05：搜索输入的防抖 —— 输入框 `query` 每键即时更新（不丢字/不丢光标），
+	 * 但真正驱动过滤的 `filterQuery` 只在停顿 SEARCH_DEBOUNCE_MS 后更新一次。
+	 * 依据（审计 P-05 实测）：199 行全展开 = 4,544 DOM 节点；**清空搜索**（列表从 2 行重建回 199 行）
+	 * 每键 60.5–86.2 ms（6 次 Backspace 连打 = 6 次全量重建）；输入收窄时 1.3–14 ms 本来就够快。
+	 * 防抖后中间态不再重建，只在停顿时重建一次（DOM 节点数不变，不做虚拟化）。
+	 */
+	useEffect(() => {
+		if (!shouldDebounceSearch(query, filterQuery)) return undefined;
+		const timer = setTimeout(() => setFilterQuery(query), SEARCH_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
+	}, [query, filterQuery]);
 
 	const sections = useMemo(() => {
 		if (state.status !== "ready") return [];
-		const normalized = query.trim().toLocaleLowerCase();
+		const normalized = filterQuery.trim().toLocaleLowerCase();
 		const filtered = state.snapshot.entries.filter((entry) => {
 			if ((onlyUpdatable || onlyUpdatableSelf) && !(entry.needsUpdate === true && entry.managed)) return false;
 			if (originFilter !== "all" && entry.origin !== originFilter) return false;
@@ -157,7 +190,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			key,
 			entries: filtered.filter((entry) => entry.necessity === key)
 		})).filter((section) => section.entries.length > 0);
-	}, [query, originFilter, state.snapshot?.entries, onlyUpdatable, onlyUpdatableSelf]);
+	}, [filterQuery, originFilter, state.snapshot?.entries, onlyUpdatable, onlyUpdatableSelf]);
 
 	/** 来源统计（chips 数量）。 */
 	const originCounts = useMemo(() => {
@@ -222,7 +255,23 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		}
 	};
 
-	const refreshAll = () => run("refresh", () => refresh());
+	/**
+	 * 检查更新：宿主侧有总预算（默认 90s，见 lib/index.js REFRESH_BUDGET_DEFAULT_MS），
+	 * 到点即中止并返回**部分结果** —— 这里如实说明，避免把「网络慢」显示成「已是最新」。
+	 */
+	const refreshAll = () => run("refresh", () => refresh()).then((snapshot) => {
+		const info = snapshot?.lastRefresh ?? null;
+		if (info === null) return;
+		const seconds = Math.max(1, Math.round((info?.durationMs ?? 0) / 1000));
+		if (info.aborted) {
+			setFeedback({
+				severity: "warning",
+				message: `${t("refreshAborted")}（${seconds}s / ${Math.round((info.budgetMs ?? 0) / 1000)}s，已查 ${info.checked ?? 0}/${info.total ?? 0}）${t("refreshAbortedHint")}`
+			});
+		} else {
+			setFeedback({ severity: "success", message: `${t("refreshDone")}（${seconds}s，${info.checked ?? 0}/${info.total ?? 0}）` });
+		}
+	});
 
 	/** 来源人工修正：选择 auto=恢复自动判定，否则写入侧车持久化。 */
 	const changeSource = (entry, value) => {
@@ -292,6 +341,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		}
 		if (item.status === "up-to-date") setFeedback({ severity: "success", message: `${item.packageName}: ${t("upToDate")}` });
 		else if (item.status === "failed") setFeedback({ severity: "error", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "network-error") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "not-found") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
 		else if (item.status === "not-managed") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
 	});
 
@@ -301,6 +352,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		const item = receipt.items[0];
 		if (item.status === "updated") setFeedback({ severity: "success", message: `${item.packageName}: ${item.message}` });
 		else if (item.status === "failed") setFeedback({ severity: "error", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "network-error") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
+		else if (item.status === "not-found") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
 		else if (item.status === "not-managed") setFeedback({ severity: "warning", message: `${item.packageName}: ${item.message}` });
 		else if (item.status === "up-to-date") setFeedback({ severity: "success", message: `${item.packageName}: ${t("upToDate")}` });
 	});
@@ -662,7 +715,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 														<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 11, fontFamily: "var(--ds-font-family-code)" }}>
 															{entry.installedVersion ?? "?"}{entry.latestVersion ? ` → ${entry.latestVersion}` : ""}
 															{entry.updateSource ? ` (${entry.updateSource})` : ""}
-															{entry.needsUpdate === null && entry.installedVersion ? ` (${t("versionUnknown")})` : ""}
+															{versionHint(t, entry)}
 														</p>
 													) : null}
 												</div>
@@ -1520,6 +1573,18 @@ function marketLang() {
 	}
 }
 
+/**
+ * C-09：版本信息缺失时按宿主给的 reason 说清原因 ——
+ * 「网络不可达，可重试」与「源里没有此插件/无更新」不能共用一句「版本未知」。
+ */
+function versionHint(t, entry) {
+	if (entry.needsUpdate !== null || !entry.installedVersion) return "";
+	if (entry.updateReason === "network" || entry.updateReason === "timeout") return ` (${t("versionNetworkError")})`;
+	if (entry.updateReason === "not-found") return ` (${t("versionNotFound")})`;
+	if (entry.updateReason === "backoff") return ` (${t("versionBackoff")})`;
+	return ` (${t("versionUnknown")})`;
+}
+
 /** 条目是否已安装：npm 包名 / 目录名 / 仓库名 任一命中 profile 依赖或本次会话刚装。 */
 function entryInstalled(item, installedNames, justInstalled) {
 	if (justInstalled.has(item.name)) return true;
@@ -1705,7 +1770,17 @@ function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
 					<button type="button" onClick={refreshCatalog} style={{ ...buttonStyle, marginLeft: 8 }}>{t("marketRetry")}</button>
 				</p>
 			) : null}
-			{catalog === null && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketLoading")}</p> : null}
+			{catalog === null && !loadError ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
+					{t("marketLoading")} {t("marketLoadingSlow")}
+				</p>
+			) : null}
+			{catalog?.source === "error" ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>
+					{t("marketSourceErrorHint")}
+					<button type="button" onClick={refreshCatalog} style={{ ...buttonStyle, marginLeft: 8 }}>{t("marketRetry")}</button>
+				</p>
+			) : null}
 			{catalog !== null && visible.length === 0 && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketEmpty")}</p> : null}
 			{shown.length > 0 ? (
 				<div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 420, overflow: "auto" }}>
@@ -2321,6 +2396,9 @@ const zh = {
 	profile: "当前配置",
 	search: "搜索插件名称/简介/包名",
 	refresh: "检查更新并刷新状态",
+	refreshDone: "检查更新完成",
+	refreshAborted: "网络较慢：检查更新已在总预算内中止",
+	refreshAbortedHint: "，结果可能不完整（失败不会被缓存），网络恢复后可直接重试。",
 	loading: "正在读取插件…",
 	error: "暂时无法读取插件。",
 	retry: "重试",
@@ -2348,6 +2426,9 @@ const zh = {
 	enableEntry: "启用",
 	disableEntry: "停用",
 	versionUnknown: "版本未知",
+	versionNetworkError: "网络不可达，可重试",
+	versionNotFound: "更新源没有此插件/无更新",
+	versionBackoff: "更新源限流冷却中，稍后自动重试",
 	update: "更新",
 	updateInternal: "内置",
 	updateInternalHint: "使用管理器内置下载器（HTTP/P2P/aria2），不走浏览器下载",
@@ -2476,6 +2557,7 @@ const zh = {
 	marketSearch: "搜索插件（名称/仓库/描述）…",
 	marketHint: "目录来自 awesome-dsh-plugin 精选收录；带 npm 包名的优先走 npm registry 直装（预构建产物），GitHub 仓库走内置下载器。装完在管理列表可见，重启后生效。",
 	marketLoading: "加载目录中…",
+	marketLoadingSlow: "（弱网最多等 45 秒；已不再受更新/卸载等长任务排队影响）",
 	marketEmpty: "没有匹配的插件。",
 	marketMore: "加载更多",
 	marketInstall: "安装",
@@ -2495,6 +2577,7 @@ const zh = {
 	marketSourceCache: "缓存",
 	marketSourceFallback: "GitHub 兜底",
 	marketSourceError: "目录不可用",
+	marketSourceErrorHint: "网络不可达，可重试：目录请求全部失败（断网/代理/限流都可能），点击重试重新加载。",
 	verifyTitle: "启动前自检",
 	verifyRun: "运行检查",
 	verifyOk: "✓ profile 配置正常，引擎可以正常启动。",
@@ -2544,6 +2627,9 @@ const en = {
 	profile: "Active profile",
 	search: "Search by name, description or package",
 	refresh: "Check updates and refresh",
+	refreshDone: "Update check complete",
+	refreshAborted: "Slow network: update check stopped at its total budget",
+	refreshAbortedHint: ", results may be partial (failures are not cached); retry once the network recovers.",
 	loading: "Reading plugins…",
 	error: "Plugins are temporarily unavailable.",
 	retry: "Retry",
@@ -2571,6 +2657,9 @@ const en = {
 	enableEntry: "Enable",
 	disableEntry: "Disable",
 	versionUnknown: "version unknown",
+	versionNetworkError: "network unreachable, retryable",
+	versionNotFound: "not on the update source / no update",
+	versionBackoff: "source rate-limited, retrying automatically",
 	update: "Update",
 	updateInternal: "Built-in",
 	updateInternalHint: "Use the manager's built-in downloader (HTTP/P2P/aria2) instead of the browser",
@@ -2699,6 +2788,7 @@ const en = {
 	marketSearch: "Search plugins (name/repo/description)…",
 	marketHint: "Catalog from awesome-dsh-plugin; entries with an npm name install from the npm registry (prebuilt), GitHub repos use the built-in downloader. Installed plugins appear in the management list after restart.",
 	marketLoading: "Loading catalog…",
+	marketLoadingSlow: "(up to 45s on a slow network; no longer queued behind long operations)",
 	marketEmpty: "No matching plugins.",
 	marketMore: "Load more",
 	marketInstall: "Install",
@@ -2718,6 +2808,7 @@ const en = {
 	marketSourceCache: "cached",
 	marketSourceFallback: "GitHub fallback",
 	marketSourceError: "catalog unavailable",
+	marketSourceErrorHint: "Network unreachable, retryable: all catalog requests failed (offline/proxy/rate limit). Click Retry to reload.",
 	verifyTitle: "Pre-boot check",
 	verifyRun: "Run check",
 	verifyOk: "✓ Profile configuration is healthy; the engine can boot.",
@@ -2759,7 +2850,7 @@ async function apply(ctx) {
 		const api = {
 			list: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.list(), "读取插件列表")),
 			// 全量刷新 = 165 包 × 所有源，放宽到 4 分钟（网络正常约 20-30s）
-			refresh: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.refresh(), "检查更新", 240000)),
+			refresh: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.refresh(), "检查更新", 120000)),
 			setEnabled: async (entryId, enabled) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setEnabled(entryId, enabled), "切换插件状态")),
 			update: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.update(packageNames), "更新插件")),
 			setSources: async (sources) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSources(sources), "保存更新源")),
@@ -2786,7 +2877,7 @@ async function apply(ctx) {
 			verifyProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.verifyProfile(), "启动前自检")),
 			fixProfile: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.fixProfile(), "修复引擎配置")),
 			updateBrowser: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.updateBrowser(packageNames), "解析下载链接")),
-			marketCatalog: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketCatalog(), "加载插件市场", 20000)),
+			marketCatalog: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketCatalog(), "加载插件市场", 45000)),
 			// 市场安装走 pnpm，可能下载 + 编译数分钟：超时放宽到 4 分钟
 			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000))
 		};
@@ -2966,4 +3057,4 @@ async function apply(ctx) {
 	};
 }
 
-export { PluginManagerTab, OfficialPluginsPanel, apply, inject, marketFilterItems, entryInstalled, configSurfacesFor };
+export { PluginManagerTab, OfficialPluginsPanel, apply, inject, marketFilterItems, entryInstalled, configSurfacesFor, shouldDebounceSearch, SEARCH_DEBOUNCE_MS };

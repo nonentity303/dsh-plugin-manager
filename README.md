@@ -6,7 +6,7 @@
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · 跨平台（Windows / macOS / Linux）
 >
-> **当前版本 0.9.1**（口径：仓库 `package.json` 的 `version`；上一个发布版是 0.9.0 —— 2026-09-30 上了 npm 与 GitHub Release）。
+> **正式发布版 0.9.1**（npm `latest`）；仓库 `package.json` 的 `version` 现在是 **`0.9.1-rc2`** —— **预发布版**，走 dist-tag **`next`**（`npm i dsh-plugin-manager-pro@next`），**不顶 `latest`**；上一个正式发布版是 0.9.0（2026-09-30 上了 npm 与 GitHub Release）。
 > 发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-plugin-manager/tags>。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文"安装"）。
 
@@ -61,7 +61,7 @@ TypeError: duplicate loader entry id: plugin-manager
 
 已在 **DSH 0.1.7-rc.2 上实测通过**：隔离彩排环境里引擎正常启动、侧边栏出现「插件管理」、五个分区齐备——就是上面图 1。0.1.7 的兼容修复与彩排结论见 `docs/releases/RELEASE_NOTES_0.8.3-1.md`⁴。
 
-> **我该装哪一版？** DSH **0.1.6 及以后 → 0.9.1**；**0.1.5 及更早的老引擎 → 0.8.2**。完整矩阵见下文「环境要求 → 引擎兼容性矩阵」。
+> **我该装哪一版？** DSH **0.1.6 及以后 → 0.9.1**（想尝鲜预发布版：`npm i dsh-plugin-manager-pro@next` = **0.9.1-rc2**，走 dist-tag `next`、不顶 `latest`）；**0.1.5 及更早的老引擎 → 0.8.2**。完整矩阵见下文「环境要求 → 引擎兼容性矩阵」。
 
 ![事务化卸载的影响预览 + 同一张卡片里的救援与诊断入口](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm4-uninstall-preview.png)
 
@@ -194,6 +194,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 
 - Windows 10/11 · macOS · Linux（`/rescue` 与三个 bin 工具全平台可用；**开机自启管理 `--install-autostart` 目前为 Windows**，macOS/Linux 可用 `--supervise` 自行加入系统自启）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
+  - **Node 口径以 `package.json` 的 `engines.node` 为唯一准绳**（当前 `>=18.0.0`）。注意：**0.9.1 在 Node 18/20 上会加载失败**（顶层具名导入 `node:module` 的 `findPackageJSON`，该导出 Node **22.14** 才有 → 链接期 `SyntaxError`，插件整体不加载）；**Node 18/20 请用 0.9.1-rc2 或更新的版本** —— 它改为命名空间导入 + 运行时特性检测 + 回退解析器，并有静态门禁 `node tools/dev/compat-scan.mjs --root .` 守住（本版实测 `blocker=0`，exit 0；0.9.1 发布件上 `blocker=1`）。
 - **引擎版本决定你该装哪一版**（见下表）——**装错版本 = 插件页不出现、甚至 profile 起不来**
 
 ### 引擎兼容性矩阵（DSH 引擎 × 本管理器版本）
@@ -202,14 +203,15 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 
 | 你的 DSH 引擎 | 本管理器版本 | 状态 | 实测日期 | 备注 / 出处 |
 |---|---|---|---|---|
-| **0.1.7-rc.2** | **0.9.1**（当前版本；上一个发布版 0.9.0） | ✅ 可用 | 0.9.0：2026-09-28 彩排 + 干净环境装机验收；0.9.1：四套测试全绿（含启动器 **348 项断言**，其中 19 条在受限会话按沙箱边界 SKIP —— 不计通过也不计失败；**以 `node test-launcher.mjs --strict` 的输出为准**） | 隔离彩排环境（独立 `DSH_HOME` + 独立端口）引擎正常启动、侧边栏「插件管理」+ 五分区齐备（本文图 1/图 2/图 3 即该环境实拍）。出处：`docs/releases/0.9.0.md`、`docs/releases/0.9.0-verify.md`（干净环境装机验收）、`docs/releases/RELEASE_NOTES_0.8.3-1.md`（"引擎 0.1.7-rc.2：**零条目失败**"）、[docs/RELEASING.md](docs/RELEASING.md)（发布核对表） |
-| **0.1.6 及以后**（含 0.1.6-alpha.2） | **0.9.1**（推荐） | ✅ 推荐（接管内置页） | 0.1.7-rc.2 已实测；**0.1.6-alpha.x 未逐一实测** | 官方从 0.1.6 起把插件管理页并进引擎；本包 `cordis.patch.yml` 停用的那一行 `ui-plugin-manager` 正是这版新增的官方页。出处：`cordis.patch.yml`、npm [`@deepseek-ai/dsh-client-ui-plugin-manager`](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-plugin-manager) |
+| **0.1.7-rc.2** | **0.9.1**（当前正式版）· **0.9.1-rc2**（预发布，dist-tag `next`） | ✅ 可用 | 0.9.0：2026-09-28 彩排 + 干净环境装机验收；0.9.1：四套测试全绿；**0.9.1-rc2（预发布）**：启动器套件独立验证 **448 checks / 418 OK / 30 SKIP(env) / 0 FAIL**、exit 0（2026-10-07；30 条 SKIP 全是沙箱边界，**不是产品失败**）、静态兼容门禁 `compat-scan` 对候选件 tgz **exit 0 / blocker 0**（0.9.1 发布件上是 blocker 1 / exit 2）；另含性能修复（客户端 bundle **792,931 → 255,903 B**、宿主热快照中位 **18.8 → 1.1 ms**）；**断言数以 `node test-launcher.mjs --strict` 的输出为准**（随代码树变化） | 隔离彩排环境（独立 `DSH_HOME` + 独立端口）引擎正常启动、侧边栏「插件管理」+ 五分区齐备（本文图 1/图 2/图 3 即该环境实拍）。出处：`docs/releases/0.9.0.md`、`docs/releases/0.9.0-verify.md`（干净环境装机验收）、`docs/releases/RELEASE_NOTES_0.8.3-1.md`（"引擎 0.1.7-rc.2：**零条目失败**"）、[docs/RELEASING.md](docs/RELEASING.md)（发布核对表） |
+| **0.1.6 及以后**（含 0.1.6-alpha.2） | **0.9.1**（推荐）／**0.9.1-rc2**（预发布尝鲜） | ✅ 推荐（接管内置页） | 0.1.7-rc.2 已实测；**0.1.6-alpha.x 未逐一实测** | 官方从 0.1.6 起把插件管理页并进引擎；本包 `cordis.patch.yml` 停用的那一行 `ui-plugin-manager` 正是这版新增的官方页。出处：`cordis.patch.yml`、npm [`@deepseek-ai/dsh-client-ui-plugin-manager`](https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-plugin-manager) |
 | **0.1.0-rc.6 ~ 0.1.5**（0.1.6 之前的引擎） | **0.8.2** | ✅ 可用（旧「设置 → 插件」tab 路线） | 0.8.2 发布于 2026-09-04；本机升级前的基线是引擎 0.1.1-rc.2 + 0.8.x | 0.8.x 与 0.9 是两套客户端（`docs/releases/0.9.0.md` ⑤），且 0.8.x 在 0.1.7 上不成立（见下一行）；**0.1.5 线未单独实测** |
 | **0.1.7-rc.2** | **0.8.2 / 早期 0.8.3 构建** | ❌ 插件整体不激活 | 2026-09-28 彩排实测 | 两个原因都在彩排里复现过：① 0.1.7 起 typert strict codec 必须有 `create()` 工厂；② `dsh.client.inject` 引用的 `@deepseek-ai/dsh-client-runtime` 在 0.1.7 已被移除。0.8.3-1 与 0.9.x 已修（`docs/releases/RELEASE_NOTES_0.8.3-1.md`） |
 | **0.1.6 及以后** | **任何声明同名 loader entry id 的第三方管理器**（如 LX2000WASD 0.6.x） | ❌ profile 起不来 | 竞品 2026-09 公告 | `TypeError: duplicate loader entry id: plugin-manager`（官方 `dsh-base` 行 id = `plugin-manager`）；本管理器用**自己的** id `plugin-manager-pro`，不撞车（见上文「老管理器为什么死」） |
 | 0.1.6 之前且已装 0.9.x 起不来 | 回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2` | ⚠️ 恢复路径 | — | 见下文"安装"里的回退命令 |
 
 > **一句话**：**引擎越新越要 0.9.1；引擎很老（0.1.6 之前）才需要 0.8.2。** 0.1.6 这条分界线是唯一确定的，中间的 0.1.6-alpha.x 过渡版本未逐一实测。
+> **Node 18/20 用户（或想尝鲜）请装 `0.9.1-rc2`**：`npm i dsh-plugin-manager-pro@next`（或管理器里指定 `0.9.1-rc2`）—— 0.9.1 在 Node 18/20 上**装完就加载失败**，这是本预发布版修掉的首个 blocker（见 `docs/releases/0.9.1-rc2.md`）。
 > 表里的"实测"记录来自本机**彩排环境**、**干净环境装机验收**与**真机安装归档**（`docs/releases/0.9.0-verify.md`、开发者工作区 `upgrade-rehearsal/`、`audit/install-090/`；后两处原始日志不随 npm 包发布），引擎每次小版本发布后按 `docs/RELEASING.md` 重跑。
 
 ## 🔐 权限与数据范围
@@ -245,6 +247,10 @@ dsh plugin --profile web add dsh-plugin-manager-pro
 
 # 方式二：刚发版时（或在 24 小时冷静期内）——显式写版本号，最可靠
 dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1
+
+# 方式二·预发布：尝鲜 0.9.1-rc2（走 dist-tag `next`，不顶 `latest`；Node 18/20 用户用这个）
+dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1-rc2
+# 等价口径（npm 直装）：npm i dsh-plugin-manager-pro@next
 
 # 方式三：离线 tgz（GitHub Release 页下载，或 npm pack 自建）
 dsh plugin --profile web add ./dsh-plugin-manager-pro-0.9.1.tgz

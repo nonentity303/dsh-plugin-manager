@@ -393,6 +393,25 @@ function lastHeartbeat(args) {
 const pidPathOf = (args) => join(args.profile, ".open-boot.pid");
 const logPathOf = (args) => join(args.profile, "open-boot.log");
 const engineLogPathOf = (args) => join(args.profile, "rescue-daemon.log");
+/**
+ * 2026-11-24 启动器补丁（自 v0.9.1 运行时补丁移植）：给启动页一个**可直接用的**入口 URL。
+ * 引擎每次进程重启都会换新的 launchToken（每进程随机，只打印在自己的 stdout 上），而 web.log
+ * 可能是上一个进程写的 → 拿旧 token 去跳只会撞 401。所以必须先验证：0.2.x 有效 token 返回
+ * 303（浏览器带 cookie 落地）；无效/陈旧 token 是 401。两者都不是就不给 URL，页面退回旧行为。
+ */
+async function latestTokenUrl() {
+	try {
+		const home = process.env.DSH_HOME || join(process.env.USERPROFILE || process.env.HOME || "", ".dsh");
+		const text = readFileSync(join(home, "logs", "web.log"), "utf8");
+		const tokenRe = new RegExp("http:\\/\\/127\\.0\\.0\\.1:" + ENGINE_PORT + "\\/\\?token=[A-Za-z0-9_\\-.]+", "g");
+		const all = [...text.matchAll(tokenRe)].map((m) => m[0]);
+		if (!all.length) return null;
+		const url = all[all.length - 1];
+		const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(2500) });
+		const body = await res.text();
+		return res.status === 303 || (res.status === 200 && body.includes("__DSH_BOOT__")) ? url : null;
+	} catch { return null; }
+}
 const healthLogPath = (profileDir) => join(profileDir, HEALTH_LOG);
 
 /**
@@ -548,14 +567,35 @@ async function boot(args, onLog = () => {}) {
 	// 引擎健康 = HTTP 握手 + 身份指纹（审计③ L4）：裸 TCP 可连不算"引擎就绪"
 	const health = await engineHealth(ENGINE_PORT);
 	if (health.ok) {
-		return { ok: true, alreadyRunning: true, healthy: true, message: `引擎已在 ${ENGINE_PORT} 运行（HTTP 握手正常），直接打开主界面。` };
+		return { ok: true, alreadyRunning: true, healthy: true, entryUrl: await latestTokenUrl(), message: `引擎已在 ${ENGINE_PORT} 运行（HTTP 握手正常），直接打开主界面。` };
 	}
 	if (await probe(ENGINE_PORT)) {
+		// 2026-11-24 启动器补丁（自 v0.9.1 运行时补丁移植）：开机时 DSHWebRescue（--no-open 起引擎）
+		// 与本启动器会同时动作，3080 **已监听但 HTTP 握手还没就绪**是"正在启动"的正常瞬时状态
+		// （0.2.2 先绑端口后注册路由，窗口期内 GET / 是 404）。旧逻辑把它当成"外来进程占用"并要求
+		// 用户手动结束进程 → 用户杀掉的正是刚起来的真引擎（"每次重启都得杀 node"的自锁根因）。
+		// 新逻辑：监听者是 node.exe 就当作引擎正在启动，先等握手；只有非 node 监听者才报外来占用。
 		const owner = portOwner(ENGINE_PORT);
+		const ownerImage = owner === null ? null : processImage(owner);
+		const ownerIsNode = ownerImage !== null && /^node(\.exe)?$/i.test(ownerImage);
+		if (ownerIsNode) {
+			onLog(`端口 ${ENGINE_PORT} 上已有 node 进程（pid ${owner}）但握手未就绪：判定为引擎正在启动，最多等待 ${Math.round(args.waitMs / 1000)}s`);
+			if (await waitForEngine(ENGINE_PORT, args.waitMs, 500, engineHealth)) {
+				return {
+					ok: true, alreadyRunning: true, healthy: true, starting: true, entryUrl: await latestTokenUrl(),
+					message: `引擎正在启动，已就绪（pid ${owner}）。`
+				};
+			}
+			return {
+				ok: false, alreadyRunning: false, starting: true, occupied: false, verifyOk: null, issues: [],
+				logPath: engineLogPathOf(args),
+				message: `引擎进程（pid ${owner}）占着 ${ENGINE_PORT}，但 ${Math.round(args.waitMs / 1000)}s 内 HTTP 握手未就绪。⚠ 不要结束这个进程（它就是真正的引擎）：稍等后刷新本页，或到救援中心查看引擎日志。`
+			};
+		}
 		return {
 			ok: false, alreadyRunning: false, occupied: true, portOwner: owner, verifyOk: null, issues: [],
 			logPath: engineLogPathOf(args),
-			message: `端口 ${ENGINE_PORT} 被${owner ? ` pid ${owner}` : "其他进程"}占用，但它不是 dsh 引擎（HTTP 握手失败）：拒绝跳转到坏页面，也不会重复启动。请先用任务管理器确认并结束该进程。`
+			message: `端口 ${ENGINE_PORT} 被${owner ? ` pid ${owner}` : "其他进程"}（${ownerImage ?? "未知映像"}）占用，且它不是 dsh 引擎（HTTP 握手失败）：拒绝跳转到坏页面，也不会重复启动。请先用任务管理器确认并结束该进程。`
 		};
 	}
 
@@ -579,6 +619,7 @@ async function boot(args, onLog = () => {}) {
 			ok: start.ok, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 			window: windowInfo, quarantined: start.quarantined, quarantineMessage: start.quarantineMessage,
 			start, logPath: start.log || engineLogPathOf(args),
+			entryUrl: start.ok ? await latestTokenUrl() : null,
 			message: start.message
 		};
 	}
@@ -588,6 +629,7 @@ async function boot(args, onLog = () => {}) {
 	return {
 		ok: up, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 		window: windowInfo, quarantined: [], logPath: engineLogPathOf(args),
+		entryUrl: up ? await latestTokenUrl() : null,
 		message: up ? `引擎已启动并就绪（${ENGINE_PORT}）。` : `引擎启动超时（${Math.round(args.waitMs / 1000)}s），请看启动窗口/日志：${engineLogPathOf(args)}`
 	};
 }
@@ -1279,7 +1321,7 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 		const r = await fetch("/api/boot", { method: "POST", headers: { "X-DSH-PM-Token": TOKEN } }).then((x) => x.json());
 		if (r.ok && r.alreadyRunning) {
 			log("✓ " + r.message, "ok");
-			location.href = "http://127.0.0.1:${enginePort}/";
+			location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/";
 			return;
 		}
 		if (r.code === 409) { log("⚠ " + (r.error || "已有启动流程在执行中"), "warn"); return; }
@@ -1287,8 +1329,8 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 		else if (r.verifyOk === true) log("自检：✓ 配置正常", "ok");
 		if (r.fixed) log("修复：" + (r.fixed.message || "完成"), "ok");
 		if (r.window && r.window.ok) log("⧉ " + r.window.message + "（窗口里可看到完整进度，结束时按任意键关闭）", "warn");
-		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 600); }
-		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 600); }
+		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/", 600); }
+		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/", 600); }
 		else {
 			log("✗ " + (r.message || JSON.stringify(r)), "bad");
 			if (r.logPath) log("日志：" + r.logPath, "warn");

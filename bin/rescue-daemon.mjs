@@ -95,7 +95,7 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 .result{font-size:13px;white-space:pre-wrap}.ok{color:#4ade80}.bad{color:#f87171}
 a{color:#60a5fa}
 </style></head><body><div class="card">
-<h1>🛟 DSH 独立救援中心</h1>
+<h1>🚑 DSH 独立救援中心</h1>
 <div class="sub">独立于主引擎的救砖入口 · 引擎挂了这里依然可用</div>
 <div class="row">
 <button class="primary" onclick="startAndOpen()">启动引擎并打开主界面</button>

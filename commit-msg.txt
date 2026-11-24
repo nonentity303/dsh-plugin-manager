@@ -1,0 +1,1 @@
+v0.6.9.1: improve logging and config validation - add error handling fallback and relax settleTimeoutMs range

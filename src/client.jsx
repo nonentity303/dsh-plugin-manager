@@ -856,7 +856,7 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 			gap: 8
 		}}>
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
-				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" }}>🛟 {t("rescueTitle")}</span>
+				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" }}>🚑 {t("rescueTitle")}</span>
 				<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
 			</div>
 			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueHint")}</p>
@@ -1430,7 +1430,7 @@ const zh = {
 	archived: "架构保留",
 	rescue: "救砖",
 	rescueTitle: "救援中心",
-	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
+	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🚑 按钮）。",
 	rescueDiagnose: "运行诊断",
 	rescueClean: "✓ 未发现加载失败或运行期错误。",
 	rescueDisable: "禁用此插件",
@@ -1548,7 +1548,7 @@ const en = {
 	archived: "archived",
 	rescue: "Rescue",
 	rescueTitle: "Rescue center",
-	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🛟 button, bottom right).",
+	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🚑 button, bottom right).",
 	rescueDiagnose: "Diagnose",
 	rescueClean: "✓ No failing plugins found.",
 	rescueDisable: "Disable",
@@ -1687,7 +1687,7 @@ async function apply(ctx) {
 	let rescueBall = null;
 	if (typeof document !== "undefined" && document.body !== null) {
 		rescueBall = document.createElement("button");
-		rescueBall.textContent = "🛟";
+		rescueBall.textContent = "🚑";
 		rescueBall.title = "DSH 救援中心（设置页不可用时的救砖入口）";
 		rescueBall.setAttribute("aria-label", "DSH 救援中心");
 		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;";

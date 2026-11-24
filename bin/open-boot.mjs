@@ -14,7 +14,7 @@
  *   node bin/open-boot.mjs [--profile <dir>] [--port <n>] [--dsh <cmd>]
  * 零新依赖（复用 lib/preflight.mjs 与 lib/enginectl.mjs）。
  */
-import { createServer } from "node:http";
+import { createServer, get as httpGet } from "node:http";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { verifyProfile, fixProfile } from "../lib/preflight.mjs";
@@ -122,15 +122,44 @@ const server = createServer(async (req, res) => {
 	res.end("not found");
 });
 
-server.on("error", (error) => {
-	if (error.code === "EADDRINUSE") {
-		console.error(`端口 ${args.port} 被占用，尝试 ${args.port + 1}…`);
-		args.port += 1;
-		server.listen(args.port, "127.0.0.1");
-	} else {
+/**
+ * 判断占用端口的服务是不是另一个 open-boot（GET /api/status 的形状）。
+ * 用于"单一所有者"：3081 已有启动器时本实例安静退出，不换端口。
+ */
+function probeExistingLauncher(port) {
+	return new Promise((resolve) => {
+		const request = httpGet({ host: "127.0.0.1", port, path: "/api/status", timeout: 1500 }, (res) => {
+			let body = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk) => { body += chunk; });
+			res.on("end", () => {
+				try {
+					const parsed = JSON.parse(body);
+					resolve(parsed !== null && typeof parsed === "object" && typeof parsed.engineUp === "boolean" ? parsed : null);
+				} catch { resolve(null); }
+			});
+		});
+		request.on("timeout", () => { request.destroy(); resolve(null); });
+		request.on("error", () => resolve(null));
+	});
+}
+
+server.on("error", async (error) => {
+	if (error.code !== "EADDRINUSE") {
 		console.error("open-boot error:", error.message);
 		process.exit(1);
 	}
+	// 3081 被占用时不再静默 +1：浏览器主页写死 3081，静默换端口会让"启动器"悄悄
+	// 变成另一个服务或什么都没有。占用者是另一个 open-boot → 单一所有者，安静
+	// 退出；否则明确报错退出（绝不换端口）。
+	const owner = await probeExistingLauncher(args.port);
+	if (owner !== null) {
+		console.log(`[open-boot] 端口 ${args.port} 已由另一个 open-boot 服务（engineUp=${owner.engineUp}），本实例退出，不换端口。`);
+		console.log(`[open-boot] 如需让新版本接管 3081：先结束占用进程（netstat -ano | findstr :${args.port}），再重启启动器。`);
+		process.exit(0);
+	}
+	console.error(`[open-boot] 端口 ${args.port} 被占用，但占用者不是 open-boot。本实例不换端口退出；请先清理占用进程（netstat -ano | findstr :${args.port}）。`);
+	process.exit(2);
 });
 
 server.listen(args.port, "127.0.0.1", () => {

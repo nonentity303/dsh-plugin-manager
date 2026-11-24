@@ -34,5 +34,7 @@ console.log("marketCatalog:", catalog.ok ? `source=${catalog.value.source} count
 result.list = { entries: entries.length, builtin, user };
 result.catalog = catalog.ok ? { source: catalog.value.source, count: catalog.value.count } : null;
 const { writeFileSync } = await import("node:fs");
-writeFileSync("C:\\Users\\35129\\Documents\\harness\\plugin-manager\\.origin-verify.json", JSON.stringify(result, null, 2), "utf8");
+const { join } = await import("node:path");
+const { tmpdir } = await import("node:os");
+writeFileSync(process.env.ORIGIN_VERIFY_OUT || join(tmpdir(), ".origin-verify.json"), JSON.stringify(result, null, 2), "utf8");
 console.log("ORIGIN VERIFY OK");

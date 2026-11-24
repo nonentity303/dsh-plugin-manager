@@ -1,6 +1,12 @@
-# plugin-manager patch layer: disable the read-only inventory tab (replaced by
-# this manager's tab) and insert the manager plugin row.
-- id: ui-settings-plugin-inventory
+# plugin-manager patch layer
+#
+# 1) 接管内置插件页：自研管理器把自己注册进 `main`(key=plugins) /
+#    `sidebar.panellist`(id=plugins) 并声明内置页原来的 7 个 plugins.* 槽位。
+#    同名 key / 重复子槽位声明是硬冲突（dsh-client-ui-slots 会抛错），
+#    因此必须先在这里关掉内置的 ui-plugin-manager。
+# 2) 设置页那个只读清单 tab 不再冲突（自研 tab 的 id 已从 "all" 改为
+#    "pluginManagerPro"），所以无需再禁用它。
+- id: ui-plugin-manager
   disabled: true
 
 - insert:

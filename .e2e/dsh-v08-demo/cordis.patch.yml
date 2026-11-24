@@ -1,0 +1,4 @@
+# dsh-v08-demo bundle patch layer (E2E fixture): intentionally empty — no entries
+# are inserted, so the package is a pure profile dependency (transactional
+# uninstall / undo target) without a host module to import.
+[]

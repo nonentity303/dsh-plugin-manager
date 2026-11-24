@@ -1,12 +1,12 @@
 // namespace import：shell 的 react 是 CJS（module.exports = React，无 default），
 // default 导入会被 esbuild 生成 .default 引用导致运行时崩溃（TabBoundary extends undefined）。
 import * as React from "react";
-const { useEffect, useMemo, useState } = React;
+const { useEffect, useMemo, useState, useSyncExternalStore } = React;
 
 /**
  * 插件管理器 —— 浏览器端 v0.2（打包产物 lib/client.js 由客户端模块系统提供）。
  *
- * 界面：按必要程度折叠分组（必须/推荐/可选）、插件名称/简介、
+ * 界面：按来源折叠分组（核心组件/引擎内置组件/用户插件）、插件名称/简介、
  * 启用状态（红=错误·需检查 黄=需更新 灰=未启用 绿=启用）、
  * 更新按钮（从配置的更新源拉取）、更新源管理面板。
  */
@@ -17,6 +17,7 @@ const COLORS = {
 	red: "#ef4444",
 	yellow: "#f59e0b",
 	green: "#22c55e",
+	blue: "#4f8cff",
 	grey: "#9ca3af"
 };
 
@@ -29,11 +30,91 @@ const STATUS_META = {
 
 const NECESSITY_META = {
 	core: { color: COLORS.red, key: "necessityCore" },
-	recommended: { color: COLORS.yellow, key: "necessityRecommended" },
-	optional: { color: COLORS.green, key: "necessityOptional" }
+	builtin: { color: COLORS.blue, key: "necessityBuiltin" },
+	user: { color: COLORS.green, key: "necessityUser" }
 };
 
-const NECESSITY_ORDER = ["core", "recommended", "optional"];
+const NECESSITY_ORDER = ["core", "builtin", "user"];
+
+// 分区重构 v5（用户验收返工）：**引擎侧 necessity 字段不能直接当分区**——它把 46 个架构 bundle 全标了 core。
+// 改为按「包名 + 来源」分三区：
+//   核心组件 = 引擎网页 UI 的必需组件（与 open-boot 的 CORE_BUNDLES 对齐，禁用开关受 protected 保护）；
+//   引擎内置组件 = origin=builtin 且非核心的全部条目（引擎内置 bundle，可启停，区内按名称排序）；
+//   用户插件 = origin=user 的条目（dsh plugin add / 插件市场安装）。
+// 「推荐」不再是分区，降级为行内小标签（RECOMMENDED_PACKAGE_NAMES 里的第三方推荐件，如 browser-control）。
+const CORE_PACKAGE_NAMES = new Set(["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]);
+const RECOMMENDED_PACKAGE_NAMES = new Set(["@caob23/dsh-browser-control"]);
+const MANAGER_PACKAGE_NAME = "dsh-plugin-manager-pro";
+
+/** 条目归属哪个分区（纯函数，可单测）：核心组件 → 用户插件 → 引擎内置组件。
+ * 只看包名与来源：核心区按包名白名单，其余按 entry.origin（引擎侧 necessity 字段不采纳——
+ * 它把 46 个架构 bundle 全标 core，全塞进核心区等于没有分区）。 */
+function sectionKeyOfEntry(entry) {
+	const pkg = String(entry?.packageName ?? entry?.moduleName ?? entry?.configId ?? "").toLocaleLowerCase();
+	if (CORE_PACKAGE_NAMES.has(pkg)) return "core";
+	if (entry?.origin === "user") return "user";
+	return "builtin";
+}
+
+/** 行内「推荐」小标签：仅推荐加装清单里的第三方件（browser-control 等）显示，不再决定分区。 */
+function isRecommendedEntry(entry) {
+	const pkg = String(entry?.packageName ?? entry?.moduleName ?? entry?.configId ?? "").toLocaleLowerCase();
+	return RECOMMENDED_PACKAGE_NAMES.has(pkg);
+}
+
+/**
+ * 第三方配置槽位的「空源」：没有 provider（设置页 tab 上下文 / 单元测试）时，
+ * useSyncExternalStore 仍需要一个稳定且恒等的 getSnapshot/subscribe 对。
+ */
+const EMPTY_CONFIG_SURFACES = Object.freeze({ rows: Object.freeze([]), bundles: Object.freeze([]) });
+const EMPTY_CONFIG_SOURCE = Object.freeze({
+	getSnapshot: () => EMPTY_CONFIG_SURFACES,
+	subscribe: () => () => {}
+});
+const EMPTY_ITEMS = Object.freeze([]);
+const EMPTY_ITEMS_SOURCE = Object.freeze({
+	getSnapshot: () => EMPTY_ITEMS,
+	subscribe: () => () => {}
+});
+
+/**
+ * 把一个插件条目映射到它参与的第三方配置槽位键（0.1.7 契约）：
+ * - `plugins.bundle.config` 的 key 就是**包名**（dshmarket → "dshmarket"）；
+ * - `plugins.row.config` 的 key 是 `<包名>#<行id>`（free-search → "dsh-free-search#web-search-free"）。
+ * 管理器快照只有 packageName / moduleName / configId、没有行 id，因此按前缀匹配：
+ * 前缀命中三者之一即认为该行属于这个插件（同一个包注册多行时逐个列出）。
+ *
+ * 纯函数，test-render.mjs 可直接断言；未注册的键一律不产生出口。
+ * @param entry 管理器条目（含 packageName/moduleName/configId）
+ * @param surfaces 注册键快照 `{ rows: string[], bundles: string[] }`
+ * @returns `{ rows: [{key, rowId}], bundles: [{key}] }`
+ */
+function configSurfacesFor(entry, surfaces) {
+	if (entry === null || entry === undefined || surfaces === null || surfaces === undefined) {
+		return { rows: [], bundles: [] };
+	}
+	const prefixes = [entry.packageName, entry.moduleName, entry.configId]
+		.filter((value) => typeof value === "string" && value !== "")
+		.map((value) => value.toLocaleLowerCase());
+	if (prefixes.length === 0) return { rows: [], bundles: [] };
+	const rows = [];
+	for (const key of surfaces.rows ?? []) {
+		if (typeof key !== "string") continue;
+		const hash = key.lastIndexOf("#");
+		if (hash <= 0) continue;
+		if (!prefixes.includes(key.slice(0, hash).toLocaleLowerCase())) continue;
+		rows.push({ key, rowId: key.slice(hash + 1) });
+	}
+	rows.sort((a, b) => a.key.localeCompare(b.key));
+	const bundles = [];
+	for (const key of surfaces.bundles ?? []) {
+		if (typeof key !== "string" || key === "") continue;
+		if (!prefixes.includes(key.toLocaleLowerCase())) continue;
+		bundles.push({ key });
+	}
+	bundles.sort((a, b) => a.key.localeCompare(b.key));
+	return { rows, bundles };
+}
 
 /** 状态优先：错误(红) > 需更新(黄) > 未启用(灰)/启用(绿)。 */
 function statusOf(entry) {
@@ -42,19 +123,45 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, configCards, t }) {
+/**
+ * 文件占用类错误（EBUSY/EPERM/EACCES…）的人话补充：
+ * Windows 下 pnpm 删目录被终端 / 编辑器 / 杀毒扫描占住的情况非常常见，原始 errno 用户看不懂。
+ */
+function friendlyError(message) {
+	if (typeof message !== "string") return message;
+	return /EBUSY|EPERM|EACCES|resource busy|used by another process/i.test(message)
+		? `${message} —— 文件可能被占用：请关闭正在使用该目录的程序（终端 / 编辑器 / 杀毒扫描）后重试，必要时重启引擎再试。`
+		: message;
+}
+
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t, embedded = false, onlyUpdatable = false, renderSlot, configSurfaces }) {
 	const [request, setRequest] = useState(0);
+	const [onlyUpdatableSelf, setOnlyUpdatableSelf] = useState(false);
 	const [query, setQuery] = useState("");
 	const [originFilter, setOriginFilter] = useState("all");
 	const [open, setOpen] = useState(new Set(["core"]));
 	const [showSources, setShowSources] = useState(false);
 	const [showRescue, setShowRescue] = useState(false);
 	const [showMarket, setShowMarket] = useState(false);
-	const [showConfigCards, setShowConfigCards] = useState(false);
+	const [showScenarios, setShowScenarios] = useState(false);
+	const [showHistory, setShowHistory] = useState(false);
+	const [openConfig, setOpenConfig] = useState(null);
+	const [marketSeed, setMarketSeed] = useState({ q: "", n: 0 });
+	const [uninstallTarget, setUninstallTarget] = useState(null);
 	const [highlightCard, setHighlightCard] = useState(null);
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
+
+	// 第三方配置槽位的**已注册键**（响应式：槽位 ledger 变化即重渲染）。
+	// renderSlot 由声明了 plugins.* children 的那条 main 注册（框架契约）提供；
+	// 设置页 tab 那条注册没有 children → renderSlot 为 undefined → 此处全部降级为「无出口」。
+	const surfaces = useSyncExternalStore(
+		(configSurfaces ?? EMPTY_CONFIG_SOURCE).subscribe,
+		(configSurfaces ?? EMPTY_CONFIG_SOURCE).getSnapshot,
+		(configSurfaces ?? EMPTY_CONFIG_SOURCE).getSnapshot
+	);
+	const canRenderSurfaces = typeof renderSlot === "function";
 
 	useEffect(() => {
 		let current = true;
@@ -78,6 +185,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		if (state.status !== "ready") return [];
 		const normalized = query.trim().toLocaleLowerCase();
 		const filtered = state.snapshot.entries.filter((entry) => {
+			if ((onlyUpdatable || onlyUpdatableSelf) && !(entry.needsUpdate === true && entry.managed)) return false;
 			if (originFilter !== "all" && entry.origin !== originFilter) return false;
 			if (!normalized) return true;
 			return entry.configId.toLocaleLowerCase().includes(normalized)
@@ -86,9 +194,9 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		});
 		return NECESSITY_ORDER.map((key) => ({
 			key,
-			entries: filtered.filter((entry) => entry.necessity === key)
+			entries: filtered.filter((entry) => sectionKeyOfEntry(entry) === key)
 		})).filter((section) => section.entries.length > 0);
-	}, [query, originFilter, state.snapshot?.entries]);
+	}, [query, originFilter, state.snapshot?.entries, onlyUpdatable, onlyUpdatableSelf]);
 
 	/** 来源统计（chips 数量）。 */
 	const originCounts = useMemo(() => {
@@ -102,29 +210,20 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		return { builtin, user };
 	}, [state.snapshot?.entries]);
 
-	/** 条目 -> 自带配置卡片（vision-router 等大 mod 的 settings.plugin.item 注册）。
-	 *  匹配规则：configId 全等、packageName 全等或末尾匹配（@scope/pkg-name = card id）。
-	 *  不再使用 id.includes(configId)，避免 "session-title" 错误匹配 "session" 等假阳性。 */
-	const cardForEntry = useMemo(() => {
+	/**
+	 * 条目 -> 该条目参与的第三方配置槽位键（plugins.row.config / plugins.bundle.config）。
+	 * 0.1.7 起第三方的配置界面**只**走这两个槽位（settings.plugin.item 已无声明者），
+	 * 因此这里是「插件自带配置入口」的唯一来源；未注册的键不会产生按钮。
+	 */
+	const surfacesFor = useMemo(() => {
 		const lookup = new Map();
 		if (state.status !== "ready") return lookup;
-		const cards = configCards ?? [];
 		for (const entry of state.snapshot.entries) {
-			const configId = entry.configId.toLocaleLowerCase();
-			const pkg = (entry.packageName ?? "").toLocaleLowerCase();
-			for (const card of cards) {
-				const id = String(card.id ?? "").toLocaleLowerCase();
-				if (id === "") continue;
-				// 1) configId 全等（如 card id "vision-router" == entry configId "vision-router"）
-				if (configId === id) { lookup.set(entry.entryId, card); break; }
-				// 2) packageName 全等（如 card id "dsh-vision-router" == pkg "dsh-vision-router"）
-				if (pkg === id) { lookup.set(entry.entryId, card); break; }
-				// 3) packageName 末尾匹配（如 card id "vision-router" == pkg "dsh-vision-router" 末尾）
-				if (pkg.endsWith("/" + id) || pkg.endsWith("-" + id)) { lookup.set(entry.entryId, card); break; }
-			}
+			const matched = configSurfacesFor(entry, surfaces);
+			if (matched.rows.length > 0 || matched.bundles.length > 0) lookup.set(entry.entryId, matched);
 		}
 		return lookup;
-	}, [configCards, state.snapshot?.entries]);
+	}, [surfaces, state.snapshot?.entries]);
 
 	const updatable = useMemo(() => {
 		if (state.status !== "ready") return [];
@@ -154,7 +253,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			restoreScroll(scrollY);
 			return result;
 		} catch (error) {
-			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+			setFeedback({ severity: "error", message: friendlyError(error instanceof Error ? error.message : String(error)) });
 			restoreScroll(scrollY);
 			return null;
 		} finally {
@@ -164,11 +263,27 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 
 	const refreshAll = () => run("refresh", () => refresh());
 
+	/** 行内「市场详情」：预取目录缓存后带关键词打开市场面板（面板用 key 重挂载接收 initialQuery）。 */
+	const openMarketFor = async (entry) => {
+		const seed = String(entry.packageName ?? entry.moduleName ?? entry.configId ?? "").split("/").pop() ?? "";
+		try { if (typeof marketCatalog === "function") await marketCatalog(); } catch { /* 打开后面板自会展示加载错误 */ }
+		setMarketSeed((prev) => ({ q: seed, n: prev.n + 1 }));
+		setShowMarket(true);
+	};
+
+	/** 来源人工修正：选择 auto=恢复自动判定，否则写入侧车持久化。 */
+	const changeSource = (entry, value) => {
+		const label = value === "auto" ? null : value;
+		run(`source:${entry.packageName}`, () => setSourceOverride(entry.packageName, label)).then((snapshot) => {
+			if (snapshot) setFeedback({ severity: "success", message: `${entry.packageName} 来源已保存。` });
+		});
+	};
+
 	const toggle = (entry) => run(`entry:${entry.entryId}`, () => setEnabled(entry.entryId, !entry.enabled)).then((receipt) => {
 		if (!receipt) return;
 		const failed = receipt.items.filter((item) => item.status === "failed").map((item) => item.message).filter(Boolean).join(" ");
 		const restart = receipt.items.filter((item) => item.status === "restart-required").map((item) => item.message).filter(Boolean).join(" ");
-		if (failed) setFeedback({ severity: "error", message: failed });
+		if (failed) setFeedback({ severity: "error", message: friendlyError(failed) });
 		else if (restart) setFeedback({ severity: "warning", message: restart });
 	});
 
@@ -214,7 +329,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		if (!receipt || receipt.items.length === 0) return;
 		const item = receipt.items[0];
 		if (item.status === "need-download" && item.url) {
-			setFeedback({ severity: "warning", message: `${item.packageName} → ${item.latestVersion}：已触发浏览器下载${item.url.startsWith("magnet:") ? "（P2P 磁力链接，浏览器可能无法直接处理，可用 NDM/比特彗星导入）" : ""}。下载完成后管理器自动安装（${t("dlDir")}：见救砖面板）。若浏览器未开始下载，请点击「内置下载」。` });
+			setFeedback({ severity: "warning", message: `${item.packageName} → ${item.latestVersion}：已触发浏览器下载${item.url.startsWith("magnet:") ? "（P2P 磁力链接，浏览器可能无法直接处理，可用 NDM/比特彗星导入）" : ""}。下载完成后管理器自动安装（${t("dlDir")}：见救援面板）。若浏览器未开始下载，请点击「内置下载」。` });
 			triggerBrowserDownload(item.url);
 			const result = await pollDownloads();
 			if (result !== null) {
@@ -294,35 +409,87 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const snapshot = state.snapshot;
 
 	return (
-		<section aria-label={t("title")} style={{ width: "100%", maxWidth: 880, display: "flex", flexDirection: "column", gap: 10, color: "var(--dsw-alias-label-primary)" }}>
-			<header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-				<div>
-					<h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{t("title")}</h3>
-					<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
+		<section aria-label={t("title")} style={{ width: "100%", maxWidth: embedded ? "none" : 880, display: "flex", flexDirection: "column", gap: 10, color: "var(--dsw-alias-label-primary)" }}>
+			<header style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+				{embedded ? null : (
+				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+					<h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{t("title")}</h3>
+					<span style={{
+						fontSize: 11,
+						fontWeight: 600,
+						padding: "2px 9px",
+						borderRadius: 999,
+						background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+						color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+						whiteSpace: "nowrap"
+					}}>{t("managerBadge")}</span>
+					<span style={{ marginLeft: "auto", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
 						{t("profile")}: <code style={{ fontFamily: "var(--ds-font-family-code)" }}>{snapshot.profileName}</code>
-					</p>
+					</span>
 				</div>
-				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-					<button type="button" onClick={() => setShowMarket((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", fontWeight: showMarket ? 600 : 400 }}>
-						{t("market")}
-					</button>
-					<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
-						{t("rescue")}
-					</button>
-					<button type="button" onClick={resetAll} disabled={busy !== null}
-						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
-						{t("resetToggles")}
-					</button>
+				)}
+				{/* 新设计：搜索框与全部操作按钮收进同一行工具栏（搜索弹性占宽，按钮自动换行） */}
+				<div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+					<label style={{ flex: "1 1 210px", position: "relative", display: "inline-flex", alignItems: "center", minWidth: 200 }}>
+						<span style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{t("search")}</span>
+						<input
+							type="search"
+							value={query}
+							placeholder={t("search")}
+							onChange={(event) => setQuery(event.currentTarget.value)}
+							style={{
+								boxSizing: "border-box",
+								width: "100%",
+								height: 32,
+								border: "1px solid var(--dsw-alias-border-l2)",
+								background: "var(--dsw-alias-bg-layer-1)",
+								color: "var(--dsw-alias-label-primary)",
+								borderRadius: 8,
+								padding: "0 12px",
+								fontSize: 13,
+								font: "inherit"
+							}}
+						/>
+					</label>
 					{updatable.length > 0 ? (
 						<button type="button" onClick={updateAll} disabled={busy !== null}
-							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
+							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
 							{t("updateAll")} ({updatable.length})
 						</button>
 					) : null}
-					<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
-						{t("sources")}
+					{embedded ? (
+						updatable.length > 0 ? (
+							<button type="button" onClick={() => setOnlyUpdatableSelf((v) => !v)}
+								style={{ ...buttonStyle, fontWeight: onlyUpdatable || onlyUpdatableSelf ? 600 : 400 }}>
+								{t("onlyUpdatable")} ({updatable.length})
+							</button>
+						) : null
+					) : (
+						<>
+						<button type="button" onClick={() => setShowMarket((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", fontWeight: showMarket ? 600 : 400 }}>
+							{t("market")}
+						</button>
+						<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
+							{t("rescue")}
+						</button>
+						<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
+							{t("sources")}
+						</button>
+						<button type="button" onClick={() => setShowScenarios((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, fontWeight: showScenarios ? 600 : 400 }}>
+							{t("scenarios")}
+						</button>
+						<button type="button" onClick={() => setShowHistory((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, fontWeight: showHistory ? 600 : 400 }}>
+							{t("history")}
+						</button>
+						</>
+					)}
+					<button type="button" onClick={resetAll} disabled={busy !== null}
+						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
+						{t("resetToggles")}
 					</button>
 					<button type="button" aria-label={t("refresh")} title={t("refresh")} onClick={refreshAll} disabled={busy !== null} style={{ ...buttonStyle, width: 32, height: 32, display: "grid", placeItems: "center" }}>
 						{busy === "refresh" ? "…" : "↻"}
@@ -330,77 +497,58 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 				</div>
 			</header>
 
-			{/* 图例 */}
-			<div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
-				<span style={{ fontWeight: 600, marginRight: 2 }}>{t("legendNecessity")}:</span>
-				{Object.entries(NECESSITY_META).map(([key, meta]) => (
-					<span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-						<i style={{ width: 8, height: 8, borderRadius: 2, background: meta.color, display: "inline-block" }} />
-						{t(meta.key)}
-					</span>
-				))}
-				<span style={{ fontWeight: 600, margin: "0 2px 0 10px" }}>{t("legendStatus")}:</span>
-				{Object.entries(STATUS_META).map(([key, meta]) => (
-					<span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-						<i style={{ width: 8, height: 8, borderRadius: "50%", background: meta.color, display: "inline-block" }} />
-						{t(meta.key)}
-					</span>
-				))}
-				<span style={{ fontWeight: 600, margin: "0 2px 0 10px" }}>{t("legendOrigin")}:</span>
-				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-label-tertiary)", display: "inline-block" }} />
-					{t("originBuiltin")}
-				</span>
-				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-state-business-primary, #4f8cff)", display: "inline-block" }} />
-					{t("originUser")}
-				</span>
-			</div>
+			{/* 事务化卸载流程（行内「卸载」按钮触发：影响预览 → 确认 → 执行 → 报告） */}
+			{uninstallTarget !== null ? (
+				<UninstallFlow
+					packageName={uninstallTarget}
+					preview={uninstallPreview}
+					uninstall={uninstallPackages}
+					t={t}
+					onDone={(changed) => {
+						setUninstallTarget(null);
+						if (changed) setRequest((value) => value + 1);
+					}}
+				/>
+			) : null}
 
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
 
-			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装） */}
-			{showMarket ? <MarketPanel marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
+			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装；key 随行内「市场详情」重挂载以接收预置关键词） */}
+			{showMarket ? <MarketPanel key={marketSeed.n} initialQuery={marketSeed.q} marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
 
-			{/* 救砖面板 */}
+			{/* 场景方案（保存/应用插件组合，切换前预览） */}
+			{showScenarios ? <ScenarioPanel
+				scenarioList={scenarioList}
+				scenarioSave={scenarioSave}
+				scenarioUpdate={scenarioUpdate}
+				scenarioDelete={scenarioDelete}
+				scenarioApply={scenarioApply}
+				onSnapshot={(snapshot) => setState({ status: "ready", snapshot })}
+				t={t}
+			/> : null}
+
+			{/* 操作历史（最近 20 次操作 + 一键撤销） */}
+			{showHistory ? <HistoryPanel operationHistory={operationHistory} undoOperation={undoOperation} onSnapshot={(snapshot) => setState({ status: "ready", snapshot })} t={t} /> : null}
+
+			{/* 救援面板 */}
 			{showRescue ? <RescuePanel
 				diagnose={diagnose}
 				quarantine={quarantine}
 				repairHarness={repairHarness}
 				restartHarness={restartHarness}
 				uninstallPackages={uninstallPackages}
+				uninstallPreview={uninstallPreview}
 				getRescueConfig={getRescueConfig}
 				setRescueConfig={setRescueConfig}
 				getDownloadConfig={getDownloadConfig}
 				checkDownloads={checkDownloads}
 				verifyProfile={verifyProfile}
 				fixProfile={fixProfile}
-				managed={snapshot.entries.filter((entry) => entry.managed)}
+				// v0.8：所有用户安装包（含 file: vendor tgz）都支持事务化卸载
+				managed={snapshot.entries.filter((entry) => entry.origin === "user")}
 				t={t}
 			/> : null}
-
-			<label style={{ display: "flex", position: "relative", alignItems: "center" }}>
-				<span className="srOnly">{t("search")}</span>
-				<input
-					type="search"
-					value={query}
-					placeholder={t("search")}
-					onChange={(event) => setQuery(event.currentTarget.value)}
-					style={{
-						boxSizing: "border-box",
-						width: "100%",
-						height: 34,
-						border: "1px solid var(--dsw-alias-border-l2)",
-						background: "var(--dsw-alias-bg-layer-1)",
-						color: "var(--dsw-alias-label-primary)",
-						borderRadius: 7,
-						padding: "0 12px",
-						fontSize: 13,
-						font: "inherit"
-					}}
-				/>
-			</label>
 
 			{/* 来源筛选：架构自带 vs 用户/agent 安装 */}
 			<div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -432,12 +580,12 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					background: feedback.severity === "error"
 						? "color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent)"
 						: feedback.severity === "warning"
-							? "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 12%, transparent)"
+							? "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #f59e0b) 12%, transparent)"
 							: "color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 12%, transparent)",
 					color: feedback.severity === "error"
 						? "var(--dsw-alias-state-error-primary)"
 						: feedback.severity === "warning"
-							? "var(--dsw-alias-state-warning-primary)"
+							? "var(--dsw-alias-state-warning-primary, #f59e0b)"
 							: "var(--dsw-alias-state-success-primary, #22c55e)"
 				}}>
 					{feedback.message}
@@ -462,21 +610,20 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 						<section key={section.key} style={{
 							border: "1px solid var(--dsw-alias-border-l2)",
 							background: "var(--dsw-alias-bg-layer-3)",
-							borderRadius: 8,
+							borderRadius: 10,
 							overflow: "hidden"
 						}}>
-							<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", userSelect: "none" }} onClick={() => toggleSection(section.key)}>
+							<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: "pointer", userSelect: "none" }} onClick={() => toggleSection(section.key)}>
 								<span aria-hidden="true" style={{
 									width: 10,
 									height: 10,
-									borderRadius: 3,
+									borderRadius: "50%",
 									background: meta.color,
 									flex: "none",
-									transform: isOpen ? "rotate(90deg)" : "none",
-									transition: "transform 120ms ease",
-									clipPath: "polygon(0 0, 100% 50%, 0 100%)"
+									transition: "opacity 120ms ease",
+									opacity: isOpen ? 1 : 0.55
 								}} />
-								<span style={{ fontSize: 13, fontWeight: 600 }}>{t(meta.key)}</span>
+								<span style={{ fontSize: 13.5, fontWeight: 700 }}>{t(meta.key)}</span>
 								<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
 									{enabledCount}/{section.entries.length}
 								</span>
@@ -485,8 +632,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 										fontSize: 11,
 										padding: "1px 7px",
 										borderRadius: 999,
-										background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary) 16%, transparent)",
-										color: "var(--dsw-alias-state-warning-primary)",
+										background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #f59e0b) 16%, transparent)",
+										color: "var(--dsw-alias-state-warning-primary, #f59e0b)",
 										fontWeight: 600
 									}}>
 										{t("updateAvailable")} {sectionUpdatable}
@@ -501,20 +648,30 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 									{section.entries.map((entry) => {
 										const status = statusOf(entry);
 										const statusMeta = STATUS_META[status];
+										const entrySection = sectionKeyOfEntry(entry);
+										const isManager = entry.packageName === MANAGER_PACKAGE_NAME
+											|| entry.moduleName === MANAGER_PACKAGE_NAME
+											|| entry.configId === MANAGER_PACKAGE_NAME;
 										const running = busy === `entry:${entry.entryId}` || busy === `update:${entry.packageName}`;
 										const updating = busy === `update:${entry.packageName}` || busy === "update:all";
 										const canUpdate = entry.needsUpdate === true && entry.managed && !updating;
+										// 第三方配置出口：只有**已注册**的键才产生按钮/出口（未注册 = 无按钮、不调用 renderSlot）
+										const entrySurfaces = canRenderSurfaces ? surfacesFor.get(entry.entryId) : undefined;
+										const rowSurface = entrySurfaces?.rows?.[0];
+										const bundleSurface = entrySurfaces?.bundles?.[0];
+										const rowPanelKey = rowSurface ? `row:${rowSurface.key}` : null;
+										const bundlePanelKey = bundleSurface ? `bundle:${bundleSurface.key}` : null;
+										const panelOpen = openConfig !== null && (openConfig === rowPanelKey || openConfig === bundlePanelKey);
 										return (
 											<li key={entry.entryId} style={{
-												display: "flex",
-												alignItems: "center",
-												gap: 10,
-												padding: "8px 10px",
+												display: "block",
+												padding: "9px 12px",
 												border: "1px solid var(--dsw-alias-border-l2)",
 												background: "var(--dsw-alias-bg-layer-1)",
-												borderRadius: 8,
+												borderRadius: 10,
 												minWidth: 0
 											}}>
+											<div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
 												<span title={entry.error ?? undefined} style={{ display: "inline-flex", alignItems: "center", gap: 5, flex: "none", width: 86, fontSize: 12, color: statusMeta.color }}>
 													<i style={{ width: 9, height: 9, borderRadius: "50%", background: statusMeta.color, display: "inline-block", flex: "none" }} />
 													{t(statusMeta.key)}
@@ -522,9 +679,39 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 												<div style={{ flex: "1 1 auto", minWidth: 0 }}>
 													<div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
 														<strong style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.configId}</strong>
+														{isManager ? (
+															<span title={t("managerBadge")} style={{
+																flex: "none",
+																fontSize: 11,
+																fontWeight: 600,
+																padding: "1px 8px",
+																borderRadius: 999,
+																background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+																color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+																whiteSpace: "nowrap"
+															}}>{t("managerBadge")}</span>
+														) : null}
+										{/* 分区重构 v5：行内「推荐」小标签——仅推荐加装清单（RECOMMENDED_PACKAGE_NAMES）里的第三方件显示 */}
+										{isRecommendedEntry(entry) ? (
+											<span title={t("recommendedTagHint")} style={{
+												flex: "none",
+												fontSize: 11,
+												fontWeight: 600,
+												padding: "1px 8px",
+												borderRadius: 999,
+												background: "color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 14%, transparent)",
+												color: "var(--dsw-alias-state-success-primary, #22c55e)",
+												whiteSpace: "nowrap"
+											}}>{t("recommendedTag")}</span>
+										) : null}
 														<span style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.moduleName}</span>
 													</div>
 													<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-secondary)", fontSize: 12, lineHeight: "18px" }}>{entry.description}</p>
+													{rowSurface ? (
+														<div style={{ margin: "2px 0 0", fontSize: 11.5, lineHeight: "17px", color: "var(--dsw-alias-label-tertiary)" }}>
+															{renderSlot("plugins.row.config", { view: "summary" }, { entryKey: rowSurface.key })}
+														</div>
+													) : null}
 													{entry.installedVersion || entry.latestVersion ? (
 														<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 11, fontFamily: "var(--ds-font-family-code)" }}>
 															{entry.installedVersion ?? "?"}{entry.latestVersion ? ` → ${entry.latestVersion}` : ""}
@@ -533,106 +720,174 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 														</p>
 													) : null}
 												</div>
-												{cardForEntry.has(entry.entryId) ? (
-													<button type="button" onClick={() => setShowConfigCards(true)} title={t("configEntryHint")}
-														style={{ ...buttonStyle, flex: "none", fontSize: 11, fontWeight: 600, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)" }}>
-														⚙ {t("configEntry")}
-													</button>
-												) : null}
-												{entry.origin === "user" ? (
-													<span title={t("originUserHint")} style={{
-														flex: "none",
-														fontSize: 11,
-														padding: "2px 8px",
-														borderRadius: 999,
-														border: "1px solid var(--dsw-alias-state-business-primary, #4f8cff)",
-														color: "var(--dsw-alias-state-business-primary, #4f8cff)",
-														whiteSpace: "nowrap"
-													}}>
-														{t("originUser")}
-													</span>
-												) : null}
-												<span style={{
-													flex: "none",
-													fontSize: 11,
-													fontWeight: 600,
-													padding: "2px 8px",
-													borderRadius: 999,
-													border: `1px solid ${NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow}`,
-													color: NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow
-												}}>
-													{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
-												</span>
-												{entry.archived ? (
-													<span title={entry.protectionReason} style={{
-														flex: "none",
-														fontSize: 11,
-														padding: "2px 8px",
-														borderRadius: 999,
-														border: "1px solid var(--dsw-alias-border-l2)",
-														color: "var(--dsw-alias-label-tertiary)",
-														whiteSpace: "nowrap"
-													}}>
-														{t("archived")}
-													</span>
-												) : null}
-												{canUpdate ? (
-													<>
-														<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
-															style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary)", borderColor: "var(--dsw-alias-state-warning-primary)" }}>
-															{t("update")}
-														</button>
-														<button type="button" onClick={() => updateOneInternal(entry)} disabled={busy !== null}
-															title={t("updateInternalHint")}
-															style={{ ...buttonStyle, flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
-															{t("updateInternal")}
-														</button>
-													</>
-												) : entry.needsUpdate === true && !entry.managed ? (
+												{entry.needsUpdate === true && !entry.managed ? (
 													<span title={entry.moduleName} style={{ flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("notManaged")}</span>
 												) : null}
-												{entry.protected ? (
-													<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
-												) : null}
-												<label
-													title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-													style={{
-														flex: "none",
-														display: "inline-flex",
-														alignItems: "center",
-														cursor: entry.protected || running ? "not-allowed" : "pointer",
-														opacity: entry.protected ? 0.55 : 1
-													}}
-												>
-													<input
-														type="checkbox"
-														checked={entry.enabled}
-														disabled={entry.protected || running}
-														aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
-														onChange={() => toggle(entry)}
-														style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
-													/>
-													<span aria-hidden="true" style={{
-														position: "relative",
-														width: 36,
-														height: 20,
-														borderRadius: 999,
-														background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
-														transition: "background 120ms ease"
-													}}>
-														<i style={{
-															position: "absolute",
-															top: 2,
-															left: entry.enabled ? 18 : 2,
-															width: 16,
-															height: 16,
-															borderRadius: "50%",
-															background: "#fff",
-															transition: "left 120ms ease"
-														}} />
-													</span>
-													{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
-												</label>
+												{/* 右列两行：行1 = 用户安装 · 必要程度 · 启动开关；行2 = 更新源(来源选择) · 更新按键 · 锁 · 卸载（带外边框；架构自带不显示） */}
+												<div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flex: "none" }}>
+													<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
+														{entry.origin === "user" ? (
+															<span title={t("originUserHint")} style={{
+																flex: "none",
+																fontSize: 11,
+																padding: "2px 8px",
+																borderRadius: 999,
+																border: "1px solid var(--dsw-alias-state-business-primary, #4f8cff)",
+																color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+																whiteSpace: "nowrap"
+															}}>
+																{t("originUser")}
+															</span>
+														) : null}
+														<span style={{
+															flex: "none",
+															fontSize: 11,
+															fontWeight: 600,
+															padding: "2px 8px",
+															borderRadius: 999,
+															border: `1px solid ${NECESSITY_META[entrySection]?.color ?? COLORS.yellow}`,
+															color: NECESSITY_META[entrySection]?.color ?? COLORS.yellow
+														}}>
+															{/* 分区重构 v5：分区归属行内徽章——核心=核心 / 内置=内置 / 用户=用户 */}
+															{t(entrySection === "core" ? "badgeCore" : entrySection === "builtin" ? "badgeBuiltin" : "badgeUser")}
+														</span>
+														{entry.archived ? (
+															<span title={entry.protectionReason} style={{
+																flex: "none",
+																fontSize: 11,
+																padding: "2px 8px",
+																borderRadius: 999,
+																border: "1px solid var(--dsw-alias-border-l2)",
+																color: "var(--dsw-alias-label-tertiary)",
+																whiteSpace: "nowrap"
+															}}>
+																{t("archived")}
+															</span>
+														) : null}
+														<label
+															title={entry.protected ? entry.protectionReason : `${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+															style={{
+																flex: "none",
+																display: "inline-flex",
+																alignItems: "center",
+																cursor: entry.protected || running ? "not-allowed" : "pointer",
+																opacity: entry.protected ? 0.55 : 1
+															}}
+														>
+															<input
+																type="checkbox"
+																checked={entry.enabled}
+																disabled={entry.protected || running}
+																aria-label={`${entry.configId}: ${entry.enabled ? t("disableEntry") : t("enableEntry")}`}
+																onChange={() => toggle(entry)}
+																style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}
+															/>
+															<span aria-hidden="true" style={{
+																position: "relative",
+																width: 36,
+																height: 20,
+																borderRadius: 999,
+																background: entry.enabled ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)",
+																transition: "background 120ms ease"
+															}}>
+																<i style={{
+																	position: "absolute",
+																	top: 2,
+																	left: entry.enabled ? 18 : 2,
+																	width: 16,
+																	height: 16,
+																	borderRadius: "50%",
+																	background: "#fff",
+																	transition: "left 120ms ease"
+																}} />
+															</span>
+															{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
+														</label>
+													</div>
+													{entry.origin === "user" || entry.protected || rowSurface !== undefined || bundleSurface !== undefined || entrySection !== "core" ? (
+														<div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
+														{entry.origin === "user" ? (
+															<label title={t("sourceOverrideHint")} style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "var(--dsw-alias-label-tertiary)" }}>
+																<select
+																	value={entry.sourceOverride ?? (entry.source ?? "npm")}
+																	onChange={(e) => changeSource(entry, e.currentTarget.value)}
+																	disabled={busy !== null}
+																	aria-label={`${entry.configId}: ${t("sourceOverrideHint")}`}
+																	style={{ fontSize: 10.5, borderRadius: 5, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-secondary)", padding: "1px 2px", maxWidth: 76, cursor: "pointer" }}
+																>
+																	<option value="auto">{t("sourceAuto")}</option>
+																	<option value="npm">{t("sourceNpm")}</option>
+																	<option value="github">{t("sourceGithub")}</option>
+																	<option value="local">{t("sourceLocal")}</option>
+																	<option value="builtin">{t("sourceBuiltin")}</option>
+																</select>
+															</label>
+														) : null}
+														{canUpdate ? (
+															<>
+																<button type="button" onClick={() => updateOne(entry)} disabled={busy !== null}
+																	style={{ ...buttonStyle, flex: "none", fontWeight: 600, color: "var(--dsw-alias-state-warning-primary, #f59e0b)", borderColor: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>
+																	{t("update")}
+																</button>
+																<button type="button" onClick={() => updateOneInternal(entry)} disabled={busy !== null}
+																	title={t("updateInternalHint")}
+																	style={{ ...buttonStyle, flex: "none", fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
+																	{t("updateInternal")}
+																</button>
+															</>
+														) : null}
+														{entry.protected ? (
+															<span title={entry.protectionReason} style={{ flex: "none", fontSize: 12, opacity: 0.75, cursor: "help" }}>🔒</span>
+														) : null}
+														{entry.origin === "user" ? (
+															<button type="button" onClick={() => setUninstallTarget(entry.packageName)} disabled={busy !== null}
+																title={t("uninstallRowHint")}
+																style={{ ...buttonStyle, flex: "none", fontWeight: 600, fontSize: 11, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", whiteSpace: "nowrap" }}>
+																{t("rescueUninstall")}
+															</button>
+														) : null}
+														{/* 新设计：行内「市场详情」——预取目录后带包名关键词打开市场面板（核心组件行不显示） */}
+														{entrySection !== "core" ? (
+															<button type="button" onClick={() => openMarketFor(entry)} disabled={busy !== null}
+																title={t("marketDetailHint")}
+																style={{ ...buttonStyle, flex: "none", fontSize: 11, whiteSpace: "nowrap" }}>
+																{t("marketDetail")}
+															</button>
+														) : null}
+														{/* 第三方自带配置入口：只有注册过的槽位键才有按钮（未注册 = 无按钮、不调用 renderSlot） */}
+														{rowSurface ? (
+															<button type="button" onClick={() => setOpenConfig(openConfig === rowPanelKey ? null : rowPanelKey)}
+																title={`${t("configEntryHint")} · ${rowSurface.key}`}
+																aria-expanded={openConfig === rowPanelKey}
+																style={{ ...buttonStyle, flex: "none", fontWeight: 600, fontSize: 11, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", whiteSpace: "nowrap" }}>
+																⚙ {openConfig === rowPanelKey ? t("officialClose") : t("configEntry")}
+															</button>
+														) : null}
+														{bundleSurface ? (
+															<button type="button" onClick={() => setOpenConfig(openConfig === bundlePanelKey ? null : bundlePanelKey)}
+																title={`${t("configEntryHint")} · ${bundleSurface.key}`}
+																aria-expanded={openConfig === bundlePanelKey}
+																style={{ ...buttonStyle, flex: "none", fontWeight: 600, fontSize: 11, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", whiteSpace: "nowrap" }}>
+																⚙ {openConfig === bundlePanelKey ? t("officialClose") : t("configBundleEntry")}
+															</button>
+														) : null}
+														</div>
+													) : null}
+												</div>
+											</div>
+											{panelOpen ? (
+												<div data-plugin-config-entry={openConfig} style={{
+													marginTop: 8,
+													border: "1px solid var(--dsw-alias-border-l2)",
+													borderRadius: 8,
+													padding: "10px 12px",
+													background: "var(--dsw-alias-bg-layer-2)",
+													minWidth: 0
+												}}>
+													{openConfig === rowPanelKey && rowSurface ? renderSlot("plugins.row.config", { view: "page" }, { entryKey: rowSurface.key }) : null}
+													{openConfig === bundlePanelKey && bundleSurface ? renderSlot("plugins.bundle.config", { view: "page" }, { entryKey: bundleSurface.key }) : null}
+												</div>
+											) : null}
 											</li>
 										);
 									})}
@@ -642,32 +897,12 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					);
 				})}
 			</div>
-
-			{/* 插件自带配置入口（settings.plugin.item 注册卡片：vision-router 等大 mod） */}
-			{(configCards ?? []).length > 0 ? (
-				<section style={{
-					border: "1px solid var(--dsw-alias-border-l2)",
-					background: "var(--dsw-alias-bg-layer-3)",
-					borderRadius: 8,
-					overflow: "hidden"
-				}}>
-					<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", userSelect: "none" }} onClick={() => setShowConfigCards((v) => !v)}>
-						<span aria-hidden="true" style={{ fontSize: 13 }}>⚙</span>
-						<span style={{ fontSize: 13, fontWeight: 600 }}>{t("configCards")}</span>
-						<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{configCards.length}</span>
-						<span style={{ marginLeft: "auto", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
-							{showConfigCards ? "▾" : "▸"}
-						</span>
-					</header>
-					{showConfigCards ? (
-						<div style={{ padding: "0 8px 8px", display: "flex", flexDirection: "column", gap: 8 }}>
-							{configCards.map((card) => (
-								<ConfigCardBoundary key={card.id} card={card} t={t} />
-							))}
-						</div>
-					) : null}
-				</section>
-			) : null}
+			{/*
+			 * C3：旧槽位 `settings.plugin.item`（旧设置页的插件配置卡片）在 0.1.7 里
+			 * **没有任何声明者**（全引擎搜索只有注释提到它），读它恒为空、卡片区/行内 ⚙ 永远不出现。
+			 * 因此该路径已整体删除，第三方的配置入口改由上面的
+			 * `plugins.row.config` / `plugins.bundle.config` 出口承担（0.1.7 仅存的配置槽位）。
+			 */}
 		</section>
 	);
 }
@@ -698,14 +933,15 @@ function SafeTab(props) {
 	return React.createElement(TabBoundary, null, React.createElement(PluginManagerTab, props));
 }
 
-/** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
-function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
+/** 救援面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
+function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
 	const [issues, setIssues] = useState(null);
 	const [busy, setBusy] = useState(false);
 	const [feedback, setFeedback] = useState(null);
 	const [auto, setAuto] = useState(false);
 	const [dlDir, setDlDir] = useState(null);
 	const [verify, setVerify] = useState(null);
+	const [uninstallTarget, setUninstallTarget] = useState(null);
 
 	useEffect(() => {
 		let current = true;
@@ -721,6 +957,12 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
+
+	// mod 体检入口：体检数据来自启动器（3081）的 /plugins/api/health —— 与兜底页共用同一份只读体检 API；
+	// 3081 里的体检面板渲染结果（跨源 CORS 不放行 3080 直读，因此这里以入口方式跳转兜底页查看）。
+	const openLauncherHealth = () => {
+		window.open("http://127.0.0.1:3081/plugins#health", "_blank");
+	};
 
 	const runDiagnose = async () => {
 		setBusy(true);
@@ -775,17 +1017,8 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 	};
 
 	const runUninstall = async (packageName) => {
-		if (!window.confirm(`${t("rescueUninstallConfirm")} ${packageName}`)) return;
-		setBusy(true);
-		try {
-			const result = await uninstallPackages([packageName]);
-			const item = result.items?.[0];
-			setFeedback({ severity: item?.status === "removed" ? "success" : "warning", message: item ? item.message ?? item.status : "完成" });
-		} catch (error) {
-			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
-		} finally {
-			setBusy(false);
-		}
+		// 事务化卸载：先展示影响预览（依赖/条目/开关行），用户确认后执行
+		setUninstallTarget(packageName);
 	};
 
 	const saveAuto = async (enabled) => {
@@ -857,9 +1090,26 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		}}>
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
 				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" }}>🛟 {t("rescueTitle")}</span>
-				<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
+				<span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+					<button type="button" onClick={openLauncherHealth} disabled={busy} style={buttonStyle}>{t("rescueModHealth")}</button>
+					<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
+				</span>
 			</div>
+			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueModHealthHint")}</p>
 			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueHint")}</p>
+
+			{uninstallTarget !== null ? (
+				<UninstallFlow
+					packageName={uninstallTarget}
+					preview={uninstallPreview}
+					uninstall={uninstallPackages}
+					t={t}
+					onDone={(changed) => {
+						setUninstallTarget(null);
+						if (changed) runDiagnose();
+					}}
+				/>
+			) : null}
 
 			{issues === null ? null : issues.length === 0 ? (
 				<p className="ok-note" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-success-primary, #22c55e)" }}>{t("rescueClean")}</p>
@@ -897,7 +1147,7 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 				</label>
 			</div>
 
-			{/* 启动前自检（坏 bundle 会让引擎起不来 —— 自动化救砖） */}
+			{/* 启动前自检（坏 bundle 会让引擎起不来 —— 自动化救援） */}
 			<div style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
 				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
 					<span style={{ fontSize: 12, fontWeight: 600 }}>{t("verifyTitle")}</span>
@@ -943,8 +1193,387 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 			) : null}
 
 			{feedback ? (
-				<p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p>
+				<p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary, #f59e0b)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p>
 			) : null}
+		</div>
+	);
+}
+
+/** P1-4 体检结论样式（safe=绿 / caution=黄 / risky=红）。 */
+const VERDICT_META = {
+	safe: { key: "uninstallVerdictSafe", color: "var(--dsw-alias-state-success-primary, #22c55e)" },
+	caution: { key: "uninstallVerdictCaution", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	risky: { key: "uninstallVerdictRisky", color: "var(--dsw-alias-state-error-primary)" }
+};
+/** P1-4 体检条目分级样式（high=高风险 / warning=提示 / info=信息）。 */
+const CHECK_SEVERITY_META = {
+	high: { key: "uninstallCheckHigh", color: "var(--dsw-alias-state-error-primary)" },
+	warning: { key: "uninstallCheckWarning", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	info: { key: "uninstallCheckInfo", color: "var(--dsw-alias-label-secondary)" }
+};
+/** L9 开机自启清理结果文案。 */
+const AUTOSTART_META = {
+	cleaned: { key: "uninstallAutostartCleaned", color: "var(--dsw-alias-state-success-primary, #22c55e)" },
+	skipped: { key: "uninstallAutostartSkipped", color: "var(--dsw-alias-label-secondary)" },
+	failed: { key: "uninstallAutostartFailed", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" },
+	timeout: { key: "uninstallAutostartTimeout", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }
+};
+
+/** 事务化卸载流程：影响预览 → 确认（可选级联） → 执行 → 卸载报告（自主校验 + 残留）。 */
+function UninstallFlow({ packageName, preview, uninstall, t, onDone }) {
+	const [data, setData] = useState(null);
+	const [loadError, setLoadError] = useState(null);
+	const [cascade, setCascade] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [report, setReport] = useState(null);
+
+	useEffect(() => {
+		let current = true;
+		preview([packageName]).then((result) => {
+			if (current) setData(result.packages?.[0] ?? null);
+		}, (error) => {
+			if (current) setLoadError(error instanceof Error ? error.message : String(error));
+		});
+		return () => {
+			current = false;
+		};
+	}, [preview, packageName]);
+
+	const doUninstall = async () => {
+		setBusy(true);
+		setReport(null);
+		try {
+			const result = await uninstall([packageName], { cascade });
+			setReport(result.items?.[0] ?? null);
+		} catch (error) {
+			setReport({ status: "failed", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	// 老宿主（无体检字段）也要能渲染：全部走 ?? 兜底
+	const checks = data?.checks ?? [];
+	const verdict = VERDICT_META[data?.verdict ?? "safe"] ?? VERDICT_META.safe;
+	const autostart = report?.autostartCleanup ?? null;
+	const autostartMeta = autostart === null ? null : AUTOSTART_META[autostart.status] ?? AUTOSTART_META.failed;
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary, #f59e0b)", background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #f59e0b) 8%, transparent)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("uninstallTitle")}: {packageName}</span>
+				<button type="button" onClick={() => onDone(false)} disabled={busy} style={linkButtonStyle}>{t("cancel")}</button>
+			</div>
+			{loadError ? <p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{t("uninstallPreviewFail")}: {loadError}</p> : null}
+			{data === null && !loadError ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallPreviewLoading")}</p> : null}
+			{data !== null && !report ? (
+				<>
+					{!data.canUninstall ? (
+						<p role="alert" style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>{data.spec === null ? t("uninstallNotManaged") : t("uninstallLocalBlocked")}</p>
+					) : (
+						<>
+							{/* P1-4 结论行：本次卸载：安全 / 需注意 / 有风险 + 一句理由 */}
+							<div data-check-verdict={data.verdict ?? "safe"} style={{ border: `1px solid ${verdict.color}`, borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+								<span style={{ fontSize: 12.5, fontWeight: 600, color: verdict.color }}>{t("uninstallVerdictLine")}：{t(verdict.key)}</span>
+								<span style={{ fontSize: 11.5, color: "var(--dsw-alias-label-secondary)", lineHeight: "16px" }} data-check-reason="1">{data.verdictReason ?? ""}</span>
+							</div>
+							<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-secondary)", lineHeight: "18px" }}>{t("uninstallPreviewHint")}</p>
+							<div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+								{data.affectedEntries.length > 0 ? (
+									<p style={{ margin: 0 }}>
+										{t("uninstallAffectedEntries")}: <code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{data.affectedEntries.map((e) => e.configId).join(", ")}</code>
+									</p>
+								) : (
+									<p style={{ margin: 0, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallNoEntries")}</p>
+								)}
+								{data.inBundles ? <p style={{ margin: 0 }}>{t("uninstallBundleRow")}</p> : null}
+								{data.patchRows > 0 ? <p style={{ margin: 0 }}>{t("uninstallPatchRows")}: {data.patchRows}</p> : null}
+								{/* P1-4 三类检查明细（只读，不改动任何 profile 文件） */}
+								<div data-check-list="1" style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+									<p style={{ margin: 0, fontWeight: 600 }}>{t("uninstallCheckTitle")} <span style={{ fontWeight: 400, color: "var(--dsw-alias-label-tertiary)", fontSize: 11 }}>{t("uninstallCheckHint")}</span></p>
+									{checks.length === 0 ? (
+										<p data-check-empty="1" style={{ margin: 0, fontSize: 11.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("uninstallCheckEmpty")}</p>
+									) : (
+										checks.map((check, i) => {
+											const meta = CHECK_SEVERITY_META[check.severity] ?? CHECK_SEVERITY_META.info;
+											return (
+												<p key={`${check.id}-${i}`} data-check-id={check.id} data-check-severity={check.severity} style={{ margin: 0, fontSize: 11.5, lineHeight: "17px" }}>
+													<span style={{ color: meta.color, fontWeight: 600 }}>[{t(meta.key)}]</span>{" "}
+													<span style={{ fontWeight: 600 }}>{check.title}</span>{" "}
+													<span style={{ color: "var(--dsw-alias-label-tertiary)" }}>—— {check.detail}</span>
+												</p>
+											);
+										})
+									)}
+								</div>
+								{data.dependents.length > 0 ? (
+									<div style={{ border: "1px solid var(--dsw-alias-state-warning-primary, #f59e0b)", borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+										<p style={{ margin: 0, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>⚠ {t("uninstallDependents")}:</p>
+										{data.dependents.map((d, i) => (
+											<p key={i} style={{ margin: 0, fontSize: 11.5 }}>
+												<code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{d.packageName}</code>
+												<span style={{ color: "var(--dsw-alias-label-tertiary)" }}> ({d.type}: {d.spec})</span>
+											</p>
+										))}
+										<label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, cursor: "pointer" }}>
+											<input type="checkbox" checked={cascade} disabled={busy} onChange={(e) => setCascade(e.currentTarget.checked)} />
+											{t("uninstallCascade")}（{data.dependents.filter((d) => true).length}）
+										</label>
+									</div>
+								) : null}
+							</div>
+							{/* L9：管理器自身卸载前会先清理开机自启 */}
+							{data.isSelf === true ? (
+								<p data-self-hint="1" style={{ margin: 0, fontSize: 11.5, lineHeight: "17px", color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("uninstallSelfHint")}</p>
+							) : null}
+							<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+								<button type="button" onClick={doUninstall} disabled={busy}
+									style={{ ...buttonStyle, background: "var(--dsw-alias-state-error-primary)", color: "#fff", fontWeight: 600 }}>
+									{busy ? t("uninstalling") : t("uninstallConfirm")}
+								</button>
+							</div>
+						</>
+					)}
+				</>
+			) : null}
+			{report !== null ? (
+				<div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+					<p style={{ margin: 0, color: report.status === "removed" ? "var(--dsw-alias-state-success-primary, #22c55e)" : "var(--dsw-alias-state-error-primary)" }}>
+						{report.status === "removed" ? "✓ " : report.status === "rolled-back" ? "↩ " : "✗ "}
+						{t(`uninstallStatus${report.status}`)}: {report.message}
+					</p>
+					{report.status === "removed" ? (
+						<>
+							{report.verifyOk === true ? <p style={{ margin: 0, color: "var(--dsw-alias-state-success-primary, #22c55e)" }}>✓ {t("uninstallVerifyOk")}</p> : null}
+							{report.removedPatchRows > 0 ? <p style={{ margin: 0 }}>{t("uninstallReportRows")}: {report.removedPatchRows}</p> : null}
+							{report.dependentPackages.length > 0 ? <p style={{ margin: 0 }}>{t("uninstallReportCascade")}: {report.dependentPackages.join(", ")}</p> : null}
+							{report.residuals.length > 0 ? <p style={{ margin: 0, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("uninstallResiduals")}: {report.residuals.join(", ")}</p> : null}
+						</>
+					) : null}
+					{/* L9：开机自启清理结果（仅卸载管理器自身时出现；失败/超时也如实展示） */}
+					{autostartMeta !== null && autostart !== null ? (
+						<p data-autostart-cleanup={autostart.status} style={{ margin: 0, color: autostartMeta.color, lineHeight: "17px" }}>
+							{t("uninstallAutostartTitle")}: {t(autostartMeta.key)} —— {autostart.message}
+						</p>
+					) : null}
+					{report.isSelf === true && report.status === "removed" ? (
+						<p data-self-uninstalled="1" style={{ margin: 0, color: "var(--dsw-alias-state-warning-primary, #f59e0b)", lineHeight: "17px" }}>{t("uninstallSelfReport")}</p>
+					) : null}
+					<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+						<button type="button" onClick={() => onDone(report.status === "removed")} style={buttonStyle}>{t("done")}</button>
+					</div>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+/** 操作历史：最近 20 次操作，支持一键撤销。 */
+function HistoryPanel({ operationHistory, undoOperation, onSnapshot, t }) {
+	const [operations, setOperations] = useState(null);
+	const [busy, setBusy] = useState(null);
+	const [feedback, setFeedback] = useState(null);
+	const [tick, setTick] = useState(0);
+
+	useEffect(() => {
+		let current = true;
+		operationHistory().then((result) => {
+			if (current) setOperations(result.operations ?? []);
+		}, (error) => {
+			if (current) setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		});
+		return () => {
+			current = false;
+		};
+	}, [operationHistory, tick]);
+
+	const doUndo = async (id) => {
+		setBusy(id);
+		setFeedback(null);
+		try {
+			const result = await undoOperation(id);
+			setFeedback({ severity: result.ok ? "success" : "warning", message: result.message });
+			if (result.snapshot) onSnapshot(result.snapshot);
+			setTick((v) => v + 1);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-2)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("historyTitle")}</span>
+				<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("historyHint")}</span>
+				<button type="button" onClick={() => setTick((v) => v + 1)} disabled={busy !== null} style={linkButtonStyle}>{t("refresh")}</button>
+			</div>
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary, #f59e0b)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{operations === null ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("loading")}</p> : operations.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("historyEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4, maxHeight: 320, overflow: "auto" }}>
+					{operations.map((op) => (
+						<li key={op.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 6, padding: "6px 8px" }}>
+							<span style={{ flex: "1 1 auto", minWidth: 0 }}>
+								<span style={{ fontWeight: 600 }}>{op.label}</span>
+								{op.detail ? <span style={{ color: "var(--dsw-alias-label-tertiary)", marginLeft: 6 }}>{op.detail}</span> : null}
+								<span style={{ display: "block", fontSize: 10.5, color: "var(--dsw-alias-label-tertiary)" }}>
+									{op.at.slice(0, 16).replace("T", " ")} · {op.action}{op.undone ? ` · ${t("historyUndone")}` : ""}
+								</span>
+							</span>
+							{op.undo && !op.undone ? (
+								<button type="button" onClick={() => doUndo(op.id)} disabled={busy !== null}
+									style={{ ...buttonStyle, flex: "none", color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)" }}>
+									{busy === op.id ? "…" : t("historyUndo")}
+								</button>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+/** 场景方案：保存当前插件组合为命名场景，一键应用（应用前展示变更预览）。 */
+function ScenarioPanel({ scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, onSnapshot, t }) {
+	const [scenarios, setScenarios] = useState(null);
+	const [name, setName] = useState("");
+	const [busy, setBusy] = useState(null);
+	const [feedback, setFeedback] = useState(null);
+	const [preview, setPreview] = useState(null);
+	const [previewFor, setPreviewFor] = useState(null);
+	const [applying, setApplying] = useState(null);
+
+	const reload = () => scenarioList().then((result) => setScenarios(result.scenarios ?? []), (error) => setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) }));
+
+	useEffect(() => {
+		reload();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const doSave = async () => {
+		setBusy("save");
+		setFeedback(null);
+		try {
+			const result = await scenarioSave(name.trim());
+			setScenarios(result.scenarios ?? []);
+			setName("");
+			setFeedback({ severity: "success", message: t("scenarioSaved") });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const applyPreview = async (scenario) => {
+		setBusy(`preview:${scenario.id}`);
+		setFeedback(null);
+		setPreviewFor(scenario.id);
+		try {
+			const result = await scenarioApply(scenario.id, true);
+			const changed = (result.items ?? []).filter((i) => i.changed);
+			setPreview(changed.length > 0 ? { scenario: result.scenarios?.find((s) => s.id === scenario.id) ?? scenario, items: changed } : null);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const doApply = async (scenario) => {
+		setApplying(scenario.id);
+		setFeedback(null);
+		try {
+			const result = await scenarioApply(scenario.id, false);
+			const changed = (result.items ?? []).filter((i) => i.status === "changed").length;
+			const skipped = (result.items ?? []).filter((i) => i.status === "skipped").length;
+			setScenarios(result.scenarios ?? []);
+			if (result.snapshot) onSnapshot(result.snapshot);
+			setPreview(null);
+			setPreviewFor(null);
+			setFeedback({ severity: changed > 0 ? "success" : "warning", message: `${t("scenarioApplied")}：${changed} 项切换${skipped > 0 ? `，${skipped} 项被保护跳过` : ""}。${changed > 0 ? t("restartHint") : ""}` });
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setApplying(null);
+		}
+	};
+
+	const doDelete = async (scenario) => {
+		if (!window.confirm(`${t("scenarioDeleteConfirm")} ${scenario.name}？`)) return;
+		setBusy(`delete:${scenario.id}`);
+		try {
+			const result = await scenarioDelete(scenario.id);
+			setScenarios(result.scenarios ?? []);
+		} catch (error) {
+			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	return (
+		<div style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-2)", borderRadius: 8, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}>
+			<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+				<span style={{ fontSize: 13, fontWeight: 600 }}>{t("scenarioTitle")}</span>
+				<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioHint")}</span>
+			</div>
+			<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+				<input value={name} placeholder={t("scenarioName")} onChange={(e) => setName(e.currentTarget.value)} style={{ ...inputStyle, flex: "1 1 160px" }} />
+				<button type="button" onClick={doSave} disabled={busy !== null || name.trim() === ""} style={buttonStyle}>{t("scenarioSave")}</button>
+			</div>
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary, #f59e0b)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{scenarios === null ? <p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("loading")}</p> : scenarios.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+					{scenarios.map((scenario) => (
+						<li key={scenario.id} style={{ border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 8, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+							<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+								<b style={{ fontSize: 13 }}>{scenario.name}</b>
+								<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>
+									{t("scenarioCounts")}: {scenario.counts?.enabled ?? 0}/{scenario.counts?.disabled ?? 0} · {scenario.updatedAt.slice(0, 10)}
+								</span>
+								<span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+									{previewFor === scenario.id && preview === null && busy === `preview:${scenario.id}` ? (
+										<span style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("scenarioCalculating")}</span>
+									) : (
+										<button type="button" onClick={() => applyPreview(scenario)} disabled={busy !== null} style={buttonStyle}>{t("scenarioApply")}</button>
+									)}
+									<button type="button" onClick={() => scenarioUpdate(scenario.id).then((r) => setScenarios(r.scenarios ?? [])).catch((e) => setFeedback({ severity: "error", message: e.message }))} disabled={busy !== null}
+										title={t("scenarioUpdateHint")} style={buttonStyle}>{t("scenarioUpdate")}</button>
+									<button type="button" onClick={() => doDelete(scenario)} disabled={busy !== null} style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>{t("scenarioDelete")}</button>
+								</span>
+							</div>
+							{previewFor === scenario.id && preview !== null ? (
+								<div style={{ border: "1px dashed var(--dsw-alias-state-warning-primary, #f59e0b)", borderRadius: 6, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 4 }}>
+									<p style={{ margin: 0, fontSize: 11.5, fontWeight: 600, color: "var(--dsw-alias-state-warning-primary, #f59e0b)" }}>{t("scenarioPreviewTitle")}</p>
+									{preview.items.map((item) => (
+										<p key={item.configId} style={{ margin: 0, fontSize: 11.5 }}>
+											<code style={{ fontFamily: "var(--ds-font-family-code)", fontSize: 11 }}>{item.configId}</code>
+											{" "}{item.current ? t("statusEnabled") : t("statusDisabled")} → {item.enabled ? t("statusEnabled") : t("statusDisabled")}
+											{item.protected ? <span style={{ color: "var(--dsw-alias-label-tertiary)", marginLeft: 6 }}>🔒 {item.reason ?? ""}</span> : null}
+										</p>
+									))}
+									<div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+										<button type="button" onClick={() => doApply(scenario)} disabled={applying !== null}
+											// 填充式警告按钮：0.1.7 没有 warning 的「填充色」令牌，用更深的琥珀兜底，
+										// 保证白字对比度（#b45309 on #fff ≈ 5.0:1），否则会退化成白字透明底
+										style={{ ...buttonStyle, background: "var(--dsw-alias-state-warning-primary, #b45309)", color: "#fff", fontWeight: 600 }}>
+											{applying === scenario.id ? t("scenarioApplying") : t("scenarioApplyConfirm")}
+										</button>
+										<button type="button" onClick={() => { setPreview(null); setPreviewFor(null); }} disabled={applying !== null} style={buttonStyle}>{t("cancel")}</button>
+									</div>
+								</div>
+							) : null}
+						</li>
+					))}
+				</ul>
+			)}
 		</div>
 	);
 }
@@ -994,11 +1623,11 @@ function marketFilterItems(catalog, query, category, sortBy) {
 }
 
 /** 插件市场面板：dshfind 精选目录一次拉全量，搜索/分类/排序/分页全部本地瞬时完成。 */
-function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
+function MarketPanel({ marketCatalog, marketInstall, busy, t, entries, initialQuery = "" }) {
 	const [catalog, setCatalog] = useState(marketCatalogCache);
 	const [loadError, setLoadError] = useState(null);
 	const [reloadTick, setReloadTick] = useState(0);
-	const [query, setQuery] = useState("");
+	const [query, setQuery] = useState(initialQuery);
 	const [category, setCategory] = useState("all");
 	const [sortBy, setSortBy] = useState("stars");
 	const [page, setPage] = useState(1);
@@ -1142,7 +1771,7 @@ function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
 				</div>
 			) : null}
 			<p className="muted" style={{ margin: 0, fontSize: 11, color: "var(--dsw-alias-label-tertiary)" }}>{t("marketHint")}</p>
-			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
+			{feedback ? <p role="alert" style={{ margin: 0, fontSize: 12, whiteSpace: "pre-wrap", color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : feedback.severity === "warning" ? "var(--dsw-alias-state-warning-primary, #f59e0b)" : "var(--dsw-alias-state-success-primary, #22c55e)" }}>{feedback.message}</p> : null}
 			{loadError ? (
 				<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>
 					{t("marketLoadFail")}: {loadError}
@@ -1199,36 +1828,6 @@ function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
 			) : null}
 		</div>
 	);
-}
-
-/** 卡片渲染子组件：让第三方 render() 的异常发生在「边界之下」，才能被边界捕获。 */
-function ConfigCardInner({ card }) {
-	return card.render();
-}
-
-/** 插件自带配置卡片：独立错误边界——第三方卡片崩溃不影响管理器本体。 */
-class ConfigCardBoundary extends React.Component {
-	constructor(props) {
-		super(props);
-		this.state = { error: null };
-	}
-	static getDerivedStateFromError(error) {
-		return { error };
-	}
-	render() {
-		if (this.state.error !== null) {
-			return (
-				<div style={{ border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, padding: "8px 10px", fontSize: 12, color: "var(--dsw-alias-state-error-primary)" }}>
-					⚠ {this.props.t("configCardFailed")}: {this.props.card.label}（{String(this.state.error.message ?? this.state.error).slice(0, 140)}）
-				</div>
-			);
-		}
-		return (
-			<div style={{ border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 8, overflow: "hidden", background: "var(--dsw-alias-bg-layer-1)" }}>
-				<ConfigCardInner card={this.props.card} />
-			</div>
-		);
-	}
 }
 
 const chipStyle = {
@@ -1309,7 +1908,7 @@ function SourcesPanel({ sources, save, busy, t }) {
 							{source.name}
 							{source.official ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("official")}</em> : null}
 							{source.type === "github" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-label-tertiary)", marginLeft: 4 }}>GitHub</em> : null}
-							{source.type === "dshfind" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-warning-primary)", marginLeft: 4 }}>{t("dshfind")}</em> : null}
+							{source.type === "dshfind" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-warning-primary, #f59e0b)", marginLeft: 4 }}>{t("dshfind")}</em> : null}
 						</span>
 						<code style={{ flex: "1 1 auto", fontFamily: "var(--ds-font-family-code)", fontSize: 11, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</code>
 						<button type="button" onClick={() => removeAt(index)} style={linkButtonStyle} disabled={busy}>{t("remove")}</button>
@@ -1368,9 +1967,440 @@ const inputStyle = {
 };
 
 /** 本地化文案。 */
+/** 侧边栏标签图标（框架传 { size, active }）。 */
+function PanelIcon(props) {
+	const size = (props && props.size) || 18;
+	return (
+		<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+			<rect x="3.5" y="3.5" width="7" height="7" rx="1.6" />
+			<rect x="13.5" y="3.5" width="7" height="7" rx="1.6" />
+			<rect x="3.5" y="13.5" width="7" height="7" rx="1.6" />
+			<rect x="13.5" y="13.5" width="7" height="7" rx="1.6" />
+		</svg>
+	);
+}
+
+/** 官方内置可选插件：引擎自带、默认未启用的组合包（OPTIONAL_BUNDLES）+ 自带配置页的官方插件 + 版本豁免。 */
+const OFFICIAL_OPTIONAL_LABEL = {
+	"@deepseek-ai/dsh-experimental-agent-team-profile": { name: "Agent Team 组合包", note: "多智能体团队协作：成员、任务看板、消息", glyph: "👥" },
+	"@deepseek-ai/dsh-experimental-voice-input-bundle": { name: "语音输入", note: "本地语音转写，输入框麦克风入口", glyph: "🎙" },
+	"@deepseek-ai/dsh-experimental-auto-review": { name: "自动审阅", note: "高风险操作先自动审阅再执行", glyph: "🛡" }
+};
+
+/** 引擎 remote 返回 { ok, value, error }；这里做与 unwrap 同义的宽松解包。 */
+function unwrapEngine(result) {
+	if (result && typeof result === "object" && "ok" in result) {
+		if (result.ok === true) return result.value;
+		const error = result.error ?? {};
+		throw new Error(`${error.code ?? "remote"}: ${error.message ?? "调用失败"}`);
+	}
+	return result;
+}
+
+function OfficialPluginsPanel({ officialApi, itemsSource, renderSlot, t }) {
+	const [state, setState] = useState({ status: "loading" });
+	const [busy, setBusy] = useState(null);
+	const [feedback, setFeedback] = useState(null);
+	const [openItem, setOpenItem] = useState(null);
+	const [request, setRequest] = useState(0);
+
+	// C6：官方插件清单按「plugins.item 槽位版本 + 语言版本」做响应式投影（内置页同样跟随 ledger 与 locale），
+	// 因此运行时切换界面语言、后台新注册的条目都会实时反映，而不是首帧一次性快照。
+	const items = useSyncExternalStore(
+		(itemsSource ?? EMPTY_ITEMS_SOURCE).subscribe,
+		(itemsSource ?? EMPTY_ITEMS_SOURCE).getSnapshot,
+		(itemsSource ?? EMPTY_ITEMS_SOURCE).getSnapshot
+	);
+
+	useEffect(() => {
+		let alive = true;
+		if (!officialApi || typeof officialApi.listBundles !== "function") {
+			setState({ status: "unavailable" });
+			return () => { alive = false; };
+		}
+		setState({ status: "loading" });
+		Promise.all([
+			officialApi.listBundles().then(unwrapEngine),
+			typeof officialApi.listVersionExemptions === "function"
+				? officialApi.listVersionExemptions().then(unwrapEngine).catch(() => ({ exemptions: {} }))
+				: Promise.resolve({ exemptions: {} })
+		]).then(([bundles, exemptions]) => {
+			if (!alive) return;
+			setState({
+				status: "ready",
+				bundles: Array.isArray(bundles) ? bundles : [],
+				exemptions: exemptions && exemptions.exemptions ? exemptions.exemptions : {}
+			});
+		}, (error) => {
+			if (alive) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
+		});
+		return () => { alive = false; };
+	}, [officialApi, request]);
+
+	const optional = state.status === "ready"
+		? state.bundles.filter((bundle) => bundle.optional === true || OFFICIAL_OPTIONAL_LABEL[bundle.name] !== undefined)
+		: [];
+
+	const toggle = async (bundle, enabled) => {
+		if (busy !== null) return;
+		setBusy(bundle.name);
+		setFeedback(null);
+		try {
+			// 官方可选包由引擎安装自带，启用 = 把它接入当前 profile（内置页走的是同一条 remote）
+			await officialApi.setBundleEnabled(bundle.name, enabled).then(unwrapEngine);
+			setFeedback({ severity: "status", message: `${bundle.name}：已${enabled ? "启用" : "停用"}（刷新页面后生效）。` });
+			setRequest((value) => value + 1);
+		} catch (error) {
+			setFeedback({ severity: "error", message: `${bundle.name}：${error instanceof Error ? error.message : String(error)}` });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const revoke = async (packageVersion, runtimeVersion) => {
+		if (busy !== null) return;
+		setBusy(packageVersion);
+		try {
+			await officialApi.setVersionExemption(packageVersion, runtimeVersion, false, true).then(unwrapEngine);
+			setFeedback({ severity: "status", message: `${packageVersion}：已撤销 ${runtimeVersion} 的豁免。` });
+			setRequest((value) => value + 1);
+		} catch (error) {
+			setFeedback({ severity: "error", message: String(error instanceof Error ? error.message : error) });
+		} finally {
+			setBusy(null);
+		}
+	};
+
+	const cardStyle = { display: "flex", alignItems: "center", gap: 12, border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", borderRadius: 10, padding: "12px 14px" };
+	const tileStyle = { width: 38, height: 38, flex: "0 0 auto", borderRadius: 9, background: "var(--dsw-alias-bg-layer-3)", display: "grid", placeItems: "center", fontSize: 17 };
+	const tagStyle = (color) => ({ border: `1px solid ${color ?? "var(--dsw-alias-border-l2)"}`, color: color ?? "var(--dsw-alias-label-tertiary)", borderRadius: 999, padding: "1px 7px", fontSize: 11, whiteSpace: "nowrap" });
+	const exemptionEntries = Object.entries(state.exemptions ?? {});
+
+	if (state.status === "unavailable") {
+		return <p style={{ margin: 0, fontSize: 13, color: "var(--dsw-alias-label-tertiary)" }}>{t("officialUnavailable")}</p>;
+	}
+	if (state.status === "loading") {
+		return <p style={{ margin: 0, fontSize: 13, color: "var(--dsw-alias-label-tertiary)" }}>{t("loading")}</p>;
+	}
+	if (state.status === "error") {
+		return (
+			<div role="alert" style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 13, color: "var(--dsw-alias-state-error-primary)" }}>
+				<span>{state.message}</span>
+				<button type="button" onClick={() => setRequest((value) => value + 1)} style={buttonStyle}>{t("retry")}</button>
+			</div>
+		);
+	}
+
+	return (
+		<div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+			<p style={{ margin: 0, fontSize: 12.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("officialIntro")}</p>
+			{feedback ? (
+				<p role={feedback.severity === "error" ? "alert" : "status"} style={{ margin: 0, fontSize: 12, color: feedback.severity === "error" ? "var(--dsw-alias-state-error-primary)" : "var(--dsw-alias-label-tertiary)" }}>{feedback.message}</p>
+			) : null}
+
+			<div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 13, fontWeight: 600 }}>
+				{t("officialTitle")}
+				<span style={{ color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: 12 }}>({optional.length})</span>
+			</div>
+			{optional.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 13, color: "var(--dsw-alias-label-tertiary)" }}>{t("officialEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+					{optional.map((bundle) => {
+						const label = OFFICIAL_OPTIONAL_LABEL[bundle.name] ?? { name: bundle.name, note: bundle.description ?? "", glyph: "📦" };
+						const installing = busy === bundle.name;
+						return (
+							<li key={bundle.name} style={{ display: "block" }}>
+								<div style={cardStyle}>
+									<div style={tileStyle}>{label.glyph}</div>
+									<div style={{ minWidth: 0, flex: "1 1 auto" }}>
+										<div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+											<span style={{ fontSize: 14, fontWeight: 600 }}>{label.name}</span>
+											{bundle.version ? <span style={{ fontSize: 11.5, color: "var(--dsw-alias-label-tertiary)" }}>v{bundle.version}</span> : null}
+											<span style={tagStyle()}>{t("officialOptional")}</span>
+											<span style={tagStyle(bundle.enabled ? "var(--dsw-alias-state-success-primary, #22c55e)" : "var(--dsw-alias-state-warning-primary, #f59e0b)")}>
+												{bundle.enabled ? t("officialEnabled") : t("officialNotEnabled")}
+											</span>
+											{bundle.installed ? <span style={tagStyle()}>{t("officialInstalled")}</span> : null}
+											{bundle.error ? <span style={tagStyle("var(--dsw-alias-state-error-primary)")}>{String(bundle.error.code ?? "错误")}</span> : null}
+										</div>
+										<div style={{ fontSize: 12.5, color: "var(--dsw-alias-label-tertiary)", marginTop: 3 }}>{label.note || bundle.name}</div>
+										<div style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)", marginTop: 2, fontFamily: "var(--ds-font-family-code)" }}>{bundle.name}</div>
+									</div>
+									<div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+										{bundle.enabled ? (
+											<button type="button" disabled={busy !== null} onClick={() => toggle(bundle, false)}
+												style={{ ...buttonStyle, ...(busy !== null ? { opacity: 0.6, cursor: "default" } : null) }}>
+												{t("officialDisable")}
+											</button>
+										) : (
+											<button type="button" disabled={busy !== null} onClick={() => toggle(bundle, true)}
+												style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "transparent", color: "#fff", fontWeight: 600, ...(busy !== null ? { opacity: 0.6, cursor: "default" } : null) }}>
+												{installing ? t("officialInstalling") : t("officialInstall")}
+											</button>
+										)}
+									</div>
+								</div>
+								{!bundle.installed ? (
+									<div style={{ marginLeft: 50, marginTop: 4, fontSize: 11.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("installHint")}</div>
+								) : null}
+							</li>
+						);
+					})}
+				</ul>
+			)}
+
+			{items.length > 0 ? (
+				<>
+					<div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 13, fontWeight: 600, marginTop: 6 }}>
+						{t("officialItems")}
+						<span style={{ color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: 12 }}>({items.length})</span>
+					</div>
+					<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+						{items.map((item) => {
+							const expanded = openItem === item.id;
+							// C4：只有拿到框架的 renderSlot（= 声明了 plugins.* children 的那条 main 注册）才能渲染配置页；
+							// 设置页 tab 的注册没有 children → 不给死按钮，改为指向侧边栏页面的提示。
+							const canOpen = typeof renderSlot === "function";
+							return (
+								<li key={item.id} style={{ display: "block" }}>
+									<div style={cardStyle}>
+										<div style={tileStyle}>🧩</div>
+										<div style={{ minWidth: 0, flex: "1 1 auto" }}>
+											<div style={{ fontSize: 14, fontWeight: 600 }}>{item.label}</div>
+											<div style={{ fontSize: 11, color: "var(--dsw-alias-label-tertiary)", fontFamily: "var(--ds-font-family-code)" }}>{item.id}</div>
+											{/* C5：契约里 view:'summary' 就是卡片的一行说明（内置页同样请求它） */}
+											{canOpen ? (
+												<div style={{ marginTop: 3, fontSize: 12, lineHeight: "18px", color: "var(--dsw-alias-label-secondary)" }}>
+													{renderSlot("plugins.item", { view: "summary" }, { only: item.id })}
+												</div>
+											) : (
+												<div style={{ marginTop: 3, fontSize: 11.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("configMainPageHint")}</div>
+											)}
+										</div>
+										{canOpen ? (
+											<button type="button" onClick={() => setOpenItem(expanded ? null : item.id)} style={buttonStyle}>
+												{expanded ? t("officialClose") : t("officialOpen")}
+											</button>
+										) : null}
+									</div>
+									{expanded && canOpen ? (
+										<div style={{ marginTop: 8, marginLeft: 50, border: "1px solid var(--dsw-alias-border-l2)", borderRadius: 10, padding: "12px 14px", background: "var(--dsw-alias-bg-layer-1)" }}>
+											{renderSlot("plugins.item", { view: "page" }, { only: item.id })}
+										</div>
+									) : null}
+								</li>
+							);
+						})}
+					</ul>
+				</>
+			) : null}
+
+			<div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 13, fontWeight: 600, marginTop: 6 }}>
+				{t("exemptions")}
+				<span style={{ color: "var(--dsw-alias-label-tertiary)", fontWeight: 400, fontSize: 12 }}>({exemptionEntries.length})</span>
+			</div>
+			{exemptionEntries.length === 0 ? (
+				<p style={{ margin: 0, fontSize: 12.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("exemptionsEmpty")}</p>
+			) : (
+				<ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+					{exemptionEntries.flatMap(([packageVersion, runtimes]) => (Array.isArray(runtimes) ? runtimes : []).map((runtimeVersion) => (
+						<li key={`${packageVersion}@${runtimeVersion}`} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: "var(--dsw-alias-label-secondary, var(--dsw-alias-label-tertiary))" }}>
+							<code style={{ fontFamily: "var(--ds-font-family-code)" }}>{packageVersion}</code>
+							<span style={{ color: "var(--dsw-alias-label-tertiary)" }}>←</span>
+							<code style={{ fontFamily: "var(--ds-font-family-code)" }}>{runtimeVersion}</code>
+							<button type="button" disabled={busy !== null} onClick={() => revoke(packageVersion, runtimeVersion)} style={{ ...buttonStyle, marginLeft: "auto" }}>
+								{t("exemptionRevoke")}
+							</button>
+						</li>
+					)))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+/**
+ * 页面外壳：把原来挤在列表工具栏里的二级面板拉平成一级 tab，只有一层导航。
+ * 官方内置（可选） / 插件列表 / 插件市场 / 操作与场景 / 维护（更新源·救援中心）
+ */
+function PluginManagerProPage(props) {
+	const t = props.t;
+	const [tab, setTab] = useState("official");
+	const [opsTab, setOpsTab] = useState("history");
+	const [maintTab, setMaintTab] = useState("sources");
+	const [snapshot, setSnapshot] = useState(null);
+	const [busy, setBusy] = useState(null);
+
+	// 市场/更新源/救援需要 profile 快照：原先由内嵌列表各自持有，现在外壳统一拉取
+	useEffect(() => {
+		if (tab !== "market" && tab !== "maintenance") return undefined;
+		let alive = true;
+		props.list().then((value) => { if (alive) setSnapshot(value); }, () => { /* 保持空态 */ });
+		return () => { alive = false; };
+	}, [tab, props.list]);
+
+	const tabs = [
+		{ id: "official", label: t("tabOfficial") },
+		{ id: "list", label: t("tabAll") },
+		{ id: "market", label: t("tabMarket") },
+		{ id: "ops", label: t("tabOps") },
+		{ id: "maintenance", label: t("tabMaintenance") }
+	];
+	const tabStyle = (active) => ({
+		padding: "7px 11px",
+		fontSize: 13,
+		font: "inherit",
+		cursor: "pointer",
+		background: "transparent",
+		border: "none",
+		borderBottom: `2px solid ${active ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "transparent"}`,
+		color: active ? "var(--dsw-alias-label-primary)" : "var(--dsw-alias-label-tertiary)",
+		fontWeight: active ? 600 : 400
+	});
+	const segmented = (items, active, onPick) => (
+		<div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
+			{items.map((item) => (
+				<button key={item.id} type="button" onClick={() => onPick(item.id)}
+					style={{
+						...buttonStyle,
+						fontWeight: active === item.id ? 600 : 400,
+						// 注意：必须显式给出非选中态的 color/borderColor。若写 undefined，
+						// React 在切换时会清掉这两个长属性，border 回退成 currentColor（近黑）
+						color: active === item.id ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-label-primary)",
+						borderColor: active === item.id ? "var(--dsw-alias-state-business-primary, #4f8cff)" : "var(--dsw-alias-border-l2)"
+					}}>
+					{item.label}
+				</button>
+			))}
+		</div>
+	);
+	const saveSources = async (sources) => {
+		setBusy("sources");
+		try {
+			const next = await props.setSources(sources);
+			setSnapshot(next);
+		} finally {
+			setBusy(null);
+		}
+	};
+	const entries = snapshot !== null ? snapshot.entries : [];
+
+	return (
+		// 关键：main 面板不会替本页滚动，页面自己必须是滚动容器
+		// （内置页同款 height:100% + overflow:auto）；内层再限宽居中，
+		// 否则内容超出视口后下面的插件永远看不到。
+		<section data-plugin-panel="plugin-manager-pro" style={{ boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden", padding: "22px 26px 44px", color: "var(--dsw-alias-label-primary)" }}>
+			<div style={{ maxWidth: 960, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+			<header data-window-drag="true">
+				<div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+					<h1 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{t("title")}</h1>
+					<span style={{
+						fontSize: 11,
+						fontWeight: 600,
+						padding: "2px 9px",
+						borderRadius: 999,
+						background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+						color: "var(--dsw-alias-state-business-primary, #4f8cff)"
+					}}>{t("managerBadge")}</span>
+				</div>
+				<p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("pageSubtitle")}</p>
+			</header>
+			<nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--dsw-alias-border-l2)", flexWrap: "wrap" }}>
+				{tabs.map((item) => (
+					<button key={item.id} type="button" onClick={() => setTab(item.id)} style={tabStyle(tab === item.id)}>{item.label}</button>
+				))}
+			</nav>
+
+			{tab === "official" ? (
+				<TabBoundary>
+					<OfficialPluginsPanel officialApi={props.officialApi} itemsSource={props.officialItemsSource} renderSlot={props.renderSlot} t={t} />
+				</TabBoundary>
+			) : null}
+
+			{tab === "list" ? <TabBoundary><PluginManagerTab {...props} embedded /></TabBoundary> : null}
+
+			{tab === "market" ? (
+				<TabBoundary>
+					<MarketPanel marketCatalog={props.marketCatalog} marketInstall={props.marketInstall} busy={busy !== null} t={t} entries={entries} />
+				</TabBoundary>
+			) : null}
+
+			{tab === "ops" ? (
+				<TabBoundary>
+					{segmented([{ id: "history", label: t("history") }, { id: "scenarios", label: t("scenarios") }], opsTab, setOpsTab)}
+					{opsTab === "history"
+						? <HistoryPanel operationHistory={props.operationHistory} undoOperation={props.undoOperation} onSnapshot={setSnapshot} t={t} />
+						: <ScenarioPanel
+							scenarioList={props.scenarioList}
+							scenarioSave={props.scenarioSave}
+							scenarioUpdate={props.scenarioUpdate}
+							scenarioDelete={props.scenarioDelete}
+							scenarioApply={props.scenarioApply}
+							onSnapshot={setSnapshot}
+							t={t}
+						/>}
+				</TabBoundary>
+			) : null}
+
+			{tab === "maintenance" ? (
+				<TabBoundary>
+					{segmented([{ id: "sources", label: t("sources") }, { id: "rescue", label: t("rescue") }], maintTab, setMaintTab)}
+					{maintTab === "sources"
+						? <SourcesPanel sources={snapshot !== null ? snapshot.sources : []} save={saveSources} busy={busy !== null} t={t} />
+						: <RescuePanel
+							diagnose={props.diagnose}
+							quarantine={props.quarantine}
+							repairHarness={props.repairHarness}
+							restartHarness={props.restartHarness}
+							uninstallPackages={props.uninstallPackages}
+							uninstallPreview={props.uninstallPreview}
+							getRescueConfig={props.getRescueConfig}
+							setRescueConfig={props.setRescueConfig}
+							getDownloadConfig={props.getDownloadConfig}
+							checkDownloads={props.checkDownloads}
+							verifyProfile={props.verifyProfile}
+							fixProfile={props.fixProfile}
+							managed={entries.filter((entry) => entry.origin === "user")}
+							t={t}
+						/>}
+				</TabBoundary>
+			) : null}
+			</div>
+		</section>
+	);
+}
+
 const zh = {
 	tab: "插件管理",
-	title: "插件管理",
+	tabOfficial: "官方内置（可选）",
+	tabAll: "全部插件",
+	tabUpdate: "可更新",
+	tabMarket: "插件市场",
+	tabOps: "操作与场景",
+	tabMaintenance: "维护",
+	onlyUpdatable: "仅显示可更新",
+	pageSubtitle: "已接管内置插件页 · 侧边栏「插件管理」",
+	officialTitle: "官方内置可选插件",
+	officialIntro: "引擎自带、默认未启用的能力包；启用后即可使用，部分插件还自带配置页。",
+	officialEmpty: "没有发现官方可选插件。",
+	officialUnavailable: "引擎未提供官方插件清单接口（pluginManager remote 不可用）。",
+	officialInstall: "启用",
+	officialInstalling: "启用中…",
+	officialDisable: "停用",
+	officialInstalled: "已安装",
+	officialNotInstalled: "未安装",
+	officialEnabled: "已启用",
+	officialNotEnabled: "未启用",
+	officialOptional: "可选",
+	officialItems: "自带配置页的官方插件",
+	officialOpen: "打开配置页",
+	officialClose: "收起",
+	exemptions: "版本豁免",
+	exemptionsEmpty: "暂无版本豁免记录。",
+	exemptionRevoke: "撤销",
+	installHint: "「启用」会通过 pnpm 安装该组合包，可能需要下载依赖。",
+	title: "引擎与插件管理台",
 	profile: "当前配置",
 	search: "搜索插件名称/简介/包名",
 	refresh: "检查更新并刷新状态",
@@ -1387,13 +2417,21 @@ const zh = {
 	originBuiltin: "架构自带",
 	originUser: "用户安装",
 	originUserHint: "用户/agent 安装：dsh plugin add 或插件市场安装",
-	configCards: "插件自带配置",
 	configEntry: "配置",
 	configEntryHint: "打开该插件的自带配置面板（由插件自身提供）",
-	configCardFailed: "配置卡片加载失败",
-	necessityCore: "必须",
-	necessityRecommended: "推荐",
-	necessityOptional: "可选",
+	configBundleEntry: "插件配置",
+	configMainPageHint: "请在侧边栏「插件管理」页中打开该配置页。",
+	necessityCore: "核心组件（引擎必需，不允许禁用）",
+	badgeCore: "核心",
+	necessityBuiltin: "引擎内置组件",
+	badgeBuiltin: "内置",
+	necessityUser: "用户插件",
+	badgeUser: "用户",
+	recommendedTag: "推荐",
+	recommendedTagHint: "推荐加装：管理器建议安装的第三方增强插件",
+	managerBadge: "管理器",
+	marketDetail: "市场详情",
+	marketDetailHint: "在插件市场（dshfind 精选目录）中查看该插件",
 	statusError: "错误/需检查",
 	statusUpdate: "需更新",
 	statusDisabled: "未启用",
@@ -1404,7 +2442,7 @@ const zh = {
 	update: "更新",
 	updateInternal: "内置",
 	updateInternalHint: "使用管理器内置下载器（HTTP/P2P/aria2），不走浏览器下载",
-	updateAll: "全部更新",
+	updateAll: "检查更新",
 	upToDate: "已是最新版本",
 	notManaged: "随安装更新",
 	updateAvailable: "可更新",
@@ -1428,10 +2466,12 @@ const zh = {
 	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
 	resetDone: "已还原所有开关状态。",
 	archived: "架构保留",
-	rescue: "救砖",
+	rescue: "救援",
 	rescueTitle: "救援中心",
 	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
 	rescueDiagnose: "运行诊断",
+	rescueModHealth: "🩺 mod 体检",
+	rescueModHealthHint: "mod 体检（preflight 只读校验 + 引擎日志错误聚合）由启动器兜底页提供，点击「mod 体检」在 3081 兜底页查看；救援诊断与本面板共用救援球入口。",
 	rescueClean: "✓ 未发现加载失败或运行期错误。",
 	rescueDisable: "禁用此插件",
 	rescueUninstall: "卸载",
@@ -1446,6 +2486,84 @@ const zh = {
 	rescueAutoSaved: "自动隔离设置已保存。",
 	rescueUninstallList: "可卸载的 profile 依赖：",
 	rescueUninstallConfirm: "确认卸载",
+	// —— 来源人工修正 ——
+	sourceOverrideHint: "来源标签（自动判定，可手动覆盖并持久化）",
+	sourceAuto: "自动",
+	sourceNpm: "npm",
+	sourceGithub: "GitHub",
+	sourceLocal: "本地",
+	sourceBuiltin: "内置",
+	// —— 事务化卸载 ——
+	uninstallTitle: "卸载影响预览",
+	uninstallRowHint: "卸载该插件",
+	uninstallPreviewLoading: "正在分析影响范围…",
+	uninstallPreviewFail: "影响预览失败",
+	uninstallPreviewHint: "将执行事务化卸载：备份配置 → 删除目标包与补丁行 → 校验 → 异常自动回滚。请确认影响范围：",
+	uninstallAffectedEntries: "将移除的插件条目",
+	uninstallNoEntries: "该包没有注册插件条目（仅移除依赖）。",
+	uninstallBundleRow: "该包在 bundles 清单中（将移除启动声明）。",
+	uninstallPatchRows: "将清理的管理器开关行",
+	uninstallDependents: "以下已安装插件依赖该包，卸载会造成依赖断裂",
+	uninstallCascade: "级联卸载依赖插件",
+	// —— 卸载前体检（P1-4：依赖断裂 / patch 残留 / 重复 service·端口）——
+	uninstallVerdictLine: "本次卸载",
+	uninstallVerdictSafe: "安全",
+	uninstallVerdictCaution: "需注意",
+	uninstallVerdictRisky: "有风险",
+	uninstallCheckTitle: "卸载前体检",
+	uninstallCheckHint: "三类只读检查：依赖断裂 / patch 残留 / 重复 service·端口（不会改动任何 profile 文件）",
+	uninstallCheckHigh: "高风险",
+	uninstallCheckWarning: "提示",
+	uninstallCheckInfo: "信息",
+	uninstallCheckEmpty: "没有需要提示的体检项。",
+	uninstallSelfHint: "这是管理器自身：卸载前会先执行 bin/open-boot.mjs --uninstall 清理开机自启（停本 profile 守护 → 删 DSHWeb* 自启值 → 删 .vbs → 清 pid）。失败或超时不阻断卸载，结果会写进卸载报告与操作历史。",
+	uninstallSelfReport: "管理器自身已卸载：重启引擎后本页面消失；如要装回，用 dsh plugin --profile <name> add dsh-plugin-manager-pro。",
+	uninstallAutostartTitle: "开机自启清理",
+	uninstallAutostartCleaned: "已完成",
+	uninstallAutostartSkipped: "已跳过（包内没有 --uninstall，旧版本）",
+	uninstallAutostartFailed: "未成功（不影响卸载）",
+	uninstallAutostartTimeout: "超时（不影响卸载）",
+	uninstallConfirm: "确认卸载",
+	uninstalling: "卸载中…",
+	uninstallStatusremoved: "已卸载",
+	uninstallStatusrolledback: "已回滚",
+	uninstallStatusfailed: "失败",
+	"uninstallStatusnot-managed": "无法卸载",
+	uninstallVerifyOk: "卸载后自检通过，重启 profile 后生效。",
+	uninstallReportRows: "清理的开关行",
+	uninstallReportCascade: "级联卸载",
+	uninstallResiduals: "残留目录（下次启动自动清理）",
+	uninstallNotManaged: "该包不是本 profile 的依赖，无法卸载。",
+	uninstallLocalBlocked: "本地包请用 dsh plugin --profile <name> remove 卸载。",
+	done: "完成",
+	cancel: "取消",
+	// —— 操作历史 ——
+	history: "历史",
+	historyTitle: "操作历史",
+	historyHint: "最近 20 次操作（卸载/开关/场景/重置），可一键撤销",
+	historyEmpty: "暂无操作记录。",
+	historyUndo: "撤销",
+	historyUndone: "已撤销",
+	// —— 场景方案 ——
+	scenarios: "场景",
+	scenarioTitle: "场景方案",
+	scenarioHint: "保存当前插件启停组合，一键切换（应用前展示变更预览；受保护条目自动跳过）",
+	scenarioName: "场景名称（如：办公 / 写作 / 演示）",
+	scenarioSave: "保存当前状态",
+	scenarioSaved: "场景已保存。",
+	scenarioEmpty: "暂无场景。调整插件开关后点「保存当前状态」创建。",
+	scenarioApply: "应用",
+	scenarioApplyConfirm: "确认切换？",
+	scenarioApplying: "切换中…",
+	scenarioCalculating: "正在计算变更…",
+	scenarioPreviewTitle: "切换预览（该场景会变更以下条目）：",
+	scenarioCounts: "启/停",
+	scenarioUpdate: "更新",
+	scenarioUpdateHint: "用当前状态覆盖此场景",
+	scenarioDelete: "删除",
+	scenarioDeleteConfirm: "确认删除场景",
+	scenarioApplied: "场景已应用",
+	restartHint: "如运行期未收敛，重启 profile 后生效。",
 	market: "市场",
 	marketTitle: "插件市场（dshfind 精选目录）",
 	marketSearch: "搜索插件（名称/仓库/描述）…",
@@ -1474,7 +2592,7 @@ const zh = {
 	verifyRun: "运行检查",
 	verifyOk: "✓ profile 配置正常，引擎可以正常启动。",
 	verifyBad: "⚠ 发现问题（引擎可能无法启动）：",
-	verifyHint: "损坏的 bundle（包未安装/未声明 dsh.bundle）或无法解析的 cordis.patch.yml 会让引擎在启动阶段失败——这是救砖的首要修复目标；双击桌面快捷方式启动时也会自动执行同样的检查。",
+	verifyHint: "损坏的 bundle（包未安装/未声明 dsh.bundle）或无法解析的 cordis.patch.yml 会让引擎在启动阶段失败——这是救援流程的首要修复目标；双击桌面快捷方式启动时也会自动执行同样的检查。",
 	fixProfile: "修复引擎配置",
 	fixProfileConfirm: "确认执行？将备份并隔离损坏的 bundle、还原损坏的补丁文件。",
 	dlTitle: "下载目录（自动安装）",
@@ -1488,7 +2606,34 @@ const zh = {
 
 const en = {
 	tab: "Plugin manager",
-	title: "Plugin manager",
+	tabOfficial: "Official (optional)",
+	tabAll: "All plugins",
+	tabUpdate: "Updates",
+	tabMarket: "Market",
+	tabOps: "Operations",
+	tabMaintenance: "Maintenance",
+	onlyUpdatable: "Updates only",
+	pageSubtitle: "Takes over the built-in Plugins page · sidebar entry",
+	officialTitle: "Official optional plugins",
+	officialIntro: "Capability bundles shipped with the engine but off by default. Some register their own configuration page.",
+	officialEmpty: "No official optional plugins found.",
+	officialUnavailable: "The engine's official plugin inventory is unavailable (pluginManager remote missing).",
+	officialInstall: "Enable",
+	officialInstalling: "Enabling…",
+	officialDisable: "Disable",
+	officialInstalled: "Installed",
+	officialNotInstalled: "Not installed",
+	officialEnabled: "Enabled",
+	officialNotEnabled: "Off",
+	officialOptional: "Optional",
+	officialItems: "Official plugins with their own page",
+	officialOpen: "Open page",
+	officialClose: "Collapse",
+	exemptions: "Version exemptions",
+	exemptionsEmpty: "No version exemptions.",
+	exemptionRevoke: "Revoke",
+	installHint: "Enabling installs this bundle through pnpm and may download packages.",
+	title: "Engine & Plugin Console",
 	profile: "Active profile",
 	search: "Search by name, description or package",
 	refresh: "Check updates and refresh",
@@ -1505,13 +2650,21 @@ const en = {
 	originBuiltin: "Built-in",
 	originUser: "User-installed",
 	originUserHint: "Installed by you or an agent via `dsh plugin add` or the plugin market",
-	configCards: "Plugin-provided config",
 	configEntry: "Config",
 	configEntryHint: "Open this plugin's own config panel (provided by the plugin itself)",
-	configCardFailed: "Config card failed to load",
-	necessityCore: "Essential",
-	necessityRecommended: "Recommended",
-	necessityOptional: "Optional",
+	configBundleEntry: "Plugin config",
+	configMainPageHint: "Open this config page from the sidebar Plugin manager entry.",
+	necessityCore: "Core components (engine-required — cannot be disabled)",
+	badgeCore: "Core",
+	necessityBuiltin: "Engine built-ins",
+	badgeBuiltin: "Built-in",
+	necessityUser: "User plugins",
+	badgeUser: "User",
+	recommendedTag: "Recommended",
+	recommendedTagHint: "Recommended add-on: a third-party enhancement plugin suggested by the manager",
+	managerBadge: "Manager",
+	marketDetail: "Market",
+	marketDetailHint: "View this plugin in the curated market (dshfind)",
 	statusError: "Error/Check",
 	statusUpdate: "Update",
 	statusDisabled: "Disabled",
@@ -1522,7 +2675,7 @@ const en = {
 	update: "Update",
 	updateInternal: "Built-in",
 	updateInternalHint: "Use the manager's built-in downloader (HTTP/P2P/aria2) instead of the browser",
-	updateAll: "Update all",
+	updateAll: "Check updates",
 	upToDate: "Already up to date",
 	notManaged: "ships with install",
 	updateAvailable: "updates",
@@ -1550,6 +2703,8 @@ const en = {
 	rescueTitle: "Rescue center",
 	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🛟 button, bottom right).",
 	rescueDiagnose: "Diagnose",
+	rescueModHealth: "Mod health check",
+	rescueModHealthHint: "Mod health (preflight read-only check + engine log error aggregation) is served by the launcher fallback page; open it on 127.0.0.1:3081/plugins.",
 	rescueClean: "✓ No failing plugins found.",
 	rescueDisable: "Disable",
 	rescueUninstall: "Uninstall",
@@ -1564,6 +2719,84 @@ const en = {
 	rescueAutoSaved: "Auto-quarantine setting saved.",
 	rescueUninstallList: "Uninstallable profile dependencies:",
 	rescueUninstallConfirm: "Uninstall",
+	// —— Source override ——
+	sourceOverrideHint: "Source label (auto-detected; can be overridden and persisted)",
+	sourceAuto: "auto",
+	sourceNpm: "npm",
+	sourceGithub: "GitHub",
+	sourceLocal: "local",
+	sourceBuiltin: "built-in",
+	// —— Transactional uninstall ——
+	uninstallTitle: "Uninstall impact preview",
+	uninstallRowHint: "Uninstall this plugin",
+	uninstallPreviewLoading: "Analyzing impact…",
+	uninstallPreviewFail: "Preview failed",
+	uninstallPreviewHint: "Transactional uninstall: backup configs → remove the package and patch rows → verify → automatic rollback on failure. Review the impact:",
+	uninstallAffectedEntries: "Plugin entries to be removed",
+	uninstallNoEntries: "This package registers no plugin entries (dependency only).",
+	uninstallBundleRow: "It is listed in the profile bundles (boot declaration will be removed).",
+	uninstallPatchRows: "Manager patch rows to be cleaned",
+	uninstallDependents: "These installed plugins depend on this package; uninstalling will break them",
+	uninstallCascade: "Cascade-uninstall dependents",
+	// —— Pre-uninstall health check (P1-4) ——
+	uninstallVerdictLine: "This uninstall",
+	uninstallVerdictSafe: "safe",
+	uninstallVerdictCaution: "needs attention",
+	uninstallVerdictRisky: "risky",
+	uninstallCheckTitle: "Pre-uninstall check",
+	uninstallCheckHint: "Three read-only checks: broken dependencies / patch leftovers / duplicate services·ports (no profile file is modified)",
+	uninstallCheckHigh: "high risk",
+	uninstallCheckWarning: "note",
+	uninstallCheckInfo: "info",
+	uninstallCheckEmpty: "No findings to report.",
+	uninstallSelfHint: "This is the manager itself: before removal it runs bin/open-boot.mjs --uninstall to clear autostart (stops this profile's daemon → deletes DSHWeb* Run values → deletes .vbs shims → clears the pid file). Failure or timeout never blocks the uninstall, and the outcome is written to the report and operation history.",
+	uninstallSelfReport: "The manager itself was removed: this page disappears after an engine restart; reinstall with dsh plugin --profile <name> add dsh-plugin-manager-pro.",
+	uninstallAutostartTitle: "Autostart cleanup",
+	uninstallAutostartCleaned: "done",
+	uninstallAutostartSkipped: "skipped (no --uninstall in this package — older version)",
+	uninstallAutostartFailed: "did not succeed (uninstall unaffected)",
+	uninstallAutostartTimeout: "timed out (uninstall unaffected)",
+	uninstallConfirm: "Confirm uninstall",
+	uninstalling: "Uninstalling…",
+	uninstallStatusremoved: "Removed",
+	uninstallStatusrolledback: "Rolled back",
+	uninstallStatusfailed: "Failed",
+	"uninstallStatusnot-managed": "Not managed",
+	uninstallVerifyOk: "Post-uninstall health check passed; it takes effect after a profile restart.",
+	uninstallReportRows: "Patch rows cleaned",
+	uninstallReportCascade: "Cascade removed",
+	uninstallResiduals: "Residual directories (auto-cleaned at next start)",
+	uninstallNotManaged: "This package is not a dependency of this profile; it cannot be uninstalled.",
+	uninstallLocalBlocked: "Local package — use `dsh plugin --profile <name> remove`.",
+	done: "Done",
+	cancel: "Cancel",
+	// —— Operation history ——
+	history: "History",
+	historyTitle: "Operation history",
+	historyHint: "Last 20 operations (uninstall/toggle/scenario/reset), one-click undo",
+	historyEmpty: "No operations yet.",
+	historyUndo: "Undo",
+	historyUndone: "undone",
+	// —— Scenarios ——
+	scenarios: "Scenarios",
+	scenarioTitle: "Scenarios",
+	scenarioHint: "Save the current plugin state as a named scenario and switch with one click (change preview before applying; protected entries are skipped)",
+	scenarioName: "Scenario name (e.g. office / writing / demo)",
+	scenarioSave: "Save current state",
+	scenarioSaved: "Scenario saved.",
+	scenarioEmpty: "No scenarios. Toggle plugins, then click \"Save current state\".",
+	scenarioApply: "Apply",
+	scenarioApplyConfirm: "Confirm switch?",
+	scenarioApplying: "Switching…",
+	scenarioCalculating: "Calculating changes…",
+	scenarioPreviewTitle: "Preview (this scenario changes):",
+	scenarioCounts: "on/off",
+	scenarioUpdate: "Update",
+	scenarioUpdateHint: "Overwrite this scenario with the current state",
+	scenarioDelete: "Delete",
+	scenarioDeleteConfirm: "Delete scenario",
+	scenarioApplied: "Scenario applied",
+	restartHint: "If runtime state does not converge, restart the profile.",
 	market: "Market",
 	marketTitle: "Plugin market (dshfind curated catalog)",
 	marketSearch: "Search plugins (name/repo/description)…",
@@ -1638,7 +2871,16 @@ async function apply(ctx) {
 			quarantine: async (entryIds) => unwrap(await withTimeout(scope.remote.pluginManagerPro.quarantine(entryIds), "隔离插件")),
 			repairHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.repairHarness(), "修复引擎")),
 			restartHarness: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.restartHarness(), "重启引擎")),
-			uninstallPackages: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames), "卸载插件")),
+			uninstallPackages: async (packageNames, options) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPackages(packageNames, options ?? { cascade: false }), "卸载插件", 300000)),
+			uninstallPreview: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.uninstallPreview(packageNames), "卸载影响预览", 60000)),
+			operationHistory: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.operationHistory(), "读取操作历史")),
+			undoOperation: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.undoOperation(id), "撤销操作", 300000)),
+			setSourceOverride: async (packageName, source) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setSourceOverride(packageName, source), "保存来源标签")),
+			scenarioList: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioList(), "读取场景方案")),
+			scenarioSave: async (name) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioSave(name), "保存场景")),
+			scenarioUpdate: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioUpdate(id), "更新场景")),
+			scenarioDelete: async (id) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioDelete(id), "删除场景")),
+			scenarioApply: async (id, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.scenarioApply(id, dryRun), "应用场景")),
 			getRescueConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getRescueConfig(), "读取救援配置")),
 			setRescueConfig: async (config) => unwrap(await withTimeout(scope.remote.pluginManagerPro.setRescueConfig(config), "保存救援配置")),
 			getDownloadConfig: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.getDownloadConfig(), "读取下载目录")),
@@ -1651,49 +2893,230 @@ async function apply(ctx) {
 			// 市场安装走 pnpm，可能下载 + 编译数分钟：超时放宽到 4 分钟
 			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000))
 		};
-		// 插件自带配置入口：读取 settings.plugin.item 注册（vision-router 等大 mod 的配置卡片）。
-		// 每个卡片独立错误边界，崩溃不影响管理器本体。
-		const configCards = [];
-		try {
-			for (const entry of scope.slots.entries("settings.plugin.item") ?? []) {
-				const id = entry?.options?.id ?? "";
-				const component = entry?.component;
-				if (id === "" || typeof component !== "function") continue;
-				let label = id;
+		// C3：旧的 `settings.plugin.item`（旧设置页插件配置卡片）在 0.1.7 已无声明者 —— 整段读取与渲染均已删除，
+		// 第三方配置改由下面两个 0.1.7 现役槽位承担（键规则见 configSurfacesFor）。
+
+		/**
+		 * `plugins.row.config` / `plugins.bundle.config` 的**已注册键**快照。
+		 * useSyncExternalStore 源：getSnapshot 按槽位 version 缓存，保证引用稳定（否则会无限重渲染）；
+		 * 订阅槽位变更 → 后注册/注销的配置出口都能实时出现/消失。
+		 */
+		const configSurfacesSource = (() => {
+			let stamp = "";
+			let cached = { rows: [], bundles: [] };
+			const read = () => {
+				const keysOf = (name) => {
+					const keys = [];
+					for (const entry of scope.slots.entriesOfSlot(name) ?? []) {
+						const key = entry?.options?.key;
+						if (typeof key === "string" && key !== "") keys.push(key);
+					}
+					return keys.sort();
+				};
+				return { rows: keysOf("plugins.row.config"), bundles: keysOf("plugins.bundle.config") };
+			};
+			return {
+				getSnapshot: () => {
+					const next = `${scope.slots.getVersion("plugins.row.config")}:${scope.slots.getVersion("plugins.bundle.config")}`;
+					if (next !== stamp) {
+						stamp = next;
+						cached = read();
+					}
+					return cached;
+				},
+				subscribe: (listener) => {
+					const offRow = scope.slots.subscribe("plugins.row.config", listener);
+					const offBundle = scope.slots.subscribe("plugins.bundle.config", listener);
+					return () => {
+						offRow();
+						offBundle();
+					};
+				}
+			};
+		})();
+
+		// 引擎自带远程面（懒注入：拿不到也不影响自研功能；官方可选插件子页用）
+		const engineRemote = { api: null };
+		ctx.inject(["remote.pluginManager"], (engineScope) => {
+			const remote = engineScope.remote.pluginManager;
+			if (remote === undefined) return;
+			engineRemote.api = {
+				listBundles: () => remote.listBundles(),
+				setBundleEnabled: (name, enabled) => remote.setBundleEnabled(name, enabled),
+				listVersionExemptions: () => remote.listVersionExemptions(),
+				setVersionExemption: (packageVersion, runtimeVersion, enabled, acceptRisk) => remote.setVersionExemption(packageVersion, runtimeVersion, enabled, acceptRisk)
+			};
+		});
+
+		/**
+		 * 官方插件自带配置页（`plugins.item` 注册）的响应式清单：
+		 * 跟随槽位版本与语言版本（label 是 thunk，切换语言后按新语言重读），与内置页的投影一致。
+		 */
+		const officialItemsSource = (() => {
+			let stamp = "";
+			let cached = [];
+			const read = () => {
 				try {
-					const l = entry?.options?.label;
-					if (typeof l === "function") label = String(l() ?? id);
-				} catch { /* 保留 id */ }
-				configCards.push({
-					id,
-					label,
-					render: () => React.createElement(component, {
-						...(typeof entry?.inject === "function" ? entry.inject() : {}),
-						t
-					})
-				});
-			}
-		} catch { /* slots 不可用时退化为无配置卡片 */ }
+					return (scope.slots.entriesOfSlot("plugins.item") ?? []).map((entry) => {
+						const id = entry?.options?.id ?? "";
+						let label = id;
+						try {
+							const l = entry?.options?.label;
+							if (typeof l === "function") label = String(l() ?? id);
+						} catch { /* 保留 id */ }
+						return { id, label };
+					}).filter((item) => item.id !== "");
+				} catch { return []; }
+			};
+			return {
+				getSnapshot: () => {
+					const next = `${scope.slots.getVersion("plugins.item")}:${scope.locale.getSnapshot().revision}`;
+					if (next !== stamp) {
+						stamp = next;
+						cached = read();
+					}
+					return cached;
+				},
+				subscribe: (listener) => {
+					const offItems = scope.slots.subscribe("plugins.item", listener);
+					const offLocale = scope.locale.subscribe(listener);
+					return () => {
+						offItems();
+						offLocale();
+					};
+				}
+			};
+		})();
+
+		const pagePropsInjected = () => ({
+			...api,
+			t,
+			officialApi: engineRemote.api,
+			officialItemsSource,
+			// 注意：**不要**在这里返回 renderSlot —— renderSlot 由框架 kit 注入
+			// （只有声明了 plugins.* children 的那条 main 注册才拿得到；inject 若返回同名键会覆盖它）。
+			// 设置页 tab 那条注册没有 children → props.renderSlot 为 undefined → 页面自动降级为「无出口 + 提示」。
+			configSurfaces: configSurfacesSource
+		});
+
+		// ① 设置页入口（保留）：同一个页面外壳，避免两套 UI 并存
 		scope.slots.inject("settings.plugins.tab", () => scope.slots.register({
 			name: "settings.plugins.tab",
-			id: "all",
-			order: 10,
+			id: "pluginManagerPro",
+			order: 60,
 			label: () => t("tab"),
 			locale: NS,
-			inject: () => ({ ...api, t, configCards })
-		}, SafeTab));
+			inject: pagePropsInjected
+		}, PluginManagerProPage));
+
+		// ② 侧边栏一级入口：接管内置插件页（profile patch 里已 `ui-plugin-manager: disabled`）
+		scope.slots.inject("sidebar.panellist", () => scope.slots.register({
+			name: "sidebar.panellist",
+			id: "plugins",
+			order: 0,
+			label: () => t("tab"),
+			locale: NS
+		}, PanelIcon));
+
+		// ③ 主面板 + 声明并托管内置页原来的 7 个 plugins.* 子槽位（第三方配置出口落到本页）
+		scope.slots.inject("main", function* () {
+			yield scope.slots.register({
+				name: "main",
+				key: "plugins",
+				locale: NS,
+				inject: pagePropsInjected,
+				children: {
+					"plugins.item": { kind: "list", scope: "root" },
+					"plugins.bundle.activation": { kind: "keyed", scope: "root" },
+					"plugins.bundle.config": { kind: "keyed", scope: "root" },
+					"plugins.row.config": { kind: "keyed", scope: "root" },
+					"plugins.detail.actions": { kind: "list", scope: "root" },
+					"plugins.detail.badge": { kind: "list", scope: "root" },
+					"plugins.detail.section": { kind: "list", scope: "root" }
+				}
+			}, PluginManagerProPage);
+		});
+
+		// ④ 与内置页保持互操作：别的插件用 pluginNavigation.openBundle(pkg) 跳转
+		ctx.inject(["layout"], (layoutScope) => {
+			const layout = typeof layoutScope.get === "function" ? layoutScope.get("layout") : layoutScope.layout;
+			if (layout === undefined || typeof layout.selectPanel !== "function") return;
+			layoutScope.effect(() => layoutScope.reflect.provide("pluginNavigation", {
+				openBundle: () => {
+					try { layout.selectPanel("plugins"); } catch { /* 面板不可选时忽略 */ }
+				}
+			}));
+		});
 	});
-	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页
+	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页。
+	// 支持指针拖动换位（localStorage 记忆）+ 双击打开；拖动超过阈值松手后不算点击，原地点击仍直接打开。
 	let rescueBall = null;
 	if (typeof document !== "undefined" && document.body !== null) {
 		rescueBall = document.createElement("button");
 		rescueBall.textContent = "🛟";
-		rescueBall.title = "DSH 救援中心（设置页不可用时的救砖入口）";
+		rescueBall.title = "DSH 救援中心（可拖动换位；单击打开。设置页不可用时的救援入口）";
 		rescueBall.setAttribute("aria-label", "DSH 救援中心");
-		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;";
+		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;touch-action:none;user-select:none;";
+		// 恢复记忆位置（存在有效 left/top 时覆盖默认 right/bottom）
+		try {
+			const savedPos = JSON.parse(localStorage.getItem("dsh-rescue-ball") || "null");
+			if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)
+				&& savedPos.left >= 0 && savedPos.top >= 0 && savedPos.left < window.innerWidth && savedPos.top < window.innerHeight) {
+				rescueBall.style.left = `${Math.round(savedPos.left)}px`;
+				rescueBall.style.top = `${Math.round(savedPos.top)}px`;
+				rescueBall.style.right = "auto";
+				rescueBall.style.bottom = "auto";
+			}
+		} catch { /* 损坏的记忆数据按默认位置处理 */ }
+		let dragging = false;
+		let moved = false;
+		let startX = 0, startY = 0, originLeft = 0, originTop = 0;
+		rescueBall.addEventListener("pointerdown", (event) => {
+			if (event.button !== 0) return;
+			dragging = true;
+			moved = false;
+			startX = event.clientX;
+			startY = event.clientY;
+			const rect = rescueBall.getBoundingClientRect();
+			originLeft = rect.left;
+			originTop = rect.top;
+			try { rescueBall.setPointerCapture(event.pointerId); } catch { /* 老宿主不支持捕获时拖拽仍可用 */ }
+		});
+		rescueBall.addEventListener("pointermove", (event) => {
+			if (!dragging) return;
+			const dx = event.clientX - startX;
+			const dy = event.clientY - startY;
+			if (!moved && Math.abs(dx) + Math.abs(dy) <= 4) return; // 小于阈值 = 抖动，不是拖拽
+			moved = true;
+			const width = rescueBall.offsetWidth;
+			const height = rescueBall.offsetHeight;
+			const left = Math.min(Math.max(0, originLeft + dx), Math.max(0, window.innerWidth - width));
+			const top = Math.min(Math.max(0, originTop + dy), Math.max(0, window.innerHeight - height));
+			rescueBall.style.left = `${Math.round(left)}px`;
+			rescueBall.style.top = `${Math.round(top)}px`;
+			rescueBall.style.right = "auto";
+			rescueBall.style.bottom = "auto";
+		});
+		const finishDrag = (event) => {
+			if (!dragging) return;
+			dragging = false;
+			try { rescueBall.releasePointerCapture(event.pointerId); } catch { /* 已释放或未捕获 */ }
+			if (!moved) return;
+			try {
+				localStorage.setItem("dsh-rescue-ball", JSON.stringify({
+					left: parseFloat(rescueBall.style.left) || 0,
+					top: parseFloat(rescueBall.style.top) || 0
+				}));
+			} catch { /* 隐私模式等写不进去就只在本次会话内生效 */ }
+		};
+		rescueBall.addEventListener("pointerup", finishDrag);
+		rescueBall.addEventListener("pointercancel", finishDrag);
 		rescueBall.addEventListener("click", () => {
+			if (moved) { moved = false; return; } // 拖拽结束的这一次 click 不触发打开
 			window.open("/rescue", "_blank");
 		});
+		// rc.2 P2-8：移除 dblclick 监听——click 已经打开一次，双击会再触发两个浏览器默认
+		// dblclick→click 序列，一次双击会开出 3 个救援标签页（实测复现的 bug）。
 		document.body.appendChild(rescueBall);
 	}
 	return async () => {
@@ -1704,4 +3127,4 @@ async function apply(ctx) {
 	};
 }
 
-export { PluginManagerTab, apply, inject, marketFilterItems, entryInstalled };
+export { PluginManagerTab, OfficialPluginsPanel, apply, inject, marketFilterItems, entryInstalled, configSurfacesFor, sectionKeyOfEntry };

@@ -1,143 +1,307 @@
-# dsh-plugin-manager-pro
+# 引擎与插件管理台（dsh-plugin-manager-pro）
 
-> 本地插件管理器 —— 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供 Web 可视化插件管理 + **独立救砖工具链**。
+> 本地插件管理器 —— 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**独立插件管理页**（可视化插件管理）+ **3081 兜底页** + **独立救援工具链**。
 
-![badge](https://img.shields.io/badge/dsh-0.1.0--rc.6-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
+![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · 跨平台（Windows / macOS / Linux）
+>
+> **正式发布版 1.0.0**（npm `latest`）。发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-plugin-manager/tags>。
+> ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文[安装](#安装--更新--卸载)）。
+
+**本管理器接管引擎内置的插件管理页，并补上官方不做的部分**：装卸的完整闭环（影响预览 → 事务化卸载 → 失败回滚 → 一键撤销）、操作历史与场景方案、引擎不可用时依然可用的兜底管理页，以及**主引擎起不来时的独立救援工具链**。任一载体失效时，其余载体仍可完成启停、卸载与恢复操作。
+
+![独立插件页：侧边栏一级入口「插件管理」+ 五个页签](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-090-official2.png)
+
+<sub>**图 1** · 独立插件页实拍：侧边栏一级入口「插件管理」，页签为 官方内置（可选）· 全部插件 · 插件市场 · 操作与场景 · 维护。**1.0 起列表内部改为来源三分区**（见下文），页签结构不变。源图：`docs/images/pm-090-official2.png`。</sub>
 
 ---
+
+## 载体一览
+
+| 载体 | 入口 | 说明 |
+| --- | --- | --- |
+| **管理台（3080）** | `http://127.0.0.1:3080` → 侧边栏「插件管理」 | 接管引擎内置插件页；功能最全的日常入口，跟随 DSH 主题变量 |
+| **兜底页（3081）** | `http://127.0.0.1:3081/plugins` | 纯 Node 进程托管，不依赖引擎运行；扁平设计，深浅主题（自动跟随引擎外观与系统偏好） |
+| 启动页（3081） | `http://127.0.0.1:3081/` | 打开即自检并启动引擎（浏览器主页设为它 = "打开即启动"） |
+| 救援球 🛟 | 3080 右下角浮动按钮 | 可拖动换位（位置持久记忆），单击打开救援页 |
+| 救援页 | `http://127.0.0.1:3081/rescue` | verify / fix / start / stop / status 全套修复能力 |
 
 ## ✨ 亮点
 
-- **可视化插件管理**：「设置 → 插件」内的完整管理页——分类折叠、来源筛选、启停开关、版本更新、市场安装
-- **救砖能力彻底解耦**（v0.7+）：主引擎挂了，**独立守护服务（3081 端口）照样能自检、修复、拉起**——不再依赖主进程
-- **浏览器即启动器**：把主页设为 `http://127.0.0.1:3081/`，打开浏览器 = 自动自检 → 修复 → 启动 → 跳转主界面
+- **独立插件页**：插件管理不挤在设置页里——侧边栏一级入口，一个页面完成看插件、装插件、**配插件**、卸插件、救引擎
+- **来源三分区列表**（v1.0）：核心组件（锁定）/ 引擎内置组件 / 用户插件，语义与引擎实际情况一一对应；来源筛选与分区联动
+- **第三方配置入口有落点**：插件行内一行摘要，展开即是它自己的完整配置卡片（`plugins.row.config` / `plugins.bundle.config` 槽位）
+- **事务化卸载**（v1.0 加固）：卸载前**影响预览与体检** → 备份 → `pnpm remove` → 清理补丁条目 → 逐项验证 → **失败自动回滚**；卸载后可**一键撤销**
+- **操作历史 + 场景方案**：最近 20 次操作留痕可撤销；插件组合保存为命名场景，一键切换（应用前展示变更预览）
+- **兜底页独立于引擎**（v1.0）：引擎挂了，`http://127.0.0.1:3081/plugins` 依然能启停 / 更新 / 卸载 / 体检 / 重启引擎
 - **多源更新聚合**：npm registry / 插件超市 dshfind / GitHub / 自定义镜像并行查询，限流熔断，公平取最高版本
+- **浏览器即启动器**：主页设为 `http://127.0.0.1:3081/`，打开浏览器 = 自动自检 → 修复 → 启动 → 跳转主界面
+- **本地写接口有防护**（v0.9.1）：`Origin`（同机同端口白名单）+ 一次性令牌 + 单飞闸门，第三方网页无法触发启动/停止
 
----
+## 📋 功能总览（1.0.0）
 
-## 📋 功能总览（v0.7.3）
+### 管理台（3080）
 
-### 插件列表
+#### 分区模型（v1.0）
 
-- **分类折叠**：按必要程度收纳为 🔴 必须 / 🟡 推荐 / 🟢 可选 三组可折叠分组（头部显示启用计数与可更新角标，搜索自动展开）
-- **来源分类**：区分**架构自带**（随 dsh 提供）与**用户安装**（`dsh plugin add` / 市场安装），顶部 chips 筛选 + 行徽标
-- **状态一目了然**：启用状态（🔴 错误/需检查 · 🟡 需更新 · ⚪ 未启用 · 🟢 启用）、名称、功能简介、必要程度、已装→最新版本 + 来源、开关按键
+插件列表按来源分三区，语义与引擎实际情况一一对应：
+
+| 分区 | 判定 | 行为 |
+| --- | --- | --- |
+| **核心组件（引擎必需，不允许禁用）** | 包名白名单（dsh-base / dsh-web-app） | 锁定展示，开关与卸载均拒绝 |
+| **引擎内置组件** | 引擎自带（origin=builtin） | 可启停、可查看；行徽章「内置」，区内按名称排序 |
+| **用户插件** | 用户安装（origin=user） | 完整操作：启停 / 更新 / 卸载 / 配置 |
+
+- 「推荐」不再是分区，而是**行内标签**：仅真正的第三方推荐加装件（如 browser-control）显示，重要引擎组件不再混入推荐清单
+- 来源筛选（全部 / 架构自带 / 用户安装）、搜索、分区折叠与计数互相联动
+- **来源人工修正**：自动判定来源标签（npm / GitHub / 本地 / 内置），每行可手动覆盖并持久化
+- **状态一目了然**：启用状态（🔴 错误/需检查 · 🟡 需更新 · ⚪ 未启用 · 🟢 启用）、名称、功能简介、已装→最新版本 + 来源、开关按键
 - **简介自动提取**：内置中文目录优先；未收录的 mod 自动从 `README.zh.md`（优先）/ `package.json.description` / `README.md` 提取一句话简介
-- **架构保护**：web 层刻意禁用的行（tool-fs 等）与界面骨架插件（ui-layout 等）禁止开关（🔒 标记 + 原因）
-- **配置卡片**（v0.6.9）：检测 `settings.plugin.item` 注册，大 mod（vision-router 等）行内直接出配置卡片，带错误边界
+- **核心保护**：核心组件白名单行禁止开关与卸载（🔒 标记）
+
+#### 页签
+
+- **官方内置（可选）**：引擎自带、默认未启用的组合包一键启用/停用 + 版本豁免
+- **全部插件**：插件清单（见上文分区模型）
+- **插件市场**：dshfind 精选目录，一键安装（见下文）
+- **操作与场景**：事务化卸载与影响预览、**卸载前体检**、操作历史一键撤销、场景方案
+- **维护**：更新源与刷新、启动前自检、救援中心入口、下载目录
+
+行内操作：启停开关（写前自动备份）、市场详情、卸载（卸载前体检预览）、配置页（运行时 slot 注册的插件）。
+
+#### 管理器自身的禁用与卸载（统一口径）
+
+管理器不能在自身管理界面（3080）中停用自己；如需禁用或卸载，请前往启动器兜底页（3081 /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。
+
+3080 内允许的例外是**卸载**：走额外警告路径，卸载前自动清理开机自启，结果写入卸载报告；卸载后 3080 管理界面消失、3081 兜底页存活至启动器进程结束。
+
+### 🔐 事务化卸载、历史与场景
+
+- **卸载影响预览**：卸载前展示「影响范围」——依赖该包的已安装插件（`dependencies` / `peerDependencies` 反向图）、将移除的插件条目、将清理的开关行、bundles 声明
+- **事务化卸载**：备份 `package.json` + `cordis.patch.yml`（`.rescue-bak-*`）→ `pnpm remove` + 清理补丁条目 + 移除 bundles/开关行 → 逐项验证 → **任何失败自动回滚**；Windows 文件锁残留目录登记 `pendingRemovals`，下次启动自动清理
+- **加固（v1.0）**：`pnpm remove` 超时或进程状态不明时**不**盲目回滚——标记「未知」请人工确认，避免把半删状态变成更坏状态；EBUSY 引导（引擎运行中且目标启用时拒绝硬删，提示「先禁用 → 重启引擎 → 再操作」）
+- **卸载报告**：自检结果、清理开关行数、级联卸载包、残留列表；支持级联卸载依赖它的可卸载包
+- **卸载前体检**（v0.9.1）：预览里给出**结论行**（安全 / 需注意 / 有风险 + 一句理由），并列出三类检查——① 依赖断裂 ② `cordis.patch.yml` 补丁残留（**只提示、绝不自动删**）③ service 与端口冲突
+- **操作历史**：最近 20 次操作（卸载/启停/隔离/场景应用/重置开关），一键撤销，侧车持久化跨重启
+- **场景方案**：把当前启停状态保存为命名场景（如「办公/写作/演示」），一键应用——先展示**变更预览**，确认后切换；可更新、删除
+- **卸载管理器自身前先清理自启**：删包之前先调用包内 `bin/open-boot.mjs --uninstall`（旧版本无该能力 → 记为"已跳过"，不阻断卸载）
 
 ### 📥 更新与下载
 
-- **多源并行 + 权重一致**：所有启用源并行查询取最高版本；并列时随机挑选（官方源权重一致，不偏列表顺序）
-- **限流熔断**：GitHub API 403/429 自动冷却 10 分钟；全量刷新 8 并发（冷缓存约 13-20s，二次刷新命中 30 分钟缓存瞬时返回）
-- **下载优先级**：① 浏览器原生下载（隐藏 iframe，NDM 等扩展可捕获）→ ② 外部下载软件（NDM/比特彗星）→ ③ 内置下载器兜底（HTTP 直链 / aria2c / P2P magnet·torrent）
-- **下载目录自动安装**：`.tgz` 放入 `$DSH_HOME\downloads` → 自动拾取 `pnpm add` 安装
+- **多源并行 + 权重一致**：所有启用源并行查询取最高版本；并列时随机挑选
+- **限流熔断**：GitHub API 403/429 自动冷却 10 分钟；全量刷新 8 并发、结果缓存 30 分钟
+- **下载优先级**：① 浏览器原生下载（隐藏 iframe，NDM 等扩展可捕获）→ ② 外部下载软件 → ③ 内置下载器兜底（HTTP 直链 / aria2c / P2P magnet·torrent）
+- **下载目录自动安装**：`.tgz` / `.tar.gz` 放入 `$DSH_HOME\downloads` → 自动拾取安装；**安装前做清单校验 + 启动前自检，失败自动回滚并标记 `.failed`（不再反复重试）**
 
 ### 🛒 插件市场
 
-- **dshfind 精选目录**：awesome-dsh-plugin 官方收录池（1160+ 插件、14 分类、本地化描述/星标/收录日期），host 10 分钟缓存；在线不可用自动兜底 GitHub `topic:dsh-plugin` 搜索
+- **dshfind 精选目录**：带本地化描述 / 星标 / 收录日期与分类；条目数随上游变化，host 端 10 分钟缓存。在线不可用自动兜底 GitHub `topic:dsh-plugin` 搜索
 - **零往返过滤**：目录一次拉全量，搜索 / 分类 chips / 排序 / 分页全部客户端本地完成
 - **一键安装**：带 npm 名的条目优先 **npm registry 直装**；GitHub 仓库走内置下载器；两步确认防误触；已装 ✓ 徽标
 - **装后防砖校验**：自动验证 `dsh.bundle` / `dsh.client` 清单，缺失自动卸载；pnpm hoist 漂移 / `minimumReleaseAge` 陷阱自动恢复
 
-### 🛟 救砖
+### 🛟 兜底页（3081 /plugins，v1.0 新增）
+
+引擎不可用时依然可用的管理入口（纯 Node 进程托管，扁平设计 + 深浅主题）：
+
+- **启停 / 更新 / 卸载**：toggle 写 `dsh.profile.bundles`（写前备份）；`pnpm outdated` 批量比对、逐个更新；事务性卸载（同上，每步落日志）
+- **mod 体检**：只读 preflight + 引擎日志尾部按包聚合，verdict 三档（ok / suspect / broken）
+- **重启引擎 / 停止启动器**：确认框 + toast，写接口全部走 Origin + 一次性令牌防护
+- **有意不做**：行内配置面板、场景管理、下载诊断（依赖引擎 Cordis 运行时，与兜底页定位冲突）——完整功能在 3080 管理台
+
+### 🛟 救援
 
 - **独立救援页 `/rescue`**：自包含 HTML 直连宿主网关，UI 全坏仍可诊断/隔离/一键修复/重启/卸载
-- **浮动救援球**：右下角 🛟 按钮，设置页损坏时的入口
-- **自动隔离**：可选开关（默认关），加载失败的插件自动禁用
-- **启动前自检**：`verifyProfile` / `fixProfile`——坏 bundle 会在启动阶段拖垮引擎，管理器提供一键检查与隔离修复
+- **浮动救援球**：右下角 🛟 按钮，可拖动换位（位置记忆），设置页损坏时的入口
+- **自动隔离**：可选开关（**默认关**），只隔离**连续失败达阈值**的插件；界面骨架与基础设施条目在保护集内，永不自动禁用
+- **启动前自检**：`verifyProfile` / `fixProfile`——坏 bundle 会在启动阶段拖垮引擎，一键检查与隔离修复
+- **运行期失败条目自动隔离**：启动失败后自动**解析启动日志 → 隔离失败条目 → 重试**，隔离行带备份可逆（3081 的「重启引擎」也会执行一次）
 
-### 🧰 独立救砖工具链（v0.7+，核心亮点）
+![维护 → 救砖：诊断中心](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-maintenance-rescue.png)
+
+<sub>**图 2** · 维护页签的「诊断中心」实拍：一键修复引擎 / 重启引擎 / 启动前自检 / 失败插件自动隔离。源图：`docs/images/pm-maintenance-rescue.png`。</sub>
+
+## 🧰 独立救援工具链（核心亮点）
 
 > 传统救砖页由主引擎注册——**主引擎挂了，救砖页也跟着瘫**。v0.7 起救砖能力独立于主进程运行，主引擎宕机依然可用。零新依赖（纯 Node + 项目已有 yaml）。
 
 | 工具 | 用途 | 用法 |
 |---|---|---|
-| `bin/rescue-daemon.mjs` | **独立救砖守护**（端口 **3081**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎 | `node bin/rescue-daemon.mjs --profile <dir>` |
-| `bin/open-boot.mjs` | **网页启动器**：打开 `http://127.0.0.1:3081/` → 自动 自检 → 修复 → 启动 → 跳转 3080。设为浏览器主页即"打开即启动"（无端口争抢，稳定） | `node bin/open-boot.mjs --profile <dir>` |
-| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 供外部调用；退出码 0=就绪 / 1=启动失败 / 2=修复未完成 | 双击 `dsh-boot.cmd` 或 `node bin/dsh-boot.mjs` |
+| `bin/open-boot.mjs` | **唯一网页入口 + 常驻守护**（3081）：`/` 是"打开即启动"页；**`/plugins` 是兜底管理页**（v1.0）；`/rescue` 是救援页。设为浏览器主页即"打开即启动"。平时完全隐藏，只有引擎需要拉起时才弹一个可见启动窗口（`--no-window` 可关）。健康判定 = HTTP 握手 + 身份指纹；写接口带 Origin + 一次性令牌防护；`--uninstall` 一键清理（退出码 0/1/2，2 = 归属未确认时不动任何进程） | `npx dsh-pm-launcher` |
+| `bin/rescue-daemon.mjs` | **独立备份救援守护**（默认端口 **3082**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。**不与 3081 抢端口**（被占时明确报错退出，不静默漂移） | `npx dsh-pm-rescue`（默认 3082） |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 只自检+修复不启动；退出码 0=就绪 / 1=启动失败 / 2=修复未完成；启动即失败会**立即返回**并打印日志绝对路径 | `npx dsh-pm-boot`（Windows 双击：**包内** `bin\dsh-boot.cmd`） |
 
-- **公共模块**：`lib/preflight.mjs`（standalone 自检/修复，与 host 内 `verifyProfile/fixProfile` 同源）、`lib/enginectl.mjs`（引擎探测/拉起/停止/PID 管理）
-- **故障排查**：引擎起不来 → ① 浏览器开 `http://127.0.0.1:3081/` →"运行检查 → 修复 → 启动"；② `node bin/dsh-boot.mjs --repair-only` 看隔离列表；③ 双击 `bin/dsh-boot.cmd`
+> 端口的完整分工、退出码表、写接口防护与 `--uninstall` 四步见 [docs/LAUNCHER.md](docs/LAUNCHER.md)；进程与槽位架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
----
+#### 启动器常驻与开机自启
+
+| 命令 | 作用 |
+|---|---|
+| `npx dsh-pm-launcher --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）单实例；只有 HTTP 握手失败才拉起，绝不误杀健康实例 |
+| `npx dsh-pm-launcher --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
+| `npx dsh-pm-launcher --status` | **状态自检 + 健康留痕**：启动器/守护/引擎/PID/cwd/日志与最后心跳；每次追加一行 `profile/health.log`（保留 7 天 / 1000 行） |
+| `npx dsh-pm-launcher --install-autostart` | **写开机自启**（Windows）：HKCU Run + 登录静默常驻；包装脚本正文纯 ASCII，中文用户名/含空格路径不乱码 |
+| `npx dsh-pm-launcher --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态；未安装时**幂等**（exit 0） |
+| `npx dsh-pm-launcher --uninstall` | **卸载闭环**：三重归属校验停守护 → 删 HKCU\...\Run 下**所有** `DSHWeb*` 值 → 删 shim → 清 pid（**日志保留**）。退出码 0=完成 / 1=出错 / **2=归属未确认**（不动任何进程、保留 pid）；引擎 3080 不动。管理器卸载自身前会自动调用它 |
+| `npx dsh-pm-launcher --help` / `npx dsh-pm-boot --help` | 显示用法（参数不再被静默忽略） |
+
+> **健康判定与"停引擎"的安全性**：引擎/启动器就绪 = **HTTP 握手成功且响应带 dsh 身份指纹**（裸 TCP 监听器一律判不健康）。端口被别的进程占用时明确报错，不静默换端口。`stopEngine()` 前三重校验（pid 存活 / 进程镜像 / 端口归属），不过一律拒绝，需要时可在救援页"强制停止"。PID 文件均为 JSON（`profile/.rescue-daemon.pid` / `.open-boot.pid`）。
+>
+> ⚠️ **实现注意**：自启包装脚本一律「wscript → node」，不用隐藏 PowerShell（会被部分杀软误判删除）；守护拉起引擎时刻意不加 `windowsHide`。
 
 ## 环境要求
 
-- Windows 10/11 · macOS · Linux（脚本层如桌面救援入口为 Windows 专属，macOS/Linux 直接 `dsh web` 启动）
+- Windows 10/11 · macOS · Linux（`/rescue` 与三个 bin 工具全平台可用；**开机自启管理目前为 Windows**）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
+- 端口（均只监听 `127.0.0.1`）：**3080** 引擎主界面 · **3081** 启动器（启动页 / 兜底页 / 救援页）· **3082** 备份救援 · **4081**（3081+1000）守护单实例锁；`DSH_LAUNCHER_PORT` / `DSH_ENGINE_PORT` 可覆盖
 
-## 安装
+### 引擎兼容性矩阵
+
+| 你的 DSH 引擎 | 本管理器版本 | 说明 |
+|---|---|---|
+| **≥ 0.1.7-rc.2**（含 0.2.x，`<0.3.0-0`） | **1.0.0**（推荐）／ 0.9.1 | 独立插件页 + 兜底页 + 救援工具链全套；1.0.0 实测于 0.2.x 引擎（三分区 / 统一口径 / 事务卸载，隔离环境 + 主环境双验证） |
+| 0.1.6 及以后 | 0.9.1 | 官方 0.1.6 起内置插件管理页，本包接管（停用 `ui-plugin-manager` + 自己的行 id） |
+| **0.1.0-rc.6 ~ 0.1.5**（老引擎） | **0.8.2** | 旧「设置 → 插件」tab 路线；0.8.x 在 0.1.7 上不成立（typert strict codec / runtime 依赖移除） |
+
+> **一句话**：引擎越新越要 1.0.0；引擎很老（0.1.6 之前）才需要 0.8.2。回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2`。
+
+## 🔐 权限与数据范围
+
+> 回答"它到底动了我什么"。所有读写都在**本机 profile 目录**与**你自己配置的更新源**范围内：没有账号、没有云端、没有遥测。写文件前都会先留 `.rescue-bak-*` 备份，写盘用「临时文件 + 改名」的原子写法。
+
+| 数据 | 用途 | 是否外传 |
+|---|---|---|
+| `~/.dsh/profiles/<名字>/package.json` | 读已装插件清单；安装、卸载、场景等操作会写回，改前备份 | 否 |
+| `~/.dsh/profiles/<名字>/cordis.patch.yml` | 读/写插件启用状态与隔离行（只动带归属标记的部分，改前备份） | 否 |
+| `~/.dsh/profiles/<名字>/plugin-manager.json`（侧车） | 操作历史（20 条）、场景方案、来源人工修正、待清理列表、更新源配置 | 否 |
+| `~/.dsh/profiles/<名字>/node_modules/**` | 读依赖反向图与包简介；卸载/隔离时经 `pnpm` 删除 | 否（装卸时由 pnpm 访问 registry） |
+| `$DSH_HOME/downloads/*` | 「下载目录自动安装」扫描归档；写 `.installed` / `.failed` 标记 | 否 |
+| 本机 npm 全局根 | **只读**：定位引擎自带的 `@deepseek-ai/*`、提取简介 | 否 |
+| 更新源（npm registry / dshfind / GitHub / 你加的镜像） | 查询最新版本、下载归档 | **只查询**，不上传本地数据 |
+| 本机回环端口 3080 / 3081 / 3082 / 4081 | 主界面 / 启动器 / 备份救援 / 守护锁；全部只绑 `127.0.0.1` | 否（不出本机） |
+| Windows 注册表 `HKCU\...\Run\DSHWebFront` | **仅在显式执行 `--install-autostart` 时写入**；`--uninstall-autostart` 可清理 | 否 |
+| profile 内 `.rescue-daemon.pid`、`.open-boot.pid`、`health.log` 等 | 守护/启动器的 PID、日志与自检留痕（7 天 / 1000 行） | 否 |
+
+> **不会碰的东西**：会话内容、`settings.yaml`、`.credentials.yaml`（API Key）——`lib/` 里没有读取它们的代码路径。
+
+## 安装 / 更新 / 卸载
+
+> **推荐从 npm 安装**（`dsh plugin … add` 底层是 pnpm，会自动复用引擎自带的 `@deepseek-ai/*`；不要在 profile 目录里直接 `npm install`——npm 对引擎预发布 peer 的解析在不同版本下表现不一，可能 `ERESOLVE`）。
 
 ```sh
-# 方式一：npm 一键安装（推荐）
+# 方式一（推荐）：npm
 dsh plugin --profile web add dsh-plugin-manager-pro
 
-# 方式二：GitHub Release tarball（离线/自建，走 Release 页下载最新版）
-dsh plugin --profile web add ./dsh-plugin-manager-pro-0.7.3.tgz
+# 方式二：刚发版时（或在 24 小时冷静期内）——显式写版本号，最可靠
+dsh plugin --profile web add dsh-plugin-manager-pro@1.0.0
 
-# 重启 web 生效
+# 方式三：离线 tgz（GitHub Release 页下载，或 npm pack 自建）
+dsh plugin --profile web add ./dsh-plugin-manager-pro-1.0.0.tgz
+
+# 老引擎（0.1.0-rc.6 ~ 0.1.5）或 0.9.x 装上去不生效时，回退到旧 UI 版
+dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
+
+# 重启 web 生效（客户端 bundle 在引擎启动时加载，装完必须重启）
 dsh web
 ```
 
-打开浏览器：**设置 → 插件 → 插件管理**。右下角 🛟 打开救援中心；独立救援页 `http://127.0.0.1:3080/rescue`。
+> **装不到 / 装完还是旧版？** ① 客户端 bundle 只在引擎**启动时**加载——装完必须重启 `dsh web`；
+> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），当天刚发布的版本不带版本号会解析到旧版——用"方式二"的显式版本号即可（也可把 `dsh-plugin-manager-pro@1.0.0` 加入 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
 
-卸载：
+装好后两个入口：3080 侧边栏**「插件管理」**（内置插件页已接管）；3081 `http://127.0.0.1:3081/plugins`（引擎不可用时仍可用）。浏览器主页设为 `http://127.0.0.1:3081/` = 打开即自检启动引擎。
 
 ```sh
-dsh plugin --profile web remove dsh-plugin-manager-pro
+# 更新：3081 兜底页「检查更新」→「更新」，或
+pnpm update dsh-plugin-manager-pro --latest --dir <profile>
+
+# 卸载：3081 兜底页「卸载」（带备份、验证与失败回滚），或
+dsh plugin --profile web remove dsh-plugin-manager-pro   # 卸载前自动清理自启/守护/shim
+npx dsh-pm-launcher --uninstall-autostart                # Windows：清理开机自启（幂等）
+npx dsh-pm-launcher --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
 ```
 
-## 救砖入口速查
+## 救援流程速查
 
-| 场景 | 怎么做 |
-|---|---|
-| 引擎正常，UI 坏了 | `http://127.0.0.1:3080/rescue`（救援页 / 右下角 🛟） |
-| 引擎起不来 | `http://127.0.0.1:3081/`（独立守护）→ 运行检查 → 修复 → 启动 |
-| 想要"打开即启动" | 浏览器主页设为 `http://127.0.0.1:3081/`（open-boot） |
-| 命令行一键自检+启动 | 双击 `dsh-boot.cmd` 或 `node bin/dsh-boot.mjs` |
+| 症状 | 入口 |
+| --- | --- |
+| 引擎在跑，但 3080 界面/插件页异常 | 3080 右下角 🛟 救援球，或 `http://127.0.0.1:3080/rescue` |
+| 引擎起不来、3080 打不开 | `http://127.0.0.1:3081/`：自检 → 修复 → 启动 → 跳转带 token 的入口 URL |
+| 插件被禁用到界面起不来 | `http://127.0.0.1:3081/plugins` 直接 toggle（该页不依赖引擎） |
+| 某个插件把引擎打挂 | 3081 `/plugins` → mod 体检看 verdict → 禁用观察或卸载（带备份与验证） |
+| 卸载/更新被引擎占用 | 拒绝硬删并引导：先禁用 → 重启引擎 → 再操作 |
+| 需要独立于 3081 的备份救援入口 | `npx dsh-pm-rescue`（默认 3082，不抢端口） |
+| 想知道 3080/3081/3082/4081 到底什么状态 | `npx dsh-pm-launcher --status`（并追加一条 `health.log` 留痕） |
+| 命令行一键自检+启动 | `npx dsh-pm-boot`（启动）或 `npx dsh-pm-boot --repair-only`（只自检+修复） |
+| 彻底移除启动器 | `npx dsh-pm-launcher --uninstall`（退出码 2 = 归属未确认：不动任何进程） |
 
----
+> **已知限制**：入口 token URL 只有在引擎 stdout 落到 `<DSH_HOME>/logs/web.log` 时才取得到（启动器经 `enginectl` 拉起时正常落盘）。若引擎由其他路径拉起（如 `dsh-boot` 的弹窗路径），3081 可能给不出可直接跳转的链接——到 `/rescue` 执行一次「重启引擎」即可恢复。
+
+## API 参考（3081）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/status` | 启动器 + 引擎状态 |
+| POST | `/api/boot` | 自检启动（单飞闸门） |
+| POST | `/api/launcher/stop` | 优雅停止本启动器（pid 归属校验） |
+| GET/POST | `/plugins/api/bundles` | 列出 / 启停 bundle（写前备份） |
+| GET | `/plugins/api/updates` | `pnpm outdated` 投影用户插件 |
+| POST | `/plugins/api/update` | 更新单个用户插件（EBUSY 引导） |
+| POST | `/plugins/api/uninstall` | 事务性卸载（steps 日志；超时/进程不明时标记「未知」不回滚） |
+| GET | `/plugins/api/health` | mod 体检（只读） |
+| POST | `/plugins/api/engine/restart` | 重启引擎（失败条目自动隔离一次） |
+| GET/POST | `/rescue/api/*` | 救援中心 verify / fix / start / stop / status |
+
+写接口（POST）需要同源 Origin + `X-DSH-PM-Token`（页面 meta 自动携带，不落盘、不写日志）。
 
 ## 工作原理
 
-- **宿主端**（`lib/index.js`）：读取 Cordis Loader 实时状态（启用/运行期阶段/错误），经 Typert 网关暴露远程方法（list/setEnabled/update/verifyProfile/fixProfile/marketCatalog/…）
-- **开关持久化**：写入 profile 的 `cordis.patch.yml`（带 `Managed by dsh-plugin-manager-pro` 注释行，不触碰用户自有补丁），Loader 热重载应用
-- **更新源聚合**（`lib/aggregate.js` + `compare-versions.js`）：多源并行 → 最高版本 → 并列随机；源级熔断（403/429 → 10 分钟冷却）；完整支持预发布段
-- **下载器**（`lib/downloader.js`）：HTTP 直链流式；magnet/.torrent 优先外部下载器（跨平台 where/which 检测）→ 内置 webtorrent → 提示手动导入
-- **跨平台**（`lib/platform.js`）：npm 全局根 Windows 用 `APPDATA\npm\node_modules`，macOS/Linux 用 `npm root -g` + 常见路径 + nvm 目录（10 分钟缓存）
-- **浏览器端**（`src/client.jsx` → `lib/client.js`）：`window.__ModuleLoader__.load({id, factory})` 契约注册，设置页 tab + 浮动救援球；`run()` 统一处理操作与**滚动位置恢复**（禁用/启用不跳页）
-- **独立救砖**（`lib/preflight.mjs` + `lib/enginectl.mjs`）：纯 Node 自检/修复 + 引擎生命周期，被三个 bin 工具复用；与 host 方法同源逻辑
-- **受保护条目**：管理器自身、loader 基础设施、webserver/connection/client-runtime 等禁开关；救砖时 RESCUE_NEVER 集合同样不可触碰
+- **宿主端**（`lib/index.js`）：读取 Cordis Loader 实时状态（启用/运行期阶段/错误），经 Typert 网关暴露远程方法（list/setEnabled/update/verifyProfile/fixProfile/marketCatalog/…）。收敛判定基于引擎真实字段，**不收敛时如实提示需要重启，不谎报**
+- **来源三分区判定**（v1.0）：核心组件 = 包名白名单；内置/用户 = 引擎 origin 字段（origin=builtin / origin=user），与引擎实际状态一一对应
+- **运行期错误**：从 cordis 的 `fiber._error` 取真实错误文本（诊断与救援页能看到失败原因）
+- **插件页接管**（`src/client.jsx` + `cordis.patch.yml`）：客户端注册进 `main`（key=`plugins`）与 `sidebar.panellist`（id=`plugins`），patch 停用内置 `ui-plugin-manager`；用自己的行 id `plugin-manager-pro` 不与官方同名；注册内置页原有的 `plugins.*` 子槽位，第三方配置卡片有真实渲染出口
+- **开关持久化**：写入 profile 的 `cordis.patch.yml`（带归属注释行，不触碰用户自有补丁）
+- **更新源聚合**（`lib/aggregate.js` + `compare-versions.js`）：多源并行 → 最高版本 → 并列随机；源级熔断；完整支持预发布段
+- **下载器**（`lib/downloader.js`）：HTTP 直链流式；magnet/.torrent 优先外部下载器 → 内置 webtorrent → 提示手动导入
+- **跨平台**（`lib/platform.js`）：npm 全局根按平台定位（10 分钟缓存）
+- **独立救援**（`lib/preflight.mjs` + `lib/enginectl.mjs`）：纯 Node 自检/修复 + 引擎生命周期，被三个 bin 工具复用；与 host 方法同源逻辑
+- **本地写接口防护**：`Origin` + 一次性令牌 + 单飞三道闸，第三方网页无法触发启动/停止
+- **详细架构**：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；命令行口径：[docs/LAUNCHER.md](docs/LAUNCHER.md)
 
----
+## 测试 / 构建
 
-## 开发与测试
-
-```sh
-npm install        # 如遇 npm 拦截 esbuild 安装脚本：npm approve-scripts esbuild
-npm run build      # esbuild 打包浏览器端 → lib/client.js（含 __ModuleLoader__ 包装）
-node test-bundle.mjs   # 契约测试（bundle 契约 + 市场/来源/跨平台/require 回归断言）
-node test-render.mjs   # 渲染测试（jsdom：搜索/开关/失败路径/来源筛选/市场面板）
-node bin/dsh-boot.mjs --repair-only --profile <dir>  # 救砖工具链冒烟
-npm pack           # 产出安装用 tarball
+```bash
+npm install                                  # 如遇 npm 拦截 esbuild 安装脚本：npm approve-scripts esbuild
+npm ci                                       # 依赖树必须来自 lockfile（见 docs/RELEASING.md §2bis）
+node build.mjs                               # src/client.jsx -> lib/client.js（可复现：连跑两次哈希相同）
+node test-bundle.mjs                         # 构建产物契约（含 origin 来源契约，11 项）
+node test-render.mjs                         # jsdom 真渲染回归（分区模型 / 徽章 / 推荐标签等 19 项）
+node test-integration.mjs                    # host 逻辑进程内集成（需 devDependency @deepseek-ai/dsh-home-paths）
+node test-transactional.mjs                  # 事务性卸载回归
+node test-launcher.mjs                       # 启动器全量回归（354 项；--strict 把已知写域外缺陷算失败）
+node tools/smoke-plugins-api.mjs             # 独立端口 + 临时 DSH_HOME 的 /plugins API 冒烟（28 项）
+npm run check:vendor                         # 迁移件内容级校验（tgz 内文件 sha256 == 工作树）
+node tools/dev/gen-changelog.mjs             # 从 docs/releases/*.md 生成 CHANGELOG.md（--check 校验一致）
+npm run pack                                 # build + npm pack（产出安装用 tarball）
 ```
 
-发布流程：本地验证 → bump 版本 → 打 tag 发 **GitHub Release**（附 tgz）→ 用户从 Release 下载安装。
+> `test-launcher.mjs` 会重写 `<DSH_HOME>/scripts/dsh-launcher.cmd`；不想动真实 `~/.dsh` 时先设 `DSH_HOME=<临时目录>`。
+
+文档：发布流程 [`docs/RELEASING.md`](docs/RELEASING.md)；架构 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)；命令行 [`docs/LAUNCHER.md`](docs/LAUNCHER.md)；版本历史 [`CHANGELOG.md`](CHANGELOG.md)（脚本生成）与 [`docs/releases/`](docs/releases/)；0.9.1 时代的完整文档（能力对比、兼容性矩阵全文）存档于 [`docs/README-full.md`](docs/README-full.md)。
 
 ## 常见问题（排错）
 
 | 现象 | 原因与解决 |
 |---|---|
-| 禁用/启用 mod 后页面跳回顶部 | v0.7.2 已修复：`run()` 现在保存并恢复滚动位置；升级后不再跳页 |
-| 启动器报 `The argument 'stdio' is invalid` | v0.7.2 已修复（spawn 改用数字 fd）；升级救砖工具链 |
+| 装完界面还是旧的 / 新页面不出现 | 客户端 bundle 在引擎启动时加载：**必须重启 `dsh web`**（或让启动器重新拉起引擎） |
+| 启停插件后列表状态没变 | 引擎在启动时套用条目：配置已写入，**重启引擎后生效**（界面会在需要重启时提示） |
 | `dsh plugin add` 报 "Already up to date" 不更新 | pnpm 按版本号缓存 tarball；**修改后必须升版本号**再 add |
-| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/` 独立救援 → 运行检查 → 修复 → 启动；或双击 `dsh-boot.cmd` |
-| 救砖页自检总报"patch 解析失败" | 已修复：注释开头的合法 patch 不再被误判损坏（~/.dsh/scripts/dsh-web-rescue.ps1） |
-| 桌面快捷方式双击没反应 | v0.7.1 修复：`web.pid` 陈旧（svchost）误判"已运行"导致拒绝启动——现在只认 node 进程 |
+| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/rescue` → 运行检查 → 修复 → 启动；或 `npx dsh-pm-boot --repair-only` |
+| 想禁用管理器自己 | 3080 界面内不可自禁：去 `http://127.0.0.1:3081/plugins`（独立于引擎存活）或用 `dsh plugin remove`；3080 内允许的是**卸载**（额外警告路径，自动清理自启） |
+| 列表分区和我认知的不一样 | v1.0 起按来源三分区（核心组件 / 引擎内置组件 / 用户插件）；「推荐」只是行内标签，不再是分区 |
+| 担心第三方网页能触发启动/停止 | 不会：写接口要**同源 `Origin` + 一次性令牌**，并发受单飞闸门限制（403 / 401 / 409）——见 [docs/LAUNCHER.md](docs/LAUNCHER.md) §4 |
 | 浏览器报 `waiting for service: remote.xxx` | 客户端 inject 不能包含自身挂载的 remote（死锁）；inject 只保留 `["slots","locale","remote"]` |
+| 第三方插件没有 ⚙ 配置入口 | 它尚未注册 `plugins.row.config` 槽位——请向插件作者反馈 |
 | P2P 磁力链接无法下载 | 安装 aria2c（自动启用）或装 webtorrent，或用 NDM/比特彗星手动导入 |
 
 ## 许可证
@@ -148,6 +312,8 @@ MIT。补丁持久化机制借鉴 [hrhgit/deepseek-harness-plugin-manager](https
 
 ## English
 
-A local plugin manager for DeepSeek Harness: a "Plugin manager" tab under **Settings → Plugins** with collapsible necessity groups, origin classification (built-in vs user-installed), status/version/source columns and enable/disable toggles; multi-source parallel update checks with rate-limit circuit breaker; a plugin market over the awesome-dsh-plugin catalog; and a **standalone brick-rescue toolchain** (v0.7+): `rescue-daemon` (port 3081, works when the engine is down), `open-boot` (browser-triggered self-check/repair/start), and `dsh-boot` (Steam-style boot sequence with exit codes). Cross-platform, zero new runtime dependencies.
+An English README lives at [README.en.md](README.en.md). Quick version:
 
-Install: `dsh plugin --profile web add dsh-plugin-manager-pro` → restart `dsh web` → Settings → Plugins → Plugin manager. Releases on GitHub Releases.
+A local plugin manager for DeepSeek Harness. It takes over the engine's built-in plugin page as a **standalone page** (sidebar entry "Plugin manager"): since **1.0.0** the list is grouped **by origin** — **Core components (locked) · Engine built-ins · User plugins** — with "Recommended" demoted to an inline row tag. Sections: Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance. It also ships a **standalone rescue toolchain**: `open-boot` (the single web entry on **3081**: boot page `/` + fallback manager page `/plugins` + rescue page `/rescue`), `rescue-daemon` (independent backup rescue service on **3082**), and `dsh-boot` (Steam-style boot sequence with exit codes). Transactional uninstall with impact preview, pre-uninstall health check, operation history (undo) and named scenarios included. Cross-platform, zero new runtime dependencies.
+
+Install: `dsh plugin --profile web add dsh-plugin-manager-pro` (pin `@1.0.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).

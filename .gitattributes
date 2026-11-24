@@ -1,0 +1,11 @@
+# 统一行尾：仓库内一律 LF。
+# 理由（发布可复现性）：任何情况下 checkout 出的行尾若随平台变化，
+# 构建产物 lib/client.js 就会随之变化（CRLF 可让 bundle 多出数 KB），
+# 而发布产物必须是"逐字节等于测过的那一份"。
+* text=auto eol=lf
+
+# 二进制/无需转换
+*.tgz binary
+*.png binary
+*.jpg binary
+*.ico binary

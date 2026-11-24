@@ -40,11 +40,15 @@ const vp = await post("pluginManagerPro/verifyProfile", {});
 ok(vp.ok && vp.value.ok === true, `verifyProfile ok (v0.6.4 fix) ${vp.ok ? JSON.stringify(vp.value.issues) : ""}`);
 // fixProfile 不应误清空 patch（v0.6.6：修掉了 fixProfile 里的 require("yaml") 崩溃）
 const { readFileSync: readPatch, writeFileSync: writePatch } = await import("node:fs");
+const { join: joinPath } = await import("node:path");
+const { homedir, tmpdir } = await import("node:os");
+const SANDBOX_PROFILE = process.env.VERIFY_PROFILE_DIR || joinPath(homedir(), ".dsh", "profiles", "web-test");
+const SANDBOX_PATCH = joinPath(SANDBOX_PROFILE, "cordis.patch.yml");
 let patchBefore = "";
-try { patchBefore = readPatch("C:\\Users\\35129\\.dsh\\profiles\\web-test\\cordis.patch.yml", "utf8"); } catch {}
+try { patchBefore = readPatch(SANDBOX_PATCH, "utf8"); } catch {}
 const fp = await post("pluginManagerPro/fixProfile", {});
 let patchAfter = "";
-try { patchAfter = readPatch("C:\\Users\\35129\\.dsh\\profiles\\web-test\\cordis.patch.yml", "utf8"); } catch {}
+try { patchAfter = readPatch(SANDBOX_PATCH, "utf8"); } catch {}
 ok(fp.ok && fp.value.actions.every((a) => a.action !== "restore-patch"), `fixProfile keeps patch (actions=${fp.ok ? JSON.stringify(fp.value.actions) : ""})`);
 ok(patchBefore === patchAfter, "patch file unchanged after fixProfile");
 // checkDownloads 不应崩溃（v0.6.6：修掉了 require("node:fs")）
@@ -65,9 +69,9 @@ if (list.ok) {
 }
 const { readFileSync, writeFileSync } = await import("node:fs");
 let patchText = "";
-try { patchText = readFileSync("C:\\Users\\35129\\.dsh\\profiles\\web-test\\cordis.patch.yml", "utf8"); } catch {}
+try { patchText = readFileSync(SANDBOX_PATCH, "utf8"); } catch {}
 ok(/Managed by dsh-plugin-manager-pro/.test(patchText), "patch file written by manager");
-writeFileSync("C:\\Users\\35129\\Documents\\harness\\plugin-manager\\.sandbox-verify.json", JSON.stringify({
+writeFileSync(process.env.SANDBOX_VERIFY_OUT || joinPath(tmpdir(), ".sandbox-verify.json"), JSON.stringify({
   port: PORT,
   list: list.ok ? { entries: list.value.entries.length, builtin: list.value.entries.filter((e) => e.origin === "builtin").length, user: list.value.entries.filter((e) => e.origin === "user").length } : null,
   market: catalog.ok ? { source: catalog.value.source, count: catalog.value.count } : null,

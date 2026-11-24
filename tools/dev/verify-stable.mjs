@@ -47,7 +47,9 @@ ok(vp.ok && vp.value.ok === true, `verifyProfile ok (v0.6.4 fix) ${vp.ok ? JSON.
 const rescuePage = await fetch(`http://127.0.0.1:${PORT}/rescue`);
 ok(rescuePage.status === 200 && (await rescuePage.text()).includes("rescue"), "GET /rescue 200 with content");
 const { writeFileSync } = await import("node:fs");
-writeFileSync("C:\\Users\\35129\\Documents\\harness\\plugin-manager\\.stable-verify.json", JSON.stringify({
+const { join } = await import("node:path");
+const { tmpdir } = await import("node:os");
+writeFileSync(process.env.STABLE_VERIFY_OUT || join(tmpdir(), ".stable-verify.json"), JSON.stringify({
   port: PORT,
   list: list.ok ? { entries: list.value.entries.length } : null,
   market: catalog.ok ? { source: catalog.value.source, count: catalog.value.count } : null,

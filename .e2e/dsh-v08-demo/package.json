@@ -1,0 +1,19 @@
+{
+  "name": "dsh-v08-demo",
+  "version": "1.0.1",
+  "description": "v0.8 端到端测试用示例插件（事务化卸载/依赖感知验证目标）",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

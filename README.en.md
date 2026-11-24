@@ -1,5 +1,9 @@
 # dsh-plugin-manager-pro
 
+> **Archival note (2026-11-24)**: this is the **full English text of the v0.9.1 era**, not the manual for the current version —
+> statements such as "current version 0.9.1" / "latest on npm" describe the time of writing.
+> The working copy is **1.0.0-rc.2** (unreleased); the current Chinese README is [README.md](README.md), the full v0.9.1-era Chinese text is [docs/README-full.md](docs/README-full.md), and the release process is [docs/RELEASING.md](docs/RELEASING.md).
+
 > A local plugin manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness): a **standalone plugin page** (visual plugin management) plus a **standalone brick-rescue toolchain**.
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)

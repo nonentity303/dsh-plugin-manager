@@ -32,7 +32,7 @@ node "<包目录>/bin/open-boot.mjs" --status
 | 端口 | 归属 | 提供什么 |
 |---|---|---|
 | `3080` | dsh 引擎 | 主界面；本包 host 注册的 `/rescue`；健康 = HTTP 握手 + 身份指纹。`DSH_ENGINE_PORT` 可覆盖（默认 3080 不变，仅测试/多实例） |
-| `3081` | **open-boot ＝ 唯一网页入口** | `GET /` 启动页（打开即自检启动）· `GET /rescue` 救援页 · `GET/POST /api/boot` · `GET /api/status` · `/rescue/api/*` |
+| `3081` | **open-boot ＝ 唯一网页入口** | `GET /` 启动页（打开即自检启动）· `GET /plugins` 插件管理兜底页（rc.1 起）· `GET /rescue` 救援页 · `GET/POST /api/boot` · `GET /api/status` · `/plugins/api/*` · `/rescue/api/*` |
 | `3081+1000 = 4081` | open-boot 守护锁 | `--supervise` 单实例锁（`--port N` → 锁端口 **N+1000**） |
 | `3082` | rescue-daemon | **独立备份救援入口**：`GET /`、`/api/verify`、`/api/status`、`POST /api/fix\|start\|stop` |
 
@@ -88,9 +88,12 @@ Windows 双击等价物是**包内** `bin\dsh-boot.cmd`（只显示进度，引�
 | 接口 | 方法 | 第三方 `Origin` | 缺/错 `X-DSH-PM-Token` | 并发第二个 |
 |---|---|---|---|---|
 | `/api/boot` | POST | **403** | **401** | **409**（busy） |
+| `/plugins/api/engine/restart` | POST | **403** | **401** | **409**（与 `/api/boot` 共用 `open-boot:restart` / boot 闸门） |
+| `/plugins/api/bundles`、`/plugins/api/update`、`/plugins/api/uninstall` | POST | **403** | **401** | — |
+| `/api/launcher/stop` | POST | **403** | **401** | — |
 | `/rescue/api/start`、`/api/start` | POST | **403** | **401** | **409**（与 boot 共用闸门） |
 | `/rescue/api/fix\|stop`、`/api/fix\|stop` | POST | **403** | **401** | — |
-| `/api/status`、`/api/verify`、`/rescue/api/status\|verify` | GET | 不校验 | 不校验 | — |
+| `/api/status`、`/api/verify`、`/rescue/api/status\|verify`、`GET /plugins/api/{bundles,updates,health}` | GET | 不校验 | 不校验 | — |
 
 - **同源白名单 = 同机同端口的三种等价写法**（`allowedOriginsOf`）：`http://127.0.0.1:<端口>`、`http://localhost:<端口>`、`http://[::1]:<端口>`。三者都指向本机回环，所以从 `http://localhost:3081/` 打开的启动页与 `127.0.0.1` **完全等价**（页内 `POST /api/boot` 带的是 `Origin: http://localhost:3081`）——以前只认 `127.0.0.1` 时，用户在自己机器上用 `localhost` 打开反而被判"跨站"→ 403（t8 终审 F1，已修）。
 - **端口必须一致**：`http://localhost:<别的端口>` 或任何第三方域名一律 **403**。

@@ -366,7 +366,7 @@ ok(previewP14Self.packages[0].isSelf === true && (previewP14Self.packages[0].che
 	"P1-4: 卸载管理器自身时预览提示 L9 自启清理（self-uninstall）");
 ok(readOnlyBefore === readOnlyAfter, `P1-4 只读：预览前后 profile 全量文件快照一致（${readOnlyBefore.split("\n").length} 个条目）`);
 
-// ---- 13. 救砖：运行期失败条目自动隔离（isolateFailedEntries）----
+// ---- 13. 救援：运行期失败条目自动隔离（isolateFailedEntries）----
 const { isolateFailedEntries } = await import("./lib/preflight.mjs");
 const quarantineDir = mkdtempSync(join(tmpdir(), "pm-v08-q-"));
 writeFileSync(join(quarantineDir, "cordis.patch.yml"), "# t\n[]\n", "utf8");

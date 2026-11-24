@@ -49,17 +49,19 @@
  * 零新依赖（复用 lib/preflight.mjs 与 lib/enginectl.mjs）。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createLockServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { removePatchEntriesFor } from "../lib/patch-clean.mjs";
 import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
 import {
 	ENGINE_PORT, LAUNCHER_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
-	launcherHealth, looksLikeProfileDir, newApiToken, portOwner, portOwnerProbe, probe, processImage,
+	killTreeForce, launcherHealth, looksLikeProfileDir, newApiToken, portOwner, portOwnerProbe, probe, processImage,
 	processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine, stopEngine,
 	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine
 } from "../lib/enginectl.mjs";
@@ -418,6 +420,24 @@ async function latestTokenUrl() {
 		return res.status === 303 || (res.status === 200 && body.includes("__DSH_BOOT__")) ? url : null;
 	} catch { return null; }
 }
+
+/**
+ * G03/G04（rc.3 候选·token 链路可靠性）：引擎只在 config.printUrl 时 console.log 登录链接，且
+ * announceReady 在连接就绪后才触发 → 重启场景 web.log 可能暂时没有新 token 行，latestTokenUrl()
+ * 返回 null。这里在 null 时于 2s 内再轮询几次 web.log（每次启动是追加写，晚一点就有了）；
+ * 仍拿不到就如实返回 null，**页面走降级指引，绝不渲染假 token 链接**。
+ */
+async function latestTokenUrlWithRetry(extraWaitMs = 2000) {
+	const first = await latestTokenUrl();
+	if (first) return first;
+	const startedAt = Date.now();
+	while (Date.now() - startedAt < extraWaitMs) {
+		await sleep(400);
+		const retry = await latestTokenUrl();
+		if (retry) return retry;
+	}
+	return null;
+}
 const healthLogPath = (profileDir) => join(profileDir, HEALTH_LOG);
 
 /**
@@ -573,7 +593,7 @@ async function boot(args, onLog = () => {}) {
 	// 引擎健康 = HTTP 握手 + 身份指纹（审计③ L4）：裸 TCP 可连不算"引擎就绪"
 	const health = await engineHealth(ENGINE_PORT);
 	if (health.ok) {
-		return { ok: true, alreadyRunning: true, healthy: true, entryUrl: await latestTokenUrl(), message: `引擎已在 ${ENGINE_PORT} 运行（HTTP 握手正常），直接打开主界面。` };
+		return { ok: true, alreadyRunning: true, healthy: true, entryUrl: await latestTokenUrlWithRetry(), message: `引擎已在 ${ENGINE_PORT} 运行（HTTP 握手正常），直接打开主界面。` };
 	}
 	if (await probe(ENGINE_PORT)) {
 		// 2026-11-24 启动器补丁（自 v0.9.1 运行时补丁移植）：开机时 DSHWebRescue（--no-open 起引擎）
@@ -588,7 +608,7 @@ async function boot(args, onLog = () => {}) {
 			onLog(`端口 ${ENGINE_PORT} 上已有 node 进程（pid ${owner}）但握手未就绪：判定为引擎正在启动，最多等待 ${Math.round(args.waitMs / 1000)}s`);
 			if (await waitForEngine(ENGINE_PORT, args.waitMs, 500, engineHealth)) {
 				return {
-					ok: true, alreadyRunning: true, healthy: true, starting: true, entryUrl: await latestTokenUrl(),
+					ok: true, alreadyRunning: true, healthy: true, starting: true, entryUrl: await latestTokenUrlWithRetry(),
 					message: `引擎正在启动，已就绪（pid ${owner}）。`
 				};
 			}
@@ -625,7 +645,7 @@ async function boot(args, onLog = () => {}) {
 			ok: start.ok, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 			window: windowInfo, quarantined: start.quarantined, quarantineMessage: start.quarantineMessage,
 			start, logPath: start.log || engineLogPathOf(args),
-			entryUrl: start.ok ? await latestTokenUrl() : null,
+			entryUrl: start.ok ? await latestTokenUrlWithRetry() : null,
 			message: start.message
 		};
 	}
@@ -635,7 +655,7 @@ async function boot(args, onLog = () => {}) {
 	return {
 		ok: up, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 		window: windowInfo, quarantined: [], logPath: engineLogPathOf(args),
-		entryUrl: up ? await latestTokenUrl() : null,
+		entryUrl: up ? await latestTokenUrlWithRetry() : null,
 		message: up ? `引擎已启动并就绪（${ENGINE_PORT}）。` : `引擎启动超时（${Math.round(args.waitMs / 1000)}s），请看启动窗口/日志：${engineLogPathOf(args)}`
 	};
 }
@@ -1121,8 +1141,10 @@ export function collectOwnedDaemons(args, probes = {}) {
 			continue;
 		}
 		const imageProbe = imageOf(item.pid);
-		const lockProbe = ownerOf(lockPort) ?? { ok: true, pid: null, reason: null };
-		const portProbe = ownerOf(infoPort) ?? { ok: true, pid: null, reason: null };
+		// rc.2 P2-6：探测不可用（ok:false）必须被尊重——不再把"探测失败"兜底成"无监听者"（ok:true,pid:null）。
+		// ok:false 会进入 failures → verified=false → owned=false → 该 pid 不会被列入可结束名单。
+		const lockProbe = ownerOf(lockPort) ?? { ok: false, pid: null, reason: "探测函数无返回" };
+		const portProbe = ownerOf(infoPort) ?? { ok: false, pid: null, reason: "探测函数无返回" };
 		const holdsLock = lockProbe.pid === item.pid;
 		const holdsPort = portProbe.pid === item.pid;
 		const failures = [imageProbe, lockProbe, portProbe].filter((p) => p && p.ok === false);
@@ -1322,12 +1344,25 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 const out = document.getElementById("out");
 const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
 function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + String(line).replace(/</g,'&lt;') + (cls?'</span>':'') + "\\n"; }
+function goEntry(r){
+	if (r && r.entryUrl) { location.href = r.entryUrl; return; }
+	// G03：entryUrl=null（引擎本次启动没打印/没写可读的 token 行）→ 降级指引，不渲染假 token 链接。
+	log("⚠ 未捕获到本次启动的登录链接（entryUrl=null，引擎可能没有把 token 行写进 web.log）。", "warn");
+	log("① 已登录过的浏览器：直接打开 http://127.0.0.1:${enginePort}/ 即可（登录 cookie 仍有效）。", "warn");
+	log("② 新浏览器/新设备：查看引擎控制台输出的 dsh web: …?token=…，或到 ~/.dsh/logs/web.log 末尾查找最后一次启动追加的链接。", "warn");
+	var link = document.createElement("a");
+	link.href = "http://127.0.0.1:${enginePort}/";
+	link.textContent = "→ 打开 http://127.0.0.1:${enginePort}/";
+	out.appendChild(document.createElement("br"));
+	out.appendChild(link);
+	document.getElementById("spin").style.display = "none";
+}
 (async () => {
 	try {
 		const r = await fetch("/api/boot", { method: "POST", headers: { "X-DSH-PM-Token": TOKEN } }).then((x) => x.json());
 		if (r.ok && r.alreadyRunning) {
 			log("✓ " + r.message, "ok");
-			location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/";
+			goEntry(r);
 			return;
 		}
 		if (r.code === 409) { log("⚠ " + (r.error || "已有启动流程在执行中"), "warn"); return; }
@@ -1335,8 +1370,8 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 		else if (r.verifyOk === true) log("自检：✓ 配置正常", "ok");
 		if (r.fixed) log("修复：" + (r.fixed.message || "完成"), "ok");
 		if (r.window && r.window.ok) log("⧉ " + r.window.message + "（窗口里可看到完整进度，结束时按任意键关闭）", "warn");
-		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/", 600); }
-		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => location.href = r.entryUrl || "http://127.0.0.1:${enginePort}/", 600); }
+		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => goEntry(r), 600); }
+		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => goEntry(r), 600); }
 		else {
 			log("✗ " + (r.message || JSON.stringify(r)), "bad");
 			if (r.logPath) log("日志：" + r.logPath, "warn");
@@ -1354,7 +1389,7 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 
 // ---------------------------------------------------------------- 1.0.0-rc.1：启动器内置插件管理 + 用户可控启停
 
-/** 引擎 UI 的命脉 bundle：禁用它们等于把 3080 的网页入口拆了 → 拒绝一键禁用，提示走救援中心。 */
+/** 引擎 UI 的核心组件 bundle：禁用它们等于把 3080 的网页入口拆了 → 拒绝一键禁用，提示走救援中心。 */
 const CORE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
 const BUNDLES_BACKUP_NAME = "package.json.bundles-backup.json";
 const BUNDLES_BACKUP_KEEP = 5;
@@ -1403,7 +1438,7 @@ function setBundleEnabled(profile, name, enabled) {
 	if (typeof name !== "string" || !name.trim()) return { ok: false, error: "bundle 名缺失" };
 	name = name.trim();
 	if (!enabled && CORE_BUNDLES.includes(name)) {
-		return { ok: false, error: `${name} 是引擎网页 UI 的命脉 bundle，不允许从这里禁用（否则 3080 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
+		return { ok: false, error: `${name} 是引擎必需的核心组件，不允许从这里禁用（否则 3080 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
 	}
 	const manifest = readProfileManifest(profile);
 	if (!manifest) return { ok: false, error: `无法读取 profile 清单：${join(profile, "package.json")}` };
@@ -1418,28 +1453,410 @@ function setBundleEnabled(profile, name, enabled) {
 	manifest.dsh.profile = manifest.dsh.profile || {};
 	manifest.dsh.profile.bundles = next;
 	try {
-		writeFileSync(join(profile, "package.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+		writeFileAtomic(join(profile, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
 	} catch (error) {
 		return { ok: false, error: `写回清单失败（备份未动，原文件未损坏风险）：${error.message}` };
 	}
 	return { ok: true, changed: true, message: `${enabled ? "启用" : "禁用"} ${name} 完成；重启引擎后生效。`, ...listBundles(profile) };
 }
 
-/** 重启引擎：停（多重校验 + force 兜底）→ 起（带失败隔离）。与 /api/boot 共用单飞闸门。 */
+// ---------------------------------------------------------------- 1.0.0-rc.2：更新 / 事务性卸载 / mod 体检（launcher 原生能力，不依赖引擎 Cordis 服务）
+
+/** 管理器自身包名（自卸载走额外警告路径）。 */
+const MANAGER_SELF_NAME = "dsh-plugin-manager-pro";
+/** npm 包名白名单：进 shell 前先过这道闸（pnpm 参数防注入）。 */
+const PKG_NAME_RE = /^(@[a-zA-Z0-9][a-zA-Z0-9._-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+
+/** 引擎启动日志路径（launcher 会把引擎 stdout 追加到这里；mod 体检按它聚合错误计数）。 */
+function webLogPath() {
+	const dshHome = process.env.DSH_HOME || join(homedir(), ".dsh");
+	return join(dshHome, "logs", "web.log");
+}
+
+function patchFilePathOf(profile) { return join(profile, "cordis.patch.yml"); }
+
+/** 用户侧 bundle = 已安装依赖里除核心组件之外的部分（管理器自身也在其中）。 */
+function userBundleNames(profile) {
+	const manifest = readProfileManifest(profile);
+	if (!manifest) return [];
+	return Object.keys(manifest.dependencies ?? {}).filter((name) => !CORE_BUNDLES.includes(name)).sort();
+}
+
+/**
+ * 以「pnpm 命令 + 白名单参数」的方式跑子进程（rc.2 P1-4：exec → spawn 拿 pid）。
+ * resolve 永不 reject，失败也返回结构化结果 { code, stdout, stderr, timedOut, state }：
+ *   state="done"    —— 子进程已确认退出（含超时后确认杀死的情形）；
+ *   state="unknown" —— 超时触发了 taskkill /T /F，但之后仍探到进程存活：**不知道 pnpm 是否真的停了**，
+ *                      调用方（卸载事务）据此不做回滚/继续，直接报告 unknown 请人工确认。
+ * 超时杀的是**本函数自己启动**的子树（taskkill /PID <pid> /T /F），与 P0-1「不 /T 连坐别人」不冲突。
+ * 测试逃生门：DSH_PM_PNPM_TIMEOUT_MS 环境变量可整体下调默认超时（不设 = 180000）。
+ */
+function runPnpm(pnpmArgs, { cwd, timeoutMs } = {}) {
+	const defaultTimeout = Number(process.env.DSH_PM_PNPM_TIMEOUT_MS);
+	const timeout = timeoutMs ?? (Number.isInteger(defaultTimeout) && defaultTimeout > 0 ? defaultTimeout : 180000);
+	return new Promise((resolveRun) => {
+		let child;
+		try {
+			child = spawn("pnpm", pnpmArgs, {
+				cwd, windowsHide: true, env: process.env,
+				shell: process.platform === "win32" // Windows 的 pnpm 是 .cmd：须经 shell 解析（PID = cmd 包装进程，/T 连它下面的 pnpm→node 一起清）
+			});
+		} catch (error) {
+			resolveRun({ code: 1, stdout: "", stderr: `pnpm spawn 失败：${error.message}`, timedOut: false, state: "done" });
+			return;
+		}
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		let timedOut = false;
+		const finish = (code, state) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolveRun({ code, stdout, stderr, timedOut, state });
+		};
+		const killTree = () => {
+			timedOut = true;
+			try {
+				// rc.2：taskkill 只允许出现在 enginectl（test-launcher R13 约束 open-boot 源零 taskkill 调用）；
+				// 这里杀的是本函数自己启动的 pnpm 子树（唯一允许 /T 的场景）。
+				killTreeForce(child.pid);
+			} catch { /* 进程可能刚好退出 */ }
+			// 确认死亡（最多 ~1.2s）：还活着就不能当作"已回滚安全"，报 unknown
+			let attempts = 0;
+			const confirmDeath = () => {
+				attempts += 1;
+				if (!isAlive(child.pid)) { finish(1, "done"); return; }
+				if (attempts >= 6) { finish(1, "unknown"); return; }
+				setTimeout(confirmDeath, 200);
+			};
+			setTimeout(confirmDeath, 150);
+		};
+		const timer = setTimeout(() => {
+			if (!settled && child.pid) killTree();
+		}, timeout);
+		child.stdout?.on("data", (d) => { stdout += d; });
+		child.stderr?.on("data", (d) => { stderr += d; });
+		child.on("error", (error) => {
+			stderr += `\n${error.message}`;
+			finish(1, "done");
+		});
+		child.on("close", (code) => finish(typeof code === "number" ? code : 1, "done"));
+	});
+}
+
+/** 原子写（rc.2 P2-3）：先写同目录临时文件，再 renameSync 覆盖目标——清单/patch 不再可能半写损坏。 */
+function writeFileAtomic(file, text) {
+	const tmp = `${file}.tmp-${process.pid}-${randomBytes(4).toString("hex")}`;
+	writeFileSync(tmp, text, "utf8");
+	try {
+		renameSync(tmp, file);
+	} catch (error) {
+		try { unlinkSync(tmp); } catch { /* 清理失败不影响抛错 */ }
+		throw error;
+	}
+}
+
+/** 只读 web.log 的**末尾** maxBytes 字节（rc.2 P1-6：不再全量读日志，statSync+定长尾读）。 */
+function readWebLogTail(maxBytes = 256 * 1024) {
+	const file = webLogPath();
+	try {
+		const st = statSync(file);
+		const size = Math.min(st.size, maxBytes);
+		if (size <= 0) return "";
+		const fd = openSync(file, "r");
+		try {
+			const buf = Buffer.alloc(size);
+			const read = readSync(fd, buf, 0, size, st.size - size);
+			return buf.subarray(0, read).toString("utf8");
+		} finally { closeSync(fd); }
+	} catch { return ""; }
+}
+
+/**
+ * rc.2 P1-2：卸载成功后把包从 manifest.dsh.profile.bundles 里摘除（悬空声明会让引擎侧
+ * listBundles 出现幽灵条目）。复用 P2-3 的原子写；清单不可读/写失败时如实报告（verify 步会兜底断言）。
+ */
+function removeBundleEntry(profile, pkgName) {
+	const manifestPath = join(profile, "package.json");
+	let manifest;
+	try { manifest = JSON.parse(readFileSync(manifestPath, "utf8")); }
+	catch (error) { return { ok: false, detail: `清单不可读（${error.message}），无法摘 dsh.profile.bundles——请人工检查。` }; }
+	const bundles = manifest?.dsh?.profile?.bundles;
+	if (!Array.isArray(bundles)) return { ok: true, detail: "清单没有 dsh.profile.bundles 段，无需摘除" };
+	if (!bundles.includes(pkgName)) return { ok: true, detail: "dsh.profile.bundles 本就没有该包" };
+	try {
+		const next = {
+			...manifest,
+			dsh: { ...manifest.dsh, profile: { ...(manifest.dsh?.profile ?? {}), bundles: bundles.filter((name) => name !== pkgName) } }
+		};
+		writeFileAtomic(manifestPath, JSON.stringify(next, null, 2) + "\n");
+		return { ok: true, detail: "已从 dsh.profile.bundles 摘除该包" };
+	} catch (error) {
+		return { ok: false, detail: `摘除失败（${error.message}）：清单里仍有悬空声明，请人工处理或从备份恢复。` };
+	}
+}
+
+/**
+ * rc.2 P1-3：EBUSY 防护的状态判定改为 **fail-closed**。握手失败时不再默认"引擎没在跑"，
+ * 而是用纯端口探测复核：端口仍有监听者 = 引擎状态未知 → 拒绝硬删（半删/EBUSY 风险）。
+ * 返回 { running:boolean|null, message:string|null }；message 非 null 时调用方直接拒绝。
+ */
+async function engineBusyGate() {
+	const engine = await engineHealth(ENGINE_PORT);
+	if (engine.ok) return { running: true, message: null };
+	if (!(await probe(ENGINE_PORT))) return { running: false, message: null };
+	return {
+		running: null,
+		message: `端口 ${ENGINE_PORT} 有监听者，无法确认引擎已停（HTTP 握手未通过：${engine.error || `HTTP ${engine.status ?? "?"}`}）。` +
+			`为避免半删/EBUSY，请先停止引擎或在救援页确认端口上的进程后重试。`
+	};
+}
+
+/**
+ * 事务性卸载：备份（清单 + patch 文件）→ （管理器自身先清自启）→ pnpm remove → 摘 bundles →
+ * 清 cordis.patch.yml 条目块 → 验证（dependencies / bundles / patch / pnpm ls 四项后置断言）。
+ * 任一步失败即回滚备份并返回逐步日志 steps[{action,status,detail,rollback}]。
+ * 核心组件 bundle 拒绝；引擎握手失败但端口有监听者 → fail-closed 拒绝（P1-3）。
+ */
+async function uninstallPackageTransactional(args, pkgName) {
+	const profile = args.profile;
+	const steps = [];
+	const step = (action, status, detail, rollback = null) => steps.push({ action, status, detail, rollback });
+	if (!PKG_NAME_RE.test(pkgName)) return { ok: false, error: `非法包名：${pkgName}`, steps };
+	if (CORE_BUNDLES.includes(pkgName)) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，不允许卸载。`, steps };
+	const manifest = readProfileManifest(profile);
+	if (!manifest || !(pkgName in (manifest.dependencies ?? {}))) {
+		return { ok: false, error: `profile 里没有安装 ${pkgName}，无事可做。`, steps };
+	}
+	const gate = await engineBusyGate();
+	if (gate.message) {
+		return { ok: false, blocked: "engine-unknown", error: gate.message, steps };
+	}
+	const enabled = manifest?.dsh?.profile?.bundles ?? [];
+	if (gate.running && enabled.includes(pkgName)) {
+		return {
+			ok: false, blocked: "engine-busy",
+			error: `引擎正在运行且 ${pkgName} 处于启用状态：node_modules 被引擎进程占用，硬删会 EBUSY/半删。请先在下方禁用它 → 重启引擎 → 再回来卸载。`,
+			steps
+		};
+	}
+	if (pkgName === MANAGER_SELF_NAME) {
+		step("self-warning", "warn",
+			"这是管理器自身：卸载会移除 3080 内的插件管理界面；3081 兜底页存活到本次进程结束。", null);
+		// rc.2 P1-5：自卸载先进程内清开机自启 + 删 shim，再 pnpm remove（不再要求用户之后手动 --uninstall）。
+		const auto = uninstallAutostart(args);
+		step("autostart-cleanup", auto.ok ? "ok" : "warn",
+			`开机自启已自动清理：${String(auto.message || "").split("\n")[0]}`, null);
+	}
+	// 1) 备份（清单走现有滚动备份；patch 文件独立一次性备份）
+	let manifestBackup = null;
+	try {
+		manifestBackup = backupProfileManifest(profile);
+		step("backup-manifest", "ok", manifestBackup ? `package.json 已备份 → ${manifestBackup}` : "清单为空/不可读，跳过备份（后面也没有可回滚的清单）", manifestBackup);
+	} catch (error) {
+		step("backup-manifest", "fail", error.message, null);
+		return { ok: false, error: "备份失败，未做任何改动。", steps };
+	}
+	let patchBackup = null;
+	const patchFile = patchFilePathOf(profile);
+	if (existsSync(patchFile)) {
+		patchBackup = `${patchFile}.uninstall-bak-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+		try {
+			writeFileSync(patchBackup, readFileSync(patchFile, "utf8"), "utf8");
+			step("backup-patch", "ok", `cordis.patch.yml 已备份 → ${patchBackup}`, patchBackup);
+		} catch (error) {
+			step("backup-patch", "fail", error.message, null);
+			return { ok: false, error: "patch 备份失败，未做任何改动。", steps };
+		}
+	}
+	// 2) pnpm remove
+	const removed = await runPnpm(["remove", pkgName], { cwd: profile });
+	if (removed.code !== 0) {
+		step("pnpm-remove", "fail",
+			`exit ${removed.code}${removed.timedOut ? "（超时）" : ""}${removed.state === "unknown" ? "；超时杀树后仍探测到 pnpm 存活（state=unknown）" : ""}：${(removed.stderr || removed.stdout).slice(-400)}`, null);
+		if (removed.state === "unknown") {
+			return { ok: false, error: "pnpm remove 超时且无法确认 pnpm 已停止（state=unknown）：为避免在半成品状态上回滚/继续，本次不做任何后续动作，请人工确认 pnpm 进程已结束后重试。", steps };
+		}
+		if (manifestBackup) {
+			try {
+				writeFileAtomic(join(profile, "package.json"), readFileSync(manifestBackup, "utf8"));
+				step("rollback-manifest", "ok", "清单已从备份回滚", null);
+			} catch (error) { step("rollback-manifest", "fail", error.message, null); }
+		}
+		return { ok: false, error: "pnpm remove 失败：已回滚清单，patch 文件未动。", steps };
+	}
+	step("pnpm-remove", "ok", `pnpm remove ${pkgName} 完成`, null);
+	// 3) 摘 dsh.profile.bundles（rc.2 P1-2：pnpm remove 会改写 dependencies，但 bundles 段要我们自己摘）
+	const bundleCleanup = removeBundleEntry(profile, pkgName);
+	step("bundle-cleanup", bundleCleanup.ok ? "ok" : "warn", bundleCleanup.detail, manifestBackup);
+	// 4) 清 patch 条目块（rc.2 P1-1：正则匹配三形态；removed=0 且有块 → 降级 warn 请人工确认）
+	const patch = removePatchEntriesFor(profile, pkgName);
+	if (patch.total > 0 && patch.removed === 0) {
+		step("patch-cleanup", "warn",
+			`patch 文件有 ${patch.total} 个条目块，但未找到归属 ${pkgName} 的条目（removed=0）——未做任何修改，请人工确认 cordis.patch.yml。`, patchBackup);
+	} else {
+		step("patch-cleanup", "ok", patch.detail ?? `cordis.patch.yml：移除 ${patch.removed}/${patch.total} 个条目块`, patchBackup);
+	}
+	// 5) 验证（rc.2 P2-2：四项后置条件逐一断言，而不是只看 pnpm ls）
+	const verify = await runPnpm(["ls", pkgName, "--depth", "0"], { cwd: profile, timeoutMs: 60000 });
+	const manifestNow = readProfileManifest(profile);
+	const depGone = !manifestNow || !(pkgName in (manifestNow.dependencies ?? {}));
+	const bundleGone = !manifestNow || !((manifestNow?.dsh?.profile?.bundles ?? []).includes(pkgName));
+	const patchGone = patch.total === 0 || patch.removed > 0;
+	const pnpmGone = verify.code === 0 && !verify.stdout.includes(pkgName);
+	const conditions = [
+		["dependencies", depGone],
+		["dsh.profile.bundles", bundleGone],
+		["cordis.patch.yml 条目", patchGone],
+		["pnpm ls", pnpmGone]
+	];
+	const failed = conditions.filter(([, passed]) => !passed).map(([label]) => label);
+	if (failed.length === 0) {
+		step("verify", "ok", "后置条件全部满足：dependencies / dsh.profile.bundles / cordis.patch.yml 均已无该包，pnpm ls 也不再列出", null);
+	} else {
+		step("verify", "warn",
+			`后置条件未全满足（${failed.join("、")} 仍含 ${pkgName}）：如异常请手工检查 node_modules / 清单 / patch（备份：${[manifestBackup, patchBackup].filter(Boolean).join("、") || "无"}）`, null);
+	}
+	const isSelf = pkgName === MANAGER_SELF_NAME;
+	return {
+		ok: true, self: isSelf,
+		message: isSelf
+			? `${pkgName} 已卸载（开机自启已自动清理）。本启动器（3081 兜底页）存活到本次进程结束；3080 内的插件管理界面随本次引擎重启消失。`
+			: `${pkgName} 已卸载（备份 → 移除 → 摘 bundles → 清 patch → 验证，全程有回滚记录）。`,
+		steps
+	};
+}
+
+/** 检查用户插件更新：一次 pnpm outdated --json，再投影到用户 bundle（核心组件不参与）。 */
+async function checkUpdates(args) {
+	const profile = args.profile;
+	const users = userBundleNames(profile);
+	if (users.length === 0) return { ok: true, updates: [], message: "profile 没有用户插件。" };
+	const ping = await runPnpm(["--version"], { cwd: profile, timeoutMs: 15000 });
+	if (ping.code !== 0) return { ok: false, error: `pnpm 不可用（exit ${ping.code}）：${(ping.stderr || ping.stdout).slice(-200)}` };
+	const out = await runPnpm(["outdated", "--json"], { cwd: profile, timeoutMs: 120000 });
+	let table = {};
+	try { table = JSON.parse(out.stdout || "{}") || {}; }
+	catch {
+		return { ok: false, error: `pnpm outdated 输出无法解析（exit ${out.code}）：${(out.stderr || out.stdout).slice(-300)}` };
+	}
+	const updates = users.map((name) => {
+		const row = table[name] || table[`./${name}`] || null;
+		return {
+			name,
+			current: row?.current ?? null,
+			latest: row?.latest ?? null,
+			needsUpdate: Boolean(row && row.latest && row.current !== row.latest)
+		};
+	});
+	return { ok: true, updates };
+}
+
+/** 更新单个用户插件（与卸载同一套 EBUSY 引导 + P1-3 fail-closed：握手失败但端口有监听者 → 拒绝）。 */
+async function updatePackage(args, pkgName) {
+	const profile = args.profile;
+	if (!PKG_NAME_RE.test(pkgName)) return { ok: false, error: `非法包名：${pkgName}` };
+	if (CORE_BUNDLES.includes(pkgName)) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，更新请走引擎侧（主界面 → 插件管理）。` };
+	const manifest = readProfileManifest(profile);
+	if (!manifest || !(pkgName in (manifest.dependencies ?? {}))) return { ok: false, error: `profile 里没有安装 ${pkgName}` };
+	const gate = await engineBusyGate();
+	if (gate.message) return { ok: false, blocked: "engine-unknown", error: gate.message };
+	const enabled = manifest?.dsh?.profile?.bundles ?? [];
+	if (gate.running && enabled.includes(pkgName)) {
+		return {
+			ok: false, blocked: "engine-busy",
+			error: `引擎正在运行且 ${pkgName} 处于启用状态：文件被占用，更新会 EBUSY。请先禁用 → 重启引擎 → 再更新。`
+		};
+	}
+	const result = await runPnpm(["update", pkgName, "--latest"], { cwd: profile });
+	if (result.code !== 0) {
+		if (result.state === "unknown") {
+			return { ok: false, error: "pnpm update 超时且无法确认 pnpm 已停止（state=unknown）：不判断成败，请人工确认 pnpm 进程已结束后重试。" };
+		}
+		return { ok: false, error: `pnpm update 失败（exit ${result.code}${result.timedOut ? "，超时" : ""}）：${(result.stderr || result.stdout).slice(-400)}` };
+	}
+	return { ok: true, message: `${pkgName} 已更新；重启引擎后生效。`, output: (result.stdout || "").slice(-1200) };
+}
+
+/** rc.2 P1-6：体检报告 30s 缓存（key=profile），避免每次点体检都重读/重扫日志。 */
+const healthReportCache = new Map();
+const HEALTH_REPORT_CACHE_MS = 30000;
+
+/**
+ * mod 体检（只读）：① lib/preflight.verifyProfile 逐 bundle 可解析性；② DSH_HOME/logs/web.log
+ * **末尾 256KB**（rc.2 P1-6：不再全量读日志）按 bundle 名聚合错误计数。verdict：ok/suspect/broken。
+ * rc.2 P2-4：不属于任何 bundle 的 preflight 问题与未识别来源的日志错误拆到 globalIssues 单独展示。
+ */
+function healthReport(args) {
+	const profile = args.profile;
+	const cached = healthReportCache.get(profile);
+	if (cached && Date.now() - cached.at < HEALTH_REPORT_CACHE_MS) return cached.report;
+	const issues = [];
+	try {
+		const verify = verifyProfile(profile);
+		for (const item of verify.issues ?? []) issues.push({ name: item.name, detail: item.reason });
+	} catch (error) {
+		issues.push({ name: "(preflight)", detail: `体检器异常：${error instanceof Error ? error.message : String(error)}` });
+	}
+	const counts = {};
+	try {
+		const text = readWebLogTail(256 * 1024);
+		const tail = text.split(/\r?\n/).slice(-300);
+		for (const line of tail) {
+			if (!/(error|失败|✗|cannot|EADDR|EBUSY|ERR_)/i.test(line)) continue;
+			const m = line.match(/(@?[\w./@-]*dsh-[\w.-]+)/);
+			const pkg = m ? m[1] : "(未识别)";
+			counts[pkg] = (counts[pkg] ?? 0) + 1;
+		}
+	} catch { /* web.log 不存在：静默忽略 */ }
+	const bundles = listBundles(profile);
+	const bundleNames = new Set((bundles.ok ? bundles.bundles : []).map((b) => b.name));
+	const rows = (bundles.ok ? bundles.bundles : []).map((b) => {
+		const issue = issues.find((x) => x.name === b.name);
+		const errs = counts[b.name] ?? 0;
+		let verdict = "ok";
+		let detail = b.enabled ? "已启用，preflight 无异常" : "已禁用（不加载，无风险）";
+		if (issue) { verdict = "broken"; detail = issue.detail; }
+		else if (errs >= 3) { verdict = "suspect"; detail = `web.log 尾部 300 行内出现 ${errs} 次错误——建议禁用观察`; }
+		else if (errs > 0) { verdict = "suspect"; detail = `web.log 尾部 300 行内出现 ${errs} 次错误`; }
+		return { name: b.name, enabled: b.enabled, core: b.core, verdict, detail };
+	});
+	const bundleIssues = issues.filter((x) => bundleNames.has(x.name));
+	const globalIssues = [
+		...issues.filter((x) => !bundleNames.has(x.name)),
+		...Object.entries(counts)
+			.filter(([pkg]) => !bundleNames.has(pkg))
+			.map(([pkg, n]) => ({ name: pkg, detail: `web.log 尾部 300 行内出现 ${n} 次错误（不属于任何已装 bundle，可能与全局配置/引擎本身有关）` }))
+	];
+	const report = { ok: true, rows, issues: bundleIssues, globalIssues, logErrors: counts, logPath: webLogPath() };
+	healthReportCache.set(profile, { at: Date.now(), report });
+	return report;
+}
+
+/**
+ * 重启引擎：停（多重校验；**rc.2 P0-1：不再传 force:true**——校验不过就如实拒绝并给出原因
+ * 与人工确认引导，绝不带着未通过的身份校验硬杀）→ 起（带失败隔离）。与 /api/boot 共用单飞闸门。
+ */
 async function restartEngine(args, flight, entered) {
 	try {
-		const stop = await stopEngine(args.profile, { force: true, port: ENGINE_PORT });
+		const stop = await stopEngine(args.profile, { port: ENGINE_PORT });
 		const stillUp = await probe(ENGINE_PORT);
 		if (!stop.ok && stillUp) {
-			// 停不掉且端口仍被占（典型：PID 文件缺失/身份不符，防误杀保护生效）→ 不继续拉起第二个引擎
-			return { ok: false, message: `停止旧引擎失败，且端口 ${ENGINE_PORT} 仍被占用，未尝试重启：${stop.message}` };
+			// 停不掉且端口仍被占（PID 文件缺失/身份校验不过等防误杀保护生效）→ 不继续拉起第二个引擎
+			const reasons = Array.isArray(stop.reasons) && stop.reasons.length ? stop.reasons.join("；") : (stop.message || "原因未知");
+			return {
+				ok: false,
+				message: `重启已中止：停止旧引擎未通过校验，且端口 ${ENGINE_PORT} 仍被占用，未尝试重启。\n原因：${reasons}\n` +
+					`请到救援中心核对进程身份；确认无误后可用救援页的「强制停止」（显式人工动作）再回来重启。`
+			};
 		}
 		// 走到这里 = ①停成功 ②引擎本来就不在（PID 文件缺失但端口空闲）
 		const start = await startEngineWithQuarantine({ profileDir: args.profile, dshCmd: args.dsh, waitMs: args.waitMs, cwd: args.cwd });
 		return {
 			ok: start.ok, stoppedPid: stop.pid ?? null,
 			quarantined: start.quarantined ?? [], quarantineMessage: start.quarantineMessage ?? null,
-			entryUrl: start.ok ? await latestTokenUrl() : null,
+			entryUrl: start.ok ? await latestTokenUrlWithRetry() : null,
 			message: (stop.ok ? `旧引擎已停（${stop.message}）→ ` : "") + (start.message || "")
 		};
 	} catch (error) {
@@ -1455,6 +1872,12 @@ async function restartEngine(args, flight, entered) {
  * 不含任何写死的盘符/用户名（node/profile/cwd 全部来自当前进程实况）。
  * start 用 WMI Win32_Process.Create（父进程是 WmiPrvSE）→ 从 agent Job/控制台里发起也能存活。
  */
+/**
+ * PowerShell 单引号字符串安全：路径含 ' 时翻倍转义（' → ''），否则会截断/破坏命令行。
+ * 适用于所有用单引号包路径的 ps1 赋值与 powershell -Command 内联片段。
+ */
+const escPs = (value) => value.replace(/'/g, "''");
+
 function ensureLauncherCmd(args) {
 	try {
 		const dshHome = process.env.DSH_HOME || join(homedir(), ".dsh");
@@ -1474,12 +1897,12 @@ function ensureLauncherCmd(args) {
 			"# Generated by dsh-plugin-manager-pro open-boot (launcher 1.0.0-rc.1); regenerated at every launcher start.",
 			"# Escapes any console Job object by parenting the new process to WmiPrvSE via Win32_Process.Create.",
 			"# Written as UTF-8 with BOM so PowerShell 5.1 parses non-ASCII (dev-copy) paths correctly.",
-			"$node = '" + node + "'",
-			"$boot = '" + boot + "'",
-			"$profile = '" + profile + "'",
-			"$port = '" + port + "'",
-			"$cwd = '" + cwd + "'",
-			"$log = '" + launcherLog + "'",
+			"$node = '" + escPs(node) + "'",
+			"$boot = '" + escPs(boot) + "'",
+			"$profile = '" + escPs(profile) + "'",
+			"$port = '" + escPs(port) + "'",
+			"$cwd = '" + escPs(cwd) + "'",
+			"$log = '" + escPs(launcherLog) + "'",
 			"$line = 'cmd.exe /s /c \"\"' + $node + '\" \"' + $boot + '\" --supervise --profile \"' + $profile + '\" --port ' + $port + ' --no-window >> \"' + $log + '\" 2>&1\"'",
 			"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $line; CurrentDirectory = $cwd }",
 			"if ($r.ReturnValue -ne 0) { Write-Error ('WMI Win32_Process.Create failed with ReturnValue ' + $r.ReturnValue); exit 1 }",
@@ -1505,6 +1928,8 @@ function ensureLauncherCmd(args) {
 			"set \"LOGDIR=" + logDir + "\"",
 			"set \"PS1=" + ps1Path + "\"",
 			"set \"PIDFILE=%PROFILE%\\.open-boot.pid\"",
+			"rem PIDPS = PIDFILE with ' doubled (cmd substitution) so PowerShell single-quoted paths stay intact",
+			"set \"PIDPS=%PIDFILE:'=''%\"",
 			"if /i \"%~1\"==\"start\" goto start",
 			"if /i \"%~1\"==\"stop\" goto stop",
 			"if /i \"%~1\"==\"status\" goto status",
@@ -1517,10 +1942,15 @@ function ensureLauncherCmd(args) {
 			"endlocal & exit /b %ERRORLEVEL%",
 			":stop",
 			"if not exist \"%PIDFILE%\" echo [dsh-launcher] no pid file - launcher not running (or already stopped) & endlocal & exit /b 0",
-			"for /f usebackq delims= %%p in (`powershell -NoProfile -Command \"(Get-Content -Raw '%PIDFILE%' | ConvertFrom-Json).pid\"`) do set \"LPID=%%p\"",
+			"for /f usebackq delims= %%p in (`powershell -NoProfile -Command \"(Get-Content -Raw '%PIDPS%' | ConvertFrom-Json).pid\"`) do set \"LPID=%%p\"",
 			"if not defined LPID echo [dsh-launcher] pid file unreadable, remove it manually: %PIDFILE% & endlocal & exit /b 1",
-			"echo [dsh-launcher] stopping launcher tree, pid %LPID% ...",
-			"taskkill /T /F /PID %LPID% >nul 2>&1",
+			"for /f usebackq delims= %%a in (`powershell -NoProfile -Command \"$p = Get-CimInstance Win32_Process -Filter ('ProcessId = ' + %LPID%); if ($null -eq $p) { 'gone' } elseif ($p.CommandLine -match 'open-boot') { 'match' } else { 'mismatch' }\"`) do set \"OWNER=%%a\"",
+			"rem rc.2 P2-5：OWNER 未取到（for /f 无输出）也必须拒绝——只有显式 'match' 才放行，杜绝空值穿透到 taskkill",
+			"if \"%OWNER%\"==\"gone\" echo [dsh-launcher] pid %LPID% already gone - cleaning stale pid file & del /q \"%PIDFILE%\" >nul 2>&1 & endlocal & exit /b 0",
+			"if not \"%OWNER%\"==\"match\" echo [dsh-launcher] pid %LPID% is NOT a dsh launcher (pid reuse suspected) - refusing to kill & endlocal & exit /b 3",
+			"echo [dsh-launcher] stopping launcher, pid %LPID% ...",
+			"rem rc.2 P2-5：去掉 /T——不再连坐整棵进程树（启动器自己的子树里可能有用户会话），只结束启动器主进程",
+			"taskkill /F /PID %LPID% >nul 2>&1",
 			"del /q \"%PIDFILE%\" >nul 2>&1",
 			"echo [dsh-launcher] stopped.",
 			"endlocal & exit /b 0",
@@ -1540,112 +1970,547 @@ function ensureLauncherCmd(args) {
 	}
 }
 
-/** 启动器内置插件管理页（独立于引擎 UI：mod 全被禁用时它是唯一能重新打开它们的入口）。 */
-function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT } = {}) {
+/**
+ * 引擎主题偏好（服务端只读）：DSH 的主题设置落在 Host 用户设置文档 ui-theme 段（字段 preference: light|dark|system，
+ * 默认 system=跟随系统偏好；dsh-settings v0.9+ 把 settings.yaml 收进 profile.home）。
+ * 本机该文件不存在时返回 "system" —— 页面回退到 prefers-color-scheme；文件一旦出现（用户在引擎外观里存过主题），重启启动器即生效。
+ */
+function engineThemePreference(profile) {
+	const candidates = [join(profile, "settings.yaml")];
+	const legacy = join(process.env.DSH_HOME || join(homedir(), ".dsh"), "settings.yaml");
+	if (!candidates.includes(legacy)) candidates.push(legacy);
+	for (const path of candidates) {
+		try {
+			const lines = readFileSync(path, "utf8").split(/\r?\n/);
+			let inBlock = false;
+			for (const line of lines) {
+				if (/^#/.test(line) || !line.trim()) continue;
+				if (/^\S/.test(line)) { // 顶层键：进入/离开 ui-theme 段
+					if (inBlock) break;
+					inBlock = line.startsWith("ui-theme:");
+					continue;
+				}
+				if (!inBlock) continue;
+				const match = line.match(/^\s+preference:\s*["']?(\S+?)["']?\s*$/);
+				if (match) return ["light", "dark", "system"].includes(match[1]) ? match[1] : "system";
+			}
+		} catch { /* 读不到（无文件/权限）就按 system */ }
+	}
+	return "system";
+}
+
+/**
+ * 启动器内置插件管理页（1.0.0-rc.2 重做）：独立于引擎 UI —— mod 全被禁用时它是唯一能重新打开它们的入口。
+ * 设计语言与 3085 预览一致：浅灰底 + 白卡 + 蓝强调、扁平分区、toggle 开关、toast、确认框；
+ * 主题三态（自动=引擎外观 preference > 系统偏好；手动覆盖 localStorage；长按复位）；标题「引擎与插件管理台」。
+ * 功能：搜索过滤 / 启停 / 更新检查与更新 / 事务性卸载（步骤日志）/ mod 体检 / 市场辅助 / 重启引擎 / 停止启动器。
+ */
+function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, engineTheme = "system" } = {}) {
 	return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>DSH 插件管理（启动器内置）</title>
+<html lang="zh"><head><meta charset="utf-8"><title>引擎与插件管理台</title>
 <meta name="dsh-pm-token" content="${token}">
 <style>
-body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:32px 20px;display:flex;justify-content:center}
-.wrap{max-width:680px;width:100%}
-.card{background:#1a1d24;border:1px solid #2a2e38;border-radius:12px;padding:20px;margin-bottom:16px}
-h1{font-size:18px;color:#fff;margin:0 0 4px}.sub{color:#8b93a3;font-size:13px;margin-bottom:14px}
-table{width:100%;border-collapse:collapse;font-size:13px}
-td{padding:7px 6px;border-bottom:1px solid #23262f}
-.name{font-family:ui-monospace,monospace}.dim{color:#8b93a3}
-.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
-.on{background:#14351f;color:#4ade80}.off{background:#3a1d1d;color:#f87171}.core{background:#2b2b16;color:#fbbf24}
-button{cursor:pointer;border:1px solid #2a2e38;background:#23262f;color:#e6e6e6;border-radius:8px;padding:5px 12px;font-size:13px}
-button:hover{background:#2c3038}button:disabled{opacity:.45;cursor:not-allowed}
-.danger{border-color:#7f2d2d;color:#fca5a5}
-pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto}
-.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}a{color:#60a5fa}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+:root{--bg:#f6f7f9;--card:#ffffff;--border:#e3e6ec;--text:#1c2330;--dim:#6b7280;--accent:#3b6ef6;--accent-bg:#eef2ff;
+--ok:#16a34a;--ok-bg:#e7f6ec;--bad:#dc2626;--bad-bg:#fdeaea;--warn:#d97706;--warn-bg:#fdf3e3;--chip:#eef2ff;--shadow:0 1px 3px rgba(16,24,40,.06)}
+[data-theme="dark"]{--bg:#15171c;--card:#1e2128;--border:#2e323c;--text:#e5e7eb;--dim:#9aa1ad;--accent:#5b8cff;--accent-bg:#232838;
+--ok:#4ade80;--ok-bg:#1d3326;--bad:#f87171;--bad-bg:#3a1d1d;--warn:#fbbf24;--warn-bg:#332a16;--chip:#232838;--shadow:none}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:28px 20px 48px;display:flex;justify-content:center;transition:background .15s,color .15s}
+.wrap{max-width:760px;width:100%}
+header{display:flex;align-items:flex-start;gap:12px;margin-bottom:18px}
+header h1{font-size:19px;margin:0;font-weight:700;letter-spacing:.2px}
+header .sub{color:var(--dim);font-size:12.5px;margin-top:4px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:14px;box-shadow:var(--shadow)}
+.sect{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:.6px;margin:0 0 10px;text-transform:uppercase}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input[type=search]{flex:1 1 200px;min-width:160px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:7px 12px;font-size:13px;outline:none}
+input[type=search]:focus{border-color:var(--accent)}
+button{cursor:pointer;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 13px;font-size:13px;transition:background .12s,opacity .12s}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.45;cursor:not-allowed;color:var(--text);border-color:var(--border)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary:hover{color:#fff;opacity:.92}
+button.danger{color:var(--bad);border-color:var(--bad)}
+button.danger:hover{background:var(--bad-bg);color:var(--bad)}
+.rows{display:flex;flex-direction:column}
+.rowitem{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.rowitem:last-child{border-bottom:none}
+.rowitem .meta{flex:1;min-width:180px}
+.rowitem .name{font-family:ui-monospace,monospace;font-size:13px;font-weight:600;word-break:break-all}
+.rowitem .desc{color:var(--dim);font-size:12px;margin-top:2px}
+.badge{display:inline-block;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:600}
+.b-on{background:var(--ok-bg);color:var(--ok)}.b-off{background:var(--bad-bg);color:var(--bad)}
+.b-core{background:var(--warn-bg);color:var(--warn)}.b-self{background:var(--chip);color:var(--accent)}
+.b-upd{background:var(--accent-bg);color:var(--accent)}
+/* toggle 开关 */
+.toggle{position:relative;display:inline-block;width:36px;height:20px;flex:none}
+.toggle input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+.toggle .knob{position:absolute;inset:0;border-radius:999px;background:var(--border);transition:background .15s;pointer-events:none}
+.toggle .knob::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.toggle input:checked + .knob{background:var(--accent)}
+.toggle input:checked + .knob::after{left:18px}
+.toggle input:disabled + .knob{opacity:.45;cursor:not-allowed}
+.hint{color:var(--dim);font-size:12px;line-height:1.6}
+.hint a{color:var(--accent)}
+.dim{color:var(--dim)}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.7;white-space:pre-wrap;max-height:260px;overflow:auto;font-family:ui-monospace,monospace}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:baseline}
+.dot.ok{background:var(--ok)}.dot.suspect{background:var(--warn)}.dot.broken{background:var(--bad)}
+/* toast */
+#toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:8px;padding:9px 16px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:520px}
+.toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}.toast.warn{border-left-color:var(--warn)}
+/* 确认框 */
+#mask{position:fixed;inset:0;background:rgba(10,12,16,.45);display:none;align-items:center;justify-content:center;z-index:50}
+#mask.open{display:flex}
+#confirmBox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;max-width:440px;width:calc(100% - 40px);box-shadow:0 8px 30px rgba(0,0,0,.25)}
+#confirmBox h3{margin:0 0 8px;font-size:15px}
+#confirmBox p{margin:0 0 14px;font-size:13px;color:var(--dim);line-height:1.7;white-space:pre-wrap}
+#confirmBox .btns{display:flex;justify-content:flex-end;gap:8px}
+.panel{display:none}
+.panel.open{display:block}
 </style></head><body><div class="wrap">
+<header>
+	<div>
+		<h1>引擎与插件管理台</h1>
+		<div class="sub">插件管理（启动器内置兜底页 · 独立于引擎 UI） · <a href="/">启动页</a> · <a href="/rescue">救援中心</a> · <a href="http://127.0.0.1:${enginePort}/" id="mainLink">主界面</a></div>
+	</div>
+</header>
+
 <div class="card">
-<h1>🧩 插件管理（启动器内置）</h1>
-<div class="sub">启用 / 禁用 profile 里的 bundle（写 dsh.profile.bundles，写前自动备份）；改动后需重启引擎生效。
-<a href="/">← 启动器</a> · <a href="/rescue">救援中心</a> · <a href="http://127.0.0.1:${enginePort}/">主界面</a></div>
-<div class="row">
-<span id="engstate" class="dim">引擎状态检测中…</span>
-<button id="restartBtn" class="danger">🔄 重启引擎</button>
-<button id="stopBtn" class="danger">⛔ 停止本启动器</button>
+	<div class="toolbar">
+		<input type="search" id="q" placeholder="搜索插件名 / 描述…" aria-label="搜索插件">
+		<button id="refreshBtn" title="重新读取 bundle 列表">刷新</button>
+		<button id="checkUpdBtn" title="对用户插件逐一比对最新版本">检查更新</button>
+		<button id="healthBtn" title="preflight 只读校验 + 引擎日志错误聚合">🩺 mod 体检</button>
+		<button id="themeBtn" type="button" aria-label="切换深浅主题">
+			<svg id="themeIconSun" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1.5px"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+			<svg id="themeIconMoon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-1.5px;display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+			主题
+		</button>
+		<button id="restartBtn" class="danger">🔄 重启引擎</button>
+		<button id="stopBtn" class="danger">⛔ 停止本启动器</button>
+	</div>
+	<div class="hint" style="margin-top:10px"><span id="engstate" class="dim">引擎状态检测中…</span> · 改动启用状态后需重启引擎生效（写前自动备份 package.json）。</div>
 </div>
-</div>
+
 <div class="card">
-<div class="sub" style="margin-bottom:8px">已安装 bundle（黄色 = 引擎命脉，不允许禁用）</div>
-<table id="tbl"><tbody><tr><td class="dim">加载中…</td></tr></tbody></table>
-<pre id="msg" style="display:none"></pre>
+	<p class="sect">核心组件（引擎必需，不允许禁用）</p>
+	<div class="rows" id="coreRows"></div>
 </div>
+
+<div class="card">
+	<p class="sect">用户插件</p>
+	<div class="rows" id="userRows"></div>
+	<div class="hint" style="margin-top:8px">配置入口在各插件的行内设置（主界面 → 插件管理 → 行内 ⚙）；「市场详情」打开主界面市场页。</div>
+</div>
+
+<div class="card panel" id="updPanel">
+	<p class="sect">更新检查结果</p>
+	<div class="rows" id="updRows"></div>
+</div>
+
+<div class="card panel" id="healthPanel">
+	<p class="sect">mod 体检（只读）</p>
+	<div class="rows" id="healthRows"></div>
+	<div class="hint" style="margin-top:8px" id="healthHint"></div>
+</div>
+
+<div class="card panel" id="stepPanel">
+	<p class="sect">操作步骤日志</p>
+	<div class="rows" id="stepRows"></div>
+</div>
+
+<div class="hint" style="margin-top:16px">管理器不能在自身管理界面（3080）中停用自己；如需禁用或卸载，请前往启动器兜底页（本页 3081 /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。<b>可事务性自卸载</b>（含开机自启清理指引）。卸载/更新前若引擎正占用目标包，会引导你先禁用并重启引擎，而不是硬删。</div>
+</div>
+
+<div id="toasts"></div>
+<div id="mask"><div id="confirmBox" role="dialog" aria-modal="true">
+	<h3 id="cfTitle">确认</h3><p id="cfText"></p>
+	<div class="btns"><button id="cfCancel">取消</button><button id="cfOk" class="danger">确认</button></div>
+</div></div>
+
 <script>
-const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
-const tbl = document.getElementById("tbl");
-const msg = document.getElementById("msg");
-const engstate = document.getElementById("engstate");
-function show(text, cls){ msg.style.display = "block"; msg.className = cls || ""; msg.textContent = text; }
-function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+var TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
+var ENGINE_PORT = ${enginePort};
+var bundles = [];
+var updates = [];
+var reloadTried = false;
+
+// —— 主题：自动优先（服务端注入的引擎主题 preference > 系统偏好），手动点击写 localStorage 覆盖，长按复位自动 ——
+var ENGINE_THEME = ${JSON.stringify(engineTheme)}; // "light" | "dark" | "system"（来自 profile settings.yaml ui-theme 段）
+var THEME_KEY = "jdock-theme";
+var themeBtn = document.getElementById("themeBtn");
+var themeIconSun = document.getElementById("themeIconSun");
+var themeIconMoon = document.getElementById("themeIconMoon");
+var darkMedia = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+function systemDark(){ return Boolean(darkMedia && darkMedia.matches); }
+function autoTheme(){ return ENGINE_THEME !== "system" ? ENGINE_THEME : (systemDark() ? "dark" : "light"); }
+function manualTheme(){
+	try { var v = localStorage.getItem(THEME_KEY); return v === "light" || v === "dark" ? v : null; }
+	catch (e) { return null; }
+}
+function applyTheme(){
+	var theme = manualTheme() || autoTheme();
+	document.documentElement.setAttribute("data-theme", theme);
+	// 深色时亮出太阳（点击转浅色），浅色时亮出月亮；自动模式在 tooltip 里说明来源
+	themeIconSun.style.display = theme === "dark" ? "" : "none";
+	themeIconMoon.style.display = theme === "dark" ? "none" : "";
+	var source = manualTheme() ? "手动" : "自动（" + (ENGINE_THEME !== "system" ? "跟随引擎外观：" + ENGINE_THEME : "跟随系统偏好") + "）";
+	themeBtn.title = "主题：" + source + "。点击切换深浅；长按 0.6 秒复位为自动。";
+	themeBtn.setAttribute("aria-label", themeBtn.title);
+}
+var themePressTimer = null;
+var themeLongPressed = false;
+themeBtn.addEventListener("click", function(){
+	if (themeLongPressed) { themeLongPressed = false; return; } // 长按复位后的那次 click 不再当作切换
+	var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+	try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 写不进去就只在本会话生效 */ }
+	applyTheme();
+});
+themeBtn.addEventListener("pointerdown", function(){
+	themeLongPressed = false;
+	themePressTimer = setTimeout(function(){
+		themeLongPressed = true;
+		themePressTimer = null;
+		try { localStorage.removeItem(THEME_KEY); } catch (e) {}
+		applyTheme();
+		toast("主题已复位：自动（" + (ENGINE_THEME !== "system" ? "跟随引擎外观：" + ENGINE_THEME : "跟随系统偏好") + "）", "ok");
+	}, 650);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach(function(name){
+	themeBtn.addEventListener(name, function(){
+		if (themePressTimer !== null) { clearTimeout(themePressTimer); themePressTimer = null; }
+	});
+});
+if (darkMedia && darkMedia.addEventListener) darkMedia.addEventListener("change", function(){ if (!manualTheme()) applyTheme(); });
+applyTheme();
+
+function toast(text, cls){
+	var box = document.getElementById("toasts");
+	var el = document.createElement("div");
+	el.className = "toast " + (cls || "");
+	el.textContent = text;
+	box.appendChild(el);
+	setTimeout(function(){ el.remove(); }, 5200);
+}
+function confirmBox(title, text, okLabel){
+	return new Promise(function(resolveCF){
+		var mask = document.getElementById("mask");
+		document.getElementById("cfTitle").textContent = title;
+		document.getElementById("cfText").textContent = text;
+		var ok = document.getElementById("cfOk");
+		ok.textContent = okLabel || "确认";
+		mask.classList.add("open");
+		function done(val){ mask.classList.remove("open"); ok.removeEventListener("click", onOk); document.getElementById("cfCancel").removeEventListener("click", onCancel); resolveCF(val); }
+		function onOk(){ done(true); }
+		function onCancel(){ done(false); }
+		ok.addEventListener("click", onOk);
+		document.getElementById("cfCancel").addEventListener("click", onCancel);
+	});
+}
 async function api(path, body){
-	const opt = body ? { method: "POST", headers: { "Content-Type": "application/json", "X-DSH-PM-Token": TOKEN }, body: JSON.stringify(body) } : {};
-	return fetch(path, opt).then(function(x){ return x.json(); });
+	// rc.2 P1-6：GET（/updates /health）也要带令牌——服务端对这两个 GET 已开令牌校验
+	var headers = { "X-DSH-PM-Token": TOKEN };
+	var opt = body
+		? { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, headers), body: JSON.stringify(body) }
+		: { headers: headers };
+	var x = await fetch(path, opt);
+	if (x.status === 401 && !reloadTried) {
+		reloadTried = true;
+		try { sessionStorage.setItem("jdock-reloaded", "1"); } catch (e) {}
+		location.reload();
+		return new Promise(function(){});
+	}
+	return x.json();
+}
+async function guard(fn, busyLabel){
+	// 统一兜底：任何按钮处理器的网络/服务端异常都变成可见 toast，不再静默卡死按钮
+	try { return await fn(); }
+	catch (e) { toast("网络错误：" + (e && e.message ? e.message : e) + "（启动器可能已重启，请刷新页面）", "bad"); return null; }
+}
+function el(tag, cls, text){
+	var node = document.createElement(tag);
+	if (cls) node.className = cls;
+	if (text !== undefined && text !== null) node.textContent = text;
+	return node;
+}
+function toggleHtml(b){
+	var label = document.createElement("label");
+	label.className = "toggle";
+	label.title = b.core ? "核心组件：不允许从这里禁用（否则 3080 无法打开页面）" : (b.name + (b.enabled ? "：点击禁用" : "：点击启用"));
+	var input = document.createElement("input");
+	input.type = "checkbox"; input.checked = b.enabled; input.disabled = Boolean(b.core);
+	input.setAttribute("aria-label", b.name + (b.enabled ? " 禁用" : " 启用"));
+	input.dataset.name = b.name;
+	var knob = document.createElement("span"); knob.className = "knob";
+	label.appendChild(input); label.appendChild(knob);
+	return label;
+}
+function renderRows(){
+	var kw = document.getElementById("q").value.trim().toLowerCase();
+	var coreRows = document.getElementById("coreRows");
+	var userRows = document.getElementById("userRows");
+	coreRows.textContent = ""; userRows.textContent = "";
+	var list = bundles.filter(function(b){
+		if (!kw) return true;
+		return b.name.toLowerCase().includes(kw) || String(b.description || "").toLowerCase().includes(kw);
+	});
+	var updMap = {};
+	updates.forEach(function(u){ updMap[u.name] = u; });
+	list.forEach(function(b){
+		var row = el("div", "rowitem");
+		var meta = el("div", "meta");
+		var nameLine = el("div", "name");
+		nameLine.textContent = b.name;
+		if (b.core) nameLine.appendChild(el("span", "badge b-core", " 核心"));
+		if (b.self) nameLine.appendChild(el("span", "badge b-self", " 管理器·本页可禁用/可卸载（3080 界面内不可自禁）"));
+		if (updMap[b.name] && updMap[b.name].needsUpdate) nameLine.appendChild(el("span", "badge b-upd", " 有新版 " + updMap[b.name].latest));
+		meta.appendChild(nameLine);
+		var desc = b.description || (b.core ? "引擎必需的核心组件" : (b.self ? "本管理台对应的插件包（禁用后 3080 的插件页消失，3081 本页不受影响）" : ""));
+		if (updMap[b.name] && updMap[b.name].current) desc = (desc ? desc + " · " : "") + "当前 " + updMap[b.name].current;
+		if (desc) meta.appendChild(el("div", "desc", desc));
+		row.appendChild(meta);
+		row.appendChild(toggleHtml(b));
+		if (!b.core) {
+			if (updMap[b.name] && updMap[b.name].needsUpdate) {
+				var ub = el("button", null, "更新");
+				ub.title = "pnpm update（引擎占用时会引导先禁用）";
+				ub.addEventListener("click", function(){ doUpdate(b.name, ub); });
+				row.appendChild(ub);
+			}
+			var ub2 = el("button", null, "卸载");
+			ub2.className = b.self ? "danger" : "";
+			ub2.addEventListener("click", function(){ doUninstall(b, ub2); });
+			row.appendChild(ub2);
+		}
+		var mk = el("button", null, "市场详情");
+		mk.title = "打开主界面（引擎未运行时置灰）";
+		mk.disabled = !engineUp;
+		mk.addEventListener("click", function(){ window.open("http://127.0.0.1:" + ENGINE_PORT + "/", "_blank"); });
+		row.appendChild(mk);
+		(b.core ? coreRows : userRows).appendChild(row);
+	});
+	if (!list.filter(function(b){ return !b.core; }).length) userRows.appendChild(el("div", "hint", kw ? "没有匹配「" + kw + "」的用户插件" : "profile 里没有用户插件"));
+}
+function renderUpdateRows(){
+	var panel = document.getElementById("updPanel");
+	var rows = document.getElementById("updRows");
+	rows.textContent = "";
+	panel.classList.add("open");
+	updates.forEach(function(u){
+		var row = el("div", "rowitem");
+		var meta = el("div", "meta");
+		meta.appendChild(el("div", "name", u.name));
+		meta.appendChild(el("div", "desc", u.needsUpdate ? (u.current || "?") + " → " + u.latest + "（可更新）" : (u.current ? "已是最新 " + u.current : "版本未知")));
+		row.appendChild(meta);
+		if (u.needsUpdate) {
+			var b = el("button", "primary", "更新");
+			b.addEventListener("click", function(){ doUpdate(u.name, b); });
+			row.appendChild(b);
+		}
+		rows.appendChild(row);
+	});
+}
+function renderSteps(steps){
+	var panel = document.getElementById("stepPanel");
+	var rows = document.getElementById("stepRows");
+	rows.textContent = "";
+	panel.classList.add("open");
+	steps.forEach(function(s){
+		var row = el("div", "rowitem");
+		var mark = s.status === "ok" ? "✔" : (s.status === "warn" ? "⚠" : (s.status === "fail" ? "✘" : "·"));
+		var cls = s.status === "ok" ? "ok" : (s.status === "warn" ? "warn" : (s.status === "fail" ? "bad" : "dim"));
+		var meta = el("div", "meta");
+		var line = el("div", null, null);
+		var strong = el("b", cls, mark + " " + s.action);
+		line.appendChild(strong);
+		line.appendChild(el("span", "dim", "　" + s.detail));
+		meta.appendChild(line);
+		if (s.rollback) meta.appendChild(el("div", "desc", "回滚依据：" + s.rollback));
+		row.appendChild(meta);
+		rows.appendChild(row);
+	});
+}
+async function doUpdate(name, btn){
+	btn.disabled = true;
+	await guard(async function(){
+		var okGo = await confirmBox("更新 " + name, "将运行 pnpm update --latest。若引擎正在运行且该插件已启用，会拒绝并引导你先禁用。", "更新");
+		if (!okGo) return;
+		var r = await api("/plugins/api/update", { name: name });
+		if (!r.ok) { toast(r.error || "更新失败", r.blocked === "engine-busy" ? "warn" : "bad"); return; }
+		toast(r.message || "已更新", "ok");
+		await refreshUpdates(false);
+	});
+	btn.disabled = false;
+}
+async function doUninstall(b, btn){
+	btn.disabled = true;
+	await guard(async function(){
+		var warnText = b.self
+			? "这是管理器自身：卸载后 3080 内的插件管理界面消失；3081 本兜底页存活到启动器进程结束；之后请运行 node bin/open-boot.mjs --uninstall 清理开机自启。确定继续？"
+			: "将执行事务性卸载：备份清单与 cordis.patch.yml → pnpm remove → 清理补丁行 → 验证；每一步都会留下回滚记录。确定继续？";
+		var okGo = await confirmBox("卸载 " + b.name, warnText, "卸载");
+		if (!okGo) return;
+		var r = await api("/plugins/api/uninstall", { name: b.name });
+		if (!r.ok) { toast(r.error || "卸载失败", r.blocked === "engine-busy" ? "warn" : "bad"); return; }
+		toast(r.message || "已卸载", "ok");
+		if (Array.isArray(r.steps)) renderSteps(r.steps);
+		await loadBundles();
+	});
+	btn.disabled = false;
 }
 async function loadBundles(){
-	const r = await api("/plugins/api/bundles");
-	if (!r.ok) { show(r.error || "读取失败", "bad"); return; }
-	tbl.innerHTML = "";
-	r.bundles.forEach(function(b){
-		const tr = document.createElement("tr");
-		const badge = b.enabled ? '<span class="badge on">启用</span>' : '<span class="badge off">禁用</span>';
-		const core = b.core ? ' <span class="badge core">命脉</span>' : "";
-		tr.innerHTML = '<td class="name">' + esc(b.name) + core + '</td><td>' + badge + '</td>' +
-			'<td style="text-align:right"><button data-name="' + esc(b.name) + '" data-to="' + (b.enabled ? "0" : "1") + '"' + (b.core ? " disabled" : "") + '>' + (b.enabled ? "禁用" : "启用") + '</button></td>';
-		tbl.appendChild(tr);
+	return guard(async function(){
+		var r = await api("/plugins/api/bundles");
+		if (!r.ok) { toast(r.error || "读取 bundle 失败", "bad"); return; }
+		bundles = (r.bundles || []).map(function(b){ return { name: b.name, enabled: b.enabled, core: b.core, self: b.name === "dsh-plugin-manager-pro" }; });
+		renderRows();
 	});
-	if (!r.bundles.length) tbl.innerHTML = '<tr><td class="dim">profile 里没有安装任何 bundle</td></tr>';
-	if (r.backup) show("最近一次变更前的清单备份：" + r.backup, "dim");
 }
-tbl.addEventListener("click", async function(ev){
-	const btn = ev.target.closest("button"); if (!btn || btn.disabled) return;
-	btn.disabled = true;
-	const r = await api("/plugins/api/bundles", { name: btn.dataset.name, action: btn.dataset.to === "1" ? "enable" : "disable" });
-	if (!r.ok) { show(r.error || "操作失败", "bad"); btn.disabled = false; return; }
-	show(r.message || "已更新（重启引擎后生效）", r.changed === false ? "warn" : "ok");
-	await loadBundles();
-});
+async function refreshUpdates(showPanel){
+	return guard(async function(){
+		var btn = document.getElementById("checkUpdBtn");
+		btn.disabled = true;
+		var r = await api("/plugins/api/updates");
+		btn.disabled = false;
+		if (!r.ok) { toast(r.error || "检查更新失败", "bad"); return; }
+		updates = r.updates || [];
+		var n = updates.filter(function(u){ return u.needsUpdate; }).length;
+		toast(n ? "发现 " + n + " 个可更新插件" : "全部用户插件已是最新", n ? "warn" : "ok");
+		renderRows();
+		if (showPanel !== false) renderUpdateRows();
+	});
+}
+async function runHealth(){
+	return guard(async function(){
+		var btn = document.getElementById("healthBtn");
+		btn.disabled = true;
+		var r = await api("/plugins/api/health");
+		btn.disabled = false;
+		if (!r.ok) { toast(r.error || "体检失败", "bad"); return; }
+		var rows = document.getElementById("healthRows");
+		var panel = document.getElementById("healthPanel");
+		rows.textContent = "";
+		panel.classList.add("open");
+		(r.rows || []).forEach(function(row){
+			var item = el("div", "rowitem");
+			var meta = el("div", "meta");
+			var line = el("div", "name", null);
+			line.appendChild(el("span", "dot " + row.verdict));
+			line.appendChild(document.createTextNode(row.name));
+			if (row.core) line.appendChild(el("span", "badge b-core", " 核心"));
+			if (!row.enabled) line.appendChild(el("span", "badge b-off", " 已禁用"));
+			meta.appendChild(line);
+			meta.appendChild(el("div", "desc", row.detail + (row.verdict === "broken" ? "（建议卸载或回滚）" : row.verdict === "suspect" ? "（建议禁用观察）" : "")));
+			item.appendChild(meta);
+			rows.appendChild(item);
+		});
+		// rc.2 P2-4：非 bundle 归属的 preflight 问题与未识别日志错误 → 单独区块
+		var gi = r.globalIssues || [];
+		if (gi.length) {
+			var ghead = el("div", "rowitem");
+			ghead.appendChild(el("b", "warn", "⚠ 全局问题（不属于任何已装 bundle，勿按插件处理）"));
+			rows.appendChild(ghead);
+			gi.forEach(function(row){
+				var item = el("div", "rowitem");
+				var meta = el("div", "meta");
+				meta.appendChild(el("div", "name", row.name || "(未识别)"));
+				meta.appendChild(el("div", "desc", row.detail || ""));
+				item.appendChild(meta);
+				rows.appendChild(item);
+			});
+		}
+		document.getElementById("healthHint").textContent = "日志：" + (r.logPath || "") + "；体检只读（preflight 校验 + 日志末尾 256KB 聚合，30s 缓存），不改任何文件。";
+	});
+}
+document.getElementById("q").addEventListener("input", renderRows);
+document.getElementById("refreshBtn").addEventListener("click", loadBundles);
+document.getElementById("checkUpdBtn").addEventListener("click", function(){ refreshUpdates(true); });
+document.getElementById("healthBtn").addEventListener("click", runHealth);
 document.getElementById("restartBtn").addEventListener("click", async function(){
-	this.disabled = true; show("重启引擎中：停旧 → 起（失败条目自动隔离一次）→ 等握手…", "warn");
-	const r = await api("/plugins/api/engine/restart", {});
-	show(r.message || (r.ok ? "引擎已重启。" : "重启失败。"), r.ok ? "ok" : "bad");
-	engstate.textContent = r.ok ? "引擎：运行中" : "引擎：未就绪";
-	this.disabled = false;
+	this.disabled = true;
+	await guard(async function(){
+		var okGo = await confirmBox("重启引擎", "停旧引擎 → 拉起新引擎（失败条目自动隔离一次）→ 等握手。期间 3080 会短暂不可用。", "重启");
+		if (!okGo) { document.getElementById("restartBtn").disabled = false; return; }
+		toast("重启引擎中…", "warn");
+		var r = await api("/plugins/api/engine/restart", {});
+		toast(r.message || (r.ok ? "引擎已重启。" : "重启失败。"), r.ok ? "ok" : "bad");
+		setEngineState(r.ok);
+		// G03：entryUrl=null 时的降级指引（不渲染假 token 链接）
+		if (r.ok && r.entryUrl) toast("登录链接已就绪（含 token），可直接打开主界面。", "ok");
+		else if (r.ok) toast("未捕获到本次启动的登录链接：① 已登录过的浏览器直接打开 http://127.0.0.1:" + ENGINE_PORT + "/（cookie 仍有效）；② 新浏览器请看引擎控制台输出的 dsh web: …?token=…，或到 ~/.dsh/logs/web.log 末尾查找最后一次启动追加的链接。", "warn");
+	});
+	document.getElementById("restartBtn").disabled = false;
 });
 document.getElementById("stopBtn").addEventListener("click", async function(){
 	this.disabled = true;
-	const r = await api("/api/launcher/stop", {});
-	show(r.message || "启动器即将退出。", "warn");
-	setTimeout(function(){ location.reload(); }, 1200);
+	await guard(async function(){
+		var okGo = await confirmBox("停止本启动器", "启动器进程将优雅退出并清理 pid 文件；引擎与本页面不受影响，重新打开 3081 会重新拉起启动器。", "停止");
+		if (!okGo) { document.getElementById("stopBtn").disabled = false; return; }
+		var r = await api("/api/launcher/stop", {});
+		toast(r.message || "启动器即将退出。", "warn");
+		setTimeout(function(){ location.reload(); }, 1200);
+	});
+	document.getElementById("stopBtn").disabled = false;
 });
+document.getElementById("userRows").addEventListener("change", async function(ev){
+	var input = ev.target;
+	if (!input || input.dataset.name === undefined) return;
+	input.disabled = true;
+	await guard(async function(){
+		var r = await api("/plugins/api/bundles", { name: input.dataset.name, action: input.checked ? "enable" : "disable" });
+		if (!r.ok) { toast(r.error || "操作失败", "bad"); }
+		else toast(r.message || "已更新（重启引擎后生效）", r.changed === false ? "warn" : "ok");
+	});
+	await loadBundles();
+});
+var engineUp = false;
+function setEngineState(up){
+	engineUp = up;
+	var s = document.getElementById("engstate");
+	s.textContent = up ? "引擎：运行中（端口 " + ENGINE_PORT + "）" : "引擎：未运行（重启按钮可拉起）";
+	s.className = up ? "ok" : "warn";
+	renderRows();
+}
 async function loadEngine(){
-	try {
-		const s = await fetch("/api/status").then(function(x){ return x.json(); });
-		engstate.textContent = s.engineUp ? "引擎：运行中（端口 " + s.enginePort + "）" : "引擎：未运行（点上方按钮可启动/重启）";
-		engstate.className = s.engineUp ? "ok" : "warn";
-	} catch { engstate.textContent = "启动器状态不可用"; engstate.className = "bad"; }
+	return guard(async function(){
+		var st = await fetch("/api/status").then(function(x){ return x.json(); });
+		setEngineState(Boolean(st.engineUp));
+	});
 }
 loadBundles(); loadEngine();
+if (location.hash === "#health") runHealth(); // 3080 RescuePanel 的「mod 体检」入口直达（/plugins#health）
 </script>
 </div></body></html>`;
 }
 
-/** 读取并解析 POST JSON body（≤64KB；解析失败/超限返回 null）。 */
+/**
+ * 读取并解析 POST JSON body（≤64KB；解析失败/超限返回 null；10s 超时返回 { timeout: true }
+ * 并断开连接——慢速/挂起的恶意客户端不再无限占用处理器）。
+ */
 function readJsonBody(req) {
 	return new Promise((resolveBody) => {
 		let data = "";
+		let settled = false;
+		let timer = null;
+		const finish = (value) => {
+			if (settled) return;
+			settled = true;
+			if (timer !== null) clearTimeout(timer);
+			resolveBody(value);
+		};
+		timer = setTimeout(() => {
+			finish({ timeout: true });
+			try { req.destroy(); } catch { /* ignore */ }
+		}, 10000);
 		req.on("data", (chunk) => {
 			data += chunk;
-			if (data.length > 65536) { resolveBody(null); try { req.destroy(); } catch { /* ignore */ } }
+			if (data.length > 65536) { finish(null); try { req.destroy(); } catch { /* ignore */ } }
 		});
-		req.on("end", () => { try { resolveBody(data.trim() ? JSON.parse(data) : {}); } catch { resolveBody(null); } });
-		req.on("error", () => resolveBody(null));
+		req.on("end", () => { try { finish(data.trim() ? JSON.parse(data) : {}); } catch { finish(null); } });
+		req.on("error", () => finish(null));
 	});
 }
 
@@ -1657,6 +2522,8 @@ function startServer(args) {
 	const token = newApiToken();
 	// L11 ③：boot 与救援 /api/start 共用同一个单飞闸门
 	const flight = createSingleFlight("open-boot:boot");
+	// rc.2 P2-1：插件更新/卸载事务共用第二个单飞闸门（并发第二个请求 → 409，不再并行跑两条 pnpm）
+	const pluginsFlight = createSingleFlight("open-boot:plugins");
 	const rescueCtx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
 	const sendJson = (res, code, body) => {
 		res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
@@ -1699,7 +2566,7 @@ function startServer(args) {
 		// 1.0.0-rc.1：启动器内置插件管理页 —— mod 全被禁用、引擎 UI 没有插件页可用时，
 		// 这里是重新打开它们的唯一入口（写 profile 的 dsh.profile.bundles，与引擎同一开关）。
 		if (pathname === "/plugins" || pathname === "/plugins/") {
-			sendHtml(res, pluginsPageHtml({ token, enginePort: ENGINE_PORT }));
+			sendHtml(res, pluginsPageHtml({ token, enginePort: ENGINE_PORT, engineTheme: engineThemePreference(args.profile) }));
 			return;
 		}
 		if (pathname === "/plugins/api/bundles" && req.method === "GET") {
@@ -1709,6 +2576,7 @@ function startServer(args) {
 		if (pathname === "/plugins/api/bundles" && req.method === "POST") {
 			if (rejectWrite(req, res)) return;
 			const body = await readJsonBody(req);
+			if (body && body.timeout === true) { sendJson(res, 408, { ok: false, code: 408, error: "请求体读取超时（10s）：连接已断开。" }); return; }
 			if (!body) { sendJson(res, 400, { ok: false, error: "请求体不是合法 JSON（或超过 64KB）" }); return; }
 			const enable = body.action === "enable";
 			if (body.action !== "enable" && body.action !== "disable") {
@@ -1716,6 +2584,60 @@ function startServer(args) {
 				return;
 			}
 			sendJson(res, 200, setBundleEnabled(args.profile, body.name, enable));
+			return;
+		}
+		if (pathname === "/plugins/api/updates" && req.method === "GET") {
+			// rc.2 P1-6：GET 也过令牌（能读到"该装什么版本"的完整清单，不该裸奔给任意本地网页）
+			if (rejectWrite(req, res)) return;
+			try { sendJson(res, 200, await checkUpdates(args)); }
+			catch (error) { sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
+			return;
+		}
+		if (pathname === "/plugins/api/update" && req.method === "POST") {
+			if (rejectWrite(req, res)) return;
+			const body = await readJsonBody(req);
+			if (body && body.timeout === true) { sendJson(res, 408, { ok: false, code: 408, error: "请求体读取超时（10s）：连接已断开。" }); return; }
+			if (!body) { sendJson(res, 400, { ok: false, error: "请求体不是合法 JSON（或超过 64KB）" }); return; }
+			if (typeof body.name !== "string" || !body.name.trim()) { sendJson(res, 400, { ok: false, error: "缺少 name 参数" }); return; }
+			const enteredPkg = pluginsFlight.tryEnter(`update ${body.name.trim()}`);
+			if (!enteredPkg.ok) {
+				sendJson(res, 409, { ok: false, code: 409, busy: true, error: `已有更新/卸载事务在执行中（已进行 ${Math.round(enteredPkg.waited / 1000)}s），本次请求被拒（409）。` });
+				return;
+			}
+			try {
+				sendJson(res, 200, await updatePackage(args, body.name.trim()));
+			} catch (error) {
+				sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			} finally {
+				pluginsFlight.leave(enteredPkg.entry);
+			}
+			return;
+		}
+		if (pathname === "/plugins/api/uninstall" && req.method === "POST") {
+			if (rejectWrite(req, res)) return;
+			const body = await readJsonBody(req);
+			if (body && body.timeout === true) { sendJson(res, 408, { ok: false, code: 408, error: "请求体读取超时（10s）：连接已断开。" }); return; }
+			if (!body) { sendJson(res, 400, { ok: false, error: "请求体不是合法 JSON（或超过 64KB）" }); return; }
+			if (typeof body.name !== "string" || !body.name.trim()) { sendJson(res, 400, { ok: false, error: "缺少 name 参数" }); return; }
+			const enteredPkg = pluginsFlight.tryEnter(`uninstall ${body.name.trim()}`);
+			if (!enteredPkg.ok) {
+				sendJson(res, 409, { ok: false, code: 409, busy: true, error: `已有更新/卸载事务在执行中（已进行 ${Math.round(enteredPkg.waited / 1000)}s），本次请求被拒（409）。` });
+				return;
+			}
+			try {
+				sendJson(res, 200, await uninstallPackageTransactional(args, body.name.trim()));
+			} catch (error) {
+				sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			} finally {
+				pluginsFlight.leave(enteredPkg.entry);
+			}
+			return;
+		}
+		if (pathname === "/plugins/api/health" && req.method === "GET") {
+			// rc.2 P1-6：体检结果含日志摘录与 bundle 清单，同样过令牌；report 本身有 30s 缓存
+			if (rejectWrite(req, res)) return;
+			try { sendJson(res, 200, healthReport(args)); }
+			catch (error) { sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
 			return;
 		}
 		if (pathname === "/plugins/api/engine/restart" && req.method === "POST") {
@@ -1737,7 +2659,11 @@ function startServer(args) {
 			if (rejectWrite(req, res)) return;
 			sendJson(res, 200, { ok: true, pid: process.pid, message: `启动器（pid ${process.pid}）将在 1s 内退出；pid 文件已清理。引擎与浏览器本页不受影响，重新打开 3081 会重新拉起启动器。` });
 			setTimeout(() => {
-				try { unlinkSync(pidPathOf(args)); } catch { /* 已不存在 */ }
+				// pid 文件可能已被新实例覆写：只有内容仍是本进程时才清理，避免误删别人的归属记录
+				try {
+					const raw = readFileSync(pidPathOf(args), "utf8").trim();
+					if (JSON.parse(raw).pid === process.pid) unlinkSync(pidPathOf(args));
+				} catch { /* 已不存在或不可读：无需清理 */ }
 				try { supLogRaw(args, `[${stamp()}] [open-boot] 收到 /api/launcher/stop，优雅退出。`); } catch { /* ignore */ }
 				process.exit(0);
 			}, 1000);
@@ -1881,5 +2807,8 @@ if (isDirectRun()) {
 
 export {
 	HELP_TEXT, autostartStatus, bootPageHtml, buildShimLines, healthLogPath, installAutostart, installCrashLogging,
-	main, parseArgs, reportStatus, startServer, uninstallAutostart, writeShim
+	main, parseArgs, reportStatus, startServer, uninstallAutostart, writeShim,
+	// rc.2 测试面：单测直接驱动这些函数（不经过 HTTP）
+	CORE_BUNDLES, MANAGER_SELF_NAME, PKG_NAME_RE, runPnpm, writeFileAtomic, engineBusyGate,
+	uninstallPackageTransactional, updatePackage, checkUpdates, healthReport, restartEngine, ensureLauncherCmd
 };

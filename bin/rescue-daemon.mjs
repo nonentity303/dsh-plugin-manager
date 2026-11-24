@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * rescue-daemon.mjs — 独立救砖守护服务（不依赖 DSH 主进程）。
+ * rescue-daemon.mjs — 独立救援守护服务（不依赖 DSH 主进程）。
  *
  * 用途：主引擎启动失败时，/rescue 救援页（由主引擎 webServer 注册）会随之瘫痪。
  * 本守护进程独立于 DSH 主进程运行在备用端口（**默认 3082**），提供：
@@ -49,7 +49,7 @@ const SERVER_LOG = "rescue-daemon-server.log";
 /** v0.9.1：3081 归 open-boot（唯一网页入口），本守护退到 3082。 */
 const PORT_DEFAULT = 3082;
 
-const HELP_TEXT = `DSH 独立救砖守护（默认 3082 = 备用救援入口）
+const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 
 用法：
   node bin/rescue-daemon.mjs [选项]
@@ -217,7 +217,7 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 a{color:#60a5fa}
 </style></head><body><div class="card">
 <h1>🛟 DSH 独立救援中心</h1>
-<div class="sub">独立于主引擎的救砖入口 · 引擎挂了这里依然可用 · 停止引擎前会校验 pid 与端口归属 · 写操作需同源 + 一次性令牌</div>
+<div class="sub">独立于主引擎的救援入口 · 引擎挂了这里依然可用 · 停止引擎前会校验 pid 与端口归属 · 写操作需同源 + 一次性令牌</div>
 <div class="row">
 <button class="primary" onclick="startAndOpen()">启动引擎并打开主界面</button>
 <button onclick="runVerify()">运行检查</button>

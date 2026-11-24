@@ -99,16 +99,46 @@ function joinContinuation(prev, next) {
 }
 
 function versionParts(version) {
-	const m = /^(\d+)\.(\d+)\.(\d+)(?:-(\d+))?$/.exec(version);
+	// semver：主.次.补丁[-预发布]；预发布号限定 rc/alpha/beta(.n) 或纯数字，
+	// 不放行任意标识符，避免把 0.9.0-verify 这类内部验收文档当版本收进来
+	const m = /^(\d+)\.(\d+)\.(\d+)(?:-((?:rc|alpha|beta)(?:\.\d+)?|\d+))?$/.exec(version);
 	if (m === null) return null;
-	return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === void 0 ? 0 : Number(m[4])];
+	return {
+		major: Number(m[1]),
+		minor: Number(m[2]),
+		patch: Number(m[3]),
+		pre: m[4] === void 0 ? null : m[4].split(".")
+	};
 }
 
+/** 预发布段单段比较：数字段按数值，数字段 < 字符串段（semver 规则）。 */
+function comparePreSegment(x, y) {
+	const nx = /^\d+$/.test(x);
+	const ny = /^\d+$/.test(y);
+	if (nx && ny) return Number(x) - Number(y);
+	if (nx) return -1;
+	if (ny) return 1;
+	return x.localeCompare(y);
+}
+
+/** 降序比较：正式版 > 同版本号的预发布版；预发布段按 semver 逐段比。 */
 function compareVersionsDesc(a, b) {
 	const pa = versionParts(a);
 	const pb = versionParts(b);
-	for (let i = 0; i < 4; i += 1) {
-		if (pa[i] !== pb[i]) return pb[i] - pa[i];
+	for (const k of ["major", "minor", "patch"]) {
+		if (pa[k] !== pb[k]) return pb[k] - pa[k];
+	}
+	if (pa.pre === null && pb.pre === null) return a.localeCompare(b);
+	if (pa.pre === null) return -1;
+	if (pb.pre === null) return 1;
+	const n = Math.max(pa.pre.length, pb.pre.length);
+	for (let i = 0; i < n; i += 1) {
+		const x = pa.pre[i];
+		const y = pb.pre[i];
+		if (x === void 0) return 1;
+		if (y === void 0) return -1;
+		const c = comparePreSegment(x, y);
+		if (c !== 0) return -c;
 	}
 	return a.localeCompare(b);
 }
@@ -119,7 +149,7 @@ function collectReleaseFiles() {
 	for (const name of readdirSync(RELEASES_DIR)) {
 		if (!name.endsWith(".md")) continue;
 		const legacy = /^RELEASE_NOTES_(.+)\.md$/.exec(name);
-		const current = /^(\d+\.\d+\.\d+(?:-\d+)?)\.md$/.exec(name);
+		const current = /^(\d+\.\d+\.\d+(?:-(?:(?:rc|alpha|beta)(?:\.\d+)?|\d+))?)\.md$/.exec(name);
 		const version = legacy !== null ? legacy[1] : current !== null ? current[1] : null;
 		if (version === null || versionParts(version) === null) continue;
 		files.push({ version, file: name, path: join(RELEASES_DIR, name) });

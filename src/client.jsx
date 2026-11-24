@@ -6,7 +6,7 @@ const { useEffect, useMemo, useState, useSyncExternalStore } = React;
 /**
  * 插件管理器 —— 浏览器端 v0.2（打包产物 lib/client.js 由客户端模块系统提供）。
  *
- * 界面：按必要程度折叠分组（必须/推荐/可选）、插件名称/简介、
+ * 界面：按来源折叠分组（核心组件/引擎内置组件/用户插件）、插件名称/简介、
  * 启用状态（红=错误·需检查 黄=需更新 灰=未启用 绿=启用）、
  * 更新按钮（从配置的更新源拉取）、更新源管理面板。
  */
@@ -17,6 +17,7 @@ const COLORS = {
 	red: "#ef4444",
 	yellow: "#f59e0b",
 	green: "#22c55e",
+	blue: "#4f8cff",
 	grey: "#9ca3af"
 };
 
@@ -29,11 +30,37 @@ const STATUS_META = {
 
 const NECESSITY_META = {
 	core: { color: COLORS.red, key: "necessityCore" },
-	recommended: { color: COLORS.yellow, key: "necessityRecommended" },
-	optional: { color: COLORS.green, key: "necessityOptional" }
+	builtin: { color: COLORS.blue, key: "necessityBuiltin" },
+	user: { color: COLORS.green, key: "necessityUser" }
 };
 
-const NECESSITY_ORDER = ["core", "recommended", "optional"];
+const NECESSITY_ORDER = ["core", "builtin", "user"];
+
+// 分区重构 v5（用户验收返工）：**引擎侧 necessity 字段不能直接当分区**——它把 46 个架构 bundle 全标了 core。
+// 改为按「包名 + 来源」分三区：
+//   核心组件 = 引擎网页 UI 的必需组件（与 open-boot 的 CORE_BUNDLES 对齐，禁用开关受 protected 保护）；
+//   引擎内置组件 = origin=builtin 且非核心的全部条目（引擎内置 bundle，可启停，区内按名称排序）；
+//   用户插件 = origin=user 的条目（dsh plugin add / 插件市场安装）。
+// 「推荐」不再是分区，降级为行内小标签（RECOMMENDED_PACKAGE_NAMES 里的第三方推荐件，如 browser-control）。
+const CORE_PACKAGE_NAMES = new Set(["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]);
+const RECOMMENDED_PACKAGE_NAMES = new Set(["@caob23/dsh-browser-control"]);
+const MANAGER_PACKAGE_NAME = "dsh-plugin-manager-pro";
+
+/** 条目归属哪个分区（纯函数，可单测）：核心组件 → 用户插件 → 引擎内置组件。
+ * 只看包名与来源：核心区按包名白名单，其余按 entry.origin（引擎侧 necessity 字段不采纳——
+ * 它把 46 个架构 bundle 全标 core，全塞进核心区等于没有分区）。 */
+function sectionKeyOfEntry(entry) {
+	const pkg = String(entry?.packageName ?? entry?.moduleName ?? entry?.configId ?? "").toLocaleLowerCase();
+	if (CORE_PACKAGE_NAMES.has(pkg)) return "core";
+	if (entry?.origin === "user") return "user";
+	return "builtin";
+}
+
+/** 行内「推荐」小标签：仅推荐加装清单里的第三方件（browser-control 等）显示，不再决定分区。 */
+function isRecommendedEntry(entry) {
+	const pkg = String(entry?.packageName ?? entry?.moduleName ?? entry?.configId ?? "").toLocaleLowerCase();
+	return RECOMMENDED_PACKAGE_NAMES.has(pkg);
+}
 
 /**
  * 第三方配置槽位的「空源」：没有 provider（设置页 tab 上下文 / 单元测试）时，
@@ -96,6 +123,17 @@ function statusOf(entry) {
 	return entry.enabled ? "enabled" : "disabled";
 }
 
+/**
+ * 文件占用类错误（EBUSY/EPERM/EACCES…）的人话补充：
+ * Windows 下 pnpm 删目录被终端 / 编辑器 / 杀毒扫描占住的情况非常常见，原始 errno 用户看不懂。
+ */
+function friendlyError(message) {
+	if (typeof message !== "string") return message;
+	return /EBUSY|EPERM|EACCES|resource busy|used by another process/i.test(message)
+		? `${message} —— 文件可能被占用：请关闭正在使用该目录的程序（终端 / 编辑器 / 杀毒扫描）后重试，必要时重启引擎再试。`
+		: message;
+}
+
 function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t, embedded = false, onlyUpdatable = false, renderSlot, configSurfaces }) {
 	const [request, setRequest] = useState(0);
 	const [onlyUpdatableSelf, setOnlyUpdatableSelf] = useState(false);
@@ -108,6 +146,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const [showScenarios, setShowScenarios] = useState(false);
 	const [showHistory, setShowHistory] = useState(false);
 	const [openConfig, setOpenConfig] = useState(null);
+	const [marketSeed, setMarketSeed] = useState({ q: "", n: 0 });
 	const [uninstallTarget, setUninstallTarget] = useState(null);
 	const [highlightCard, setHighlightCard] = useState(null);
 	const [busy, setBusy] = useState(null);
@@ -155,7 +194,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		});
 		return NECESSITY_ORDER.map((key) => ({
 			key,
-			entries: filtered.filter((entry) => entry.necessity === key)
+			entries: filtered.filter((entry) => sectionKeyOfEntry(entry) === key)
 		})).filter((section) => section.entries.length > 0);
 	}, [query, originFilter, state.snapshot?.entries, onlyUpdatable, onlyUpdatableSelf]);
 
@@ -214,7 +253,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			restoreScroll(scrollY);
 			return result;
 		} catch (error) {
-			setFeedback({ severity: "error", message: error instanceof Error ? error.message : String(error) });
+			setFeedback({ severity: "error", message: friendlyError(error instanceof Error ? error.message : String(error)) });
 			restoreScroll(scrollY);
 			return null;
 		} finally {
@@ -223,6 +262,14 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	};
 
 	const refreshAll = () => run("refresh", () => refresh());
+
+	/** 行内「市场详情」：预取目录缓存后带关键词打开市场面板（面板用 key 重挂载接收 initialQuery）。 */
+	const openMarketFor = async (entry) => {
+		const seed = String(entry.packageName ?? entry.moduleName ?? entry.configId ?? "").split("/").pop() ?? "";
+		try { if (typeof marketCatalog === "function") await marketCatalog(); } catch { /* 打开后面板自会展示加载错误 */ }
+		setMarketSeed((prev) => ({ q: seed, n: prev.n + 1 }));
+		setShowMarket(true);
+	};
 
 	/** 来源人工修正：选择 auto=恢复自动判定，否则写入侧车持久化。 */
 	const changeSource = (entry, value) => {
@@ -236,7 +283,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		if (!receipt) return;
 		const failed = receipt.items.filter((item) => item.status === "failed").map((item) => item.message).filter(Boolean).join(" ");
 		const restart = receipt.items.filter((item) => item.status === "restart-required").map((item) => item.message).filter(Boolean).join(" ");
-		if (failed) setFeedback({ severity: "error", message: failed });
+		if (failed) setFeedback({ severity: "error", message: friendlyError(failed) });
 		else if (restart) setFeedback({ severity: "warning", message: restart });
 	});
 
@@ -282,7 +329,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 		if (!receipt || receipt.items.length === 0) return;
 		const item = receipt.items[0];
 		if (item.status === "need-download" && item.url) {
-			setFeedback({ severity: "warning", message: `${item.packageName} → ${item.latestVersion}：已触发浏览器下载${item.url.startsWith("magnet:") ? "（P2P 磁力链接，浏览器可能无法直接处理，可用 NDM/比特彗星导入）" : ""}。下载完成后管理器自动安装（${t("dlDir")}：见救砖面板）。若浏览器未开始下载，请点击「内置下载」。` });
+			setFeedback({ severity: "warning", message: `${item.packageName} → ${item.latestVersion}：已触发浏览器下载${item.url.startsWith("magnet:") ? "（P2P 磁力链接，浏览器可能无法直接处理，可用 NDM/比特彗星导入）" : ""}。下载完成后管理器自动安装（${t("dlDir")}：见救援面板）。若浏览器未开始下载，请点击「内置下载」。` });
 			triggerBrowserDownload(item.url);
 			const result = await pollDownloads();
 			if (result !== null) {
@@ -363,91 +410,92 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 
 	return (
 		<section aria-label={t("title")} style={{ width: "100%", maxWidth: embedded ? "none" : 880, display: "flex", flexDirection: "column", gap: 10, color: "var(--dsw-alias-label-primary)" }}>
-			<header style={{ display: "flex", justifyContent: embedded ? "flex-end" : "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+			<header style={{ display: "flex", flexDirection: "column", gap: 8 }}>
 				{embedded ? null : (
-				<div>
-					<h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{t("title")}</h3>
-					<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-tertiary)", fontSize: 12 }}>
+				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+					<h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{t("title")}</h3>
+					<span style={{
+						fontSize: 11,
+						fontWeight: 600,
+						padding: "2px 9px",
+						borderRadius: 999,
+						background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+						color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+						whiteSpace: "nowrap"
+					}}>{t("managerBadge")}</span>
+					<span style={{ marginLeft: "auto", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
 						{t("profile")}: <code style={{ fontFamily: "var(--ds-font-family-code)" }}>{snapshot.profileName}</code>
-					</p>
+					</span>
 				</div>
 				)}
-				<div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-					{embedded ? null : (
-					<>
-					<button type="button" onClick={() => setShowMarket((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", fontWeight: showMarket ? 600 : 400 }}>
-						{t("market")}
-					</button>
-					<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
-						{t("rescue")}
-					</button>
-					</>
-					)}
-					{embedded && updatable.length > 0 ? (
-						<button type="button" onClick={() => setOnlyUpdatableSelf((v) => !v)}
-							style={{ ...buttonStyle, fontWeight: onlyUpdatable || onlyUpdatableSelf ? 600 : 400 }}>
-							{t("onlyUpdatable")} ({updatable.length})
+				{/* 新设计：搜索框与全部操作按钮收进同一行工具栏（搜索弹性占宽，按钮自动换行） */}
+				<div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+					<label style={{ flex: "1 1 210px", position: "relative", display: "inline-flex", alignItems: "center", minWidth: 200 }}>
+						<span style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{t("search")}</span>
+						<input
+							type="search"
+							value={query}
+							placeholder={t("search")}
+							onChange={(event) => setQuery(event.currentTarget.value)}
+							style={{
+								boxSizing: "border-box",
+								width: "100%",
+								height: 32,
+								border: "1px solid var(--dsw-alias-border-l2)",
+								background: "var(--dsw-alias-bg-layer-1)",
+								color: "var(--dsw-alias-label-primary)",
+								borderRadius: 8,
+								padding: "0 12px",
+								fontSize: 13,
+								font: "inherit"
+							}}
+						/>
+					</label>
+					{updatable.length > 0 ? (
+						<button type="button" onClick={updateAll} disabled={busy !== null}
+							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
+							{t("updateAll")} ({updatable.length})
 						</button>
 					) : null}
+					{embedded ? (
+						updatable.length > 0 ? (
+							<button type="button" onClick={() => setOnlyUpdatableSelf((v) => !v)}
+								style={{ ...buttonStyle, fontWeight: onlyUpdatable || onlyUpdatableSelf ? 600 : 400 }}>
+								{t("onlyUpdatable")} ({updatable.length})
+							</button>
+						) : null
+					) : (
+						<>
+						<button type="button" onClick={() => setShowMarket((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, color: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", fontWeight: showMarket ? 600 : 400 }}>
+							{t("market")}
+						</button>
+						<button type="button" onClick={() => setShowRescue((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", fontWeight: showRescue ? 600 : 400 }}>
+							{t("rescue")}
+						</button>
+						<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
+							{t("sources")}
+						</button>
+						<button type="button" onClick={() => setShowScenarios((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, fontWeight: showScenarios ? 600 : 400 }}>
+							{t("scenarios")}
+						</button>
+						<button type="button" onClick={() => setShowHistory((v) => !v)} disabled={busy !== null}
+							style={{ ...buttonStyle, fontWeight: showHistory ? 600 : 400 }}>
+							{t("history")}
+						</button>
+						</>
+					)}
 					<button type="button" onClick={resetAll} disabled={busy !== null}
 						style={{ ...buttonStyle, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)" }}>
 						{t("resetToggles")}
 					</button>
-					{updatable.length > 0 ? (
-						<button type="button" onClick={updateAll} disabled={busy !== null}
-							style={{ ...buttonStyle, background: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff", fontWeight: 600 }}>
-							{t("updateAll")} ({updatable.length})
-						</button>
-					) : null}
-					{embedded ? null : (
-					<>
-					<button type="button" onClick={() => setShowSources((v) => !v)} style={{ ...buttonStyle, fontWeight: showSources ? 600 : 400 }}>
-						{t("sources")}
-					</button>
-					<button type="button" onClick={() => setShowScenarios((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, fontWeight: showScenarios ? 600 : 400 }}>
-						{t("scenarios")}
-					</button>
-					<button type="button" onClick={() => setShowHistory((v) => !v)} disabled={busy !== null}
-						style={{ ...buttonStyle, fontWeight: showHistory ? 600 : 400 }}>
-						{t("history")}
-					</button>
-					</>
-					)}
 					<button type="button" aria-label={t("refresh")} title={t("refresh")} onClick={refreshAll} disabled={busy !== null} style={{ ...buttonStyle, width: 32, height: 32, display: "grid", placeItems: "center" }}>
 						{busy === "refresh" ? "…" : "↻"}
 					</button>
 				</div>
 			</header>
-
-			{/* 图例 */}
-			<div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
-				<span style={{ fontWeight: 600, marginRight: 2 }}>{t("legendNecessity")}:</span>
-				{Object.entries(NECESSITY_META).map(([key, meta]) => (
-					<span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-						<i style={{ width: 8, height: 8, borderRadius: 2, background: meta.color, display: "inline-block" }} />
-						{t(meta.key)}
-					</span>
-				))}
-				<span style={{ fontWeight: 600, margin: "0 2px 0 10px" }}>{t("legendStatus")}:</span>
-				{Object.entries(STATUS_META).map(([key, meta]) => (
-					<span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-						<i style={{ width: 8, height: 8, borderRadius: "50%", background: meta.color, display: "inline-block" }} />
-						{t(meta.key)}
-					</span>
-				))}
-				<span style={{ fontWeight: 600, margin: "0 2px 0 10px" }}>{t("legendOrigin")}:</span>
-				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-label-tertiary)", display: "inline-block" }} />
-					{t("originBuiltin")}
-				</span>
-				<span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-					<i style={{ width: 8, height: 8, borderRadius: 2, background: "var(--dsw-alias-state-business-primary, #4f8cff)", display: "inline-block" }} />
-					{t("originUser")}
-				</span>
-			</div>
 
 			{/* 事务化卸载流程（行内「卸载」按钮触发：影响预览 → 确认 → 执行 → 报告） */}
 			{uninstallTarget !== null ? (
@@ -466,8 +514,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
 
-			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装） */}
-			{showMarket ? <MarketPanel marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
+			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装；key 随行内「市场详情」重挂载以接收预置关键词） */}
+			{showMarket ? <MarketPanel key={marketSeed.n} initialQuery={marketSeed.q} marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
 
 			{/* 场景方案（保存/应用插件组合，切换前预览） */}
 			{showScenarios ? <ScenarioPanel
@@ -483,7 +531,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			{/* 操作历史（最近 20 次操作 + 一键撤销） */}
 			{showHistory ? <HistoryPanel operationHistory={operationHistory} undoOperation={undoOperation} onSnapshot={(snapshot) => setState({ status: "ready", snapshot })} t={t} /> : null}
 
-			{/* 救砖面板 */}
+			{/* 救援面板 */}
 			{showRescue ? <RescuePanel
 				diagnose={diagnose}
 				quarantine={quarantine}
@@ -501,28 +549,6 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 				managed={snapshot.entries.filter((entry) => entry.origin === "user")}
 				t={t}
 			/> : null}
-
-			<label style={{ display: "flex", position: "relative", alignItems: "center" }}>
-				<span style={{ position: "absolute", width: 1, height: 1, padding: 0, margin: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{t("search")}</span>
-				<input
-					type="search"
-					value={query}
-					placeholder={t("search")}
-					onChange={(event) => setQuery(event.currentTarget.value)}
-					style={{
-						boxSizing: "border-box",
-						width: "100%",
-						height: 34,
-						border: "1px solid var(--dsw-alias-border-l2)",
-						background: "var(--dsw-alias-bg-layer-1)",
-						color: "var(--dsw-alias-label-primary)",
-						borderRadius: 7,
-						padding: "0 12px",
-						fontSize: 13,
-						font: "inherit"
-					}}
-				/>
-			</label>
 
 			{/* 来源筛选：架构自带 vs 用户/agent 安装 */}
 			<div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -584,21 +610,20 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 						<section key={section.key} style={{
 							border: "1px solid var(--dsw-alias-border-l2)",
 							background: "var(--dsw-alias-bg-layer-3)",
-							borderRadius: 8,
+							borderRadius: 10,
 							overflow: "hidden"
 						}}>
-							<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: "pointer", userSelect: "none" }} onClick={() => toggleSection(section.key)}>
+							<header style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", cursor: "pointer", userSelect: "none" }} onClick={() => toggleSection(section.key)}>
 								<span aria-hidden="true" style={{
 									width: 10,
 									height: 10,
-									borderRadius: 3,
+									borderRadius: "50%",
 									background: meta.color,
 									flex: "none",
-									transform: isOpen ? "rotate(90deg)" : "none",
-									transition: "transform 120ms ease",
-									clipPath: "polygon(0 0, 100% 50%, 0 100%)"
+									transition: "opacity 120ms ease",
+									opacity: isOpen ? 1 : 0.55
 								}} />
-								<span style={{ fontSize: 13, fontWeight: 600 }}>{t(meta.key)}</span>
+								<span style={{ fontSize: 13.5, fontWeight: 700 }}>{t(meta.key)}</span>
 								<span style={{ fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>
 									{enabledCount}/{section.entries.length}
 								</span>
@@ -623,6 +648,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 									{section.entries.map((entry) => {
 										const status = statusOf(entry);
 										const statusMeta = STATUS_META[status];
+										const entrySection = sectionKeyOfEntry(entry);
+										const isManager = entry.packageName === MANAGER_PACKAGE_NAME
+											|| entry.moduleName === MANAGER_PACKAGE_NAME
+											|| entry.configId === MANAGER_PACKAGE_NAME;
 										const running = busy === `entry:${entry.entryId}` || busy === `update:${entry.packageName}`;
 										const updating = busy === `update:${entry.packageName}` || busy === "update:all";
 										const canUpdate = entry.needsUpdate === true && entry.managed && !updating;
@@ -636,10 +665,10 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 										return (
 											<li key={entry.entryId} style={{
 												display: "block",
-												padding: "8px 10px",
+												padding: "9px 12px",
 												border: "1px solid var(--dsw-alias-border-l2)",
 												background: "var(--dsw-alias-bg-layer-1)",
-												borderRadius: 8,
+												borderRadius: 10,
 												minWidth: 0
 											}}>
 											<div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -650,6 +679,31 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 												<div style={{ flex: "1 1 auto", minWidth: 0 }}>
 													<div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
 														<strong style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.configId}</strong>
+														{isManager ? (
+															<span title={t("managerBadge")} style={{
+																flex: "none",
+																fontSize: 11,
+																fontWeight: 600,
+																padding: "1px 8px",
+																borderRadius: 999,
+																background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+																color: "var(--dsw-alias-state-business-primary, #4f8cff)",
+																whiteSpace: "nowrap"
+															}}>{t("managerBadge")}</span>
+														) : null}
+										{/* 分区重构 v5：行内「推荐」小标签——仅推荐加装清单（RECOMMENDED_PACKAGE_NAMES）里的第三方件显示 */}
+										{isRecommendedEntry(entry) ? (
+											<span title={t("recommendedTagHint")} style={{
+												flex: "none",
+												fontSize: 11,
+												fontWeight: 600,
+												padding: "1px 8px",
+												borderRadius: 999,
+												background: "color-mix(in srgb, var(--dsw-alias-state-success-primary, #22c55e) 14%, transparent)",
+												color: "var(--dsw-alias-state-success-primary, #22c55e)",
+												whiteSpace: "nowrap"
+											}}>{t("recommendedTag")}</span>
+										) : null}
 														<span style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{entry.moduleName}</span>
 													</div>
 													<p style={{ margin: "2px 0 0", color: "var(--dsw-alias-label-secondary)", fontSize: 12, lineHeight: "18px" }}>{entry.description}</p>
@@ -691,10 +745,11 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 															fontWeight: 600,
 															padding: "2px 8px",
 															borderRadius: 999,
-															border: `1px solid ${NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow}`,
-															color: NECESSITY_META[entry.necessity]?.color ?? COLORS.yellow
+															border: `1px solid ${NECESSITY_META[entrySection]?.color ?? COLORS.yellow}`,
+															color: NECESSITY_META[entrySection]?.color ?? COLORS.yellow
 														}}>
-															{t(NECESSITY_META[entry.necessity]?.key ?? "necessityRecommended")}
+															{/* 分区重构 v5：分区归属行内徽章——核心=核心 / 内置=内置 / 用户=用户 */}
+															{t(entrySection === "core" ? "badgeCore" : entrySection === "builtin" ? "badgeBuiltin" : "badgeUser")}
 														</span>
 														{entry.archived ? (
 															<span title={entry.protectionReason} style={{
@@ -749,7 +804,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 															{running ? <span style={{ marginLeft: 6, fontSize: 12, color: "var(--dsw-alias-label-tertiary)" }}>…</span> : null}
 														</label>
 													</div>
-													{entry.origin === "user" || entry.protected || rowSurface !== undefined || bundleSurface !== undefined ? (
+													{entry.origin === "user" || entry.protected || rowSurface !== undefined || bundleSurface !== undefined || entrySection !== "core" ? (
 														<div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "nowrap" }}>
 														{entry.origin === "user" ? (
 															<label title={t("sourceOverrideHint")} style={{ flex: "none", display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10.5, color: "var(--dsw-alias-label-tertiary)" }}>
@@ -789,6 +844,14 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 																title={t("uninstallRowHint")}
 																style={{ ...buttonStyle, flex: "none", fontWeight: 600, fontSize: 11, color: "var(--dsw-alias-state-error-primary)", borderColor: "var(--dsw-alias-state-error-primary)", whiteSpace: "nowrap" }}>
 																{t("rescueUninstall")}
+															</button>
+														) : null}
+														{/* 新设计：行内「市场详情」——预取目录后带包名关键词打开市场面板（核心组件行不显示） */}
+														{entrySection !== "core" ? (
+															<button type="button" onClick={() => openMarketFor(entry)} disabled={busy !== null}
+																title={t("marketDetailHint")}
+																style={{ ...buttonStyle, flex: "none", fontSize: 11, whiteSpace: "nowrap" }}>
+																{t("marketDetail")}
 															</button>
 														) : null}
 														{/* 第三方自带配置入口：只有注册过的槽位键才有按钮（未注册 = 无按钮、不调用 renderSlot） */}
@@ -870,7 +933,7 @@ function SafeTab(props) {
 	return React.createElement(TabBoundary, null, React.createElement(PluginManagerTab, props));
 }
 
-/** 救砖面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
+/** 救援面板：诊断 → 隔离/卸载问题插件 → 修复/重启引擎 → 自动隔离配置 → 启动前自检 → 下载目录。 */
 function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, verifyProfile, fixProfile, managed, t }) {
 	const [issues, setIssues] = useState(null);
 	const [busy, setBusy] = useState(false);
@@ -894,6 +957,12 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
+
+	// mod 体检入口：体检数据来自启动器（3081）的 /plugins/api/health —— 与兜底页共用同一份只读体检 API；
+	// 3081 里的体检面板渲染结果（跨源 CORS 不放行 3080 直读，因此这里以入口方式跳转兜底页查看）。
+	const openLauncherHealth = () => {
+		window.open("http://127.0.0.1:3081/plugins#health", "_blank");
+	};
 
 	const runDiagnose = async () => {
 		setBusy(true);
@@ -1021,8 +1090,12 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		}}>
 			<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
 				<span style={{ fontSize: 13, fontWeight: 600, color: "var(--dsw-alias-state-error-primary)" }}>🛟 {t("rescueTitle")}</span>
-				<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
+				<span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+					<button type="button" onClick={openLauncherHealth} disabled={busy} style={buttonStyle}>{t("rescueModHealth")}</button>
+					<button type="button" onClick={runDiagnose} disabled={busy} style={buttonStyle}>{t("rescueDiagnose")}</button>
+				</span>
 			</div>
+			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueModHealthHint")}</p>
 			<p style={{ margin: 0, fontSize: 12, color: "var(--dsw-alias-label-tertiary)", lineHeight: "18px" }}>{t("rescueHint")}</p>
 
 			{uninstallTarget !== null ? (
@@ -1074,7 +1147,7 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 				</label>
 			</div>
 
-			{/* 启动前自检（坏 bundle 会让引擎起不来 —— 自动化救砖） */}
+			{/* 启动前自检（坏 bundle 会让引擎起不来 —— 自动化救援） */}
 			<div style={{ borderTop: "1px solid var(--dsw-alias-border-l2)", paddingTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
 				<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
 					<span style={{ fontSize: 12, fontWeight: 600 }}>{t("verifyTitle")}</span>
@@ -1550,11 +1623,11 @@ function marketFilterItems(catalog, query, category, sortBy) {
 }
 
 /** 插件市场面板：dshfind 精选目录一次拉全量，搜索/分类/排序/分页全部本地瞬时完成。 */
-function MarketPanel({ marketCatalog, marketInstall, busy, t, entries }) {
+function MarketPanel({ marketCatalog, marketInstall, busy, t, entries, initialQuery = "" }) {
 	const [catalog, setCatalog] = useState(marketCatalogCache);
 	const [loadError, setLoadError] = useState(null);
 	const [reloadTick, setReloadTick] = useState(0);
-	const [query, setQuery] = useState("");
+	const [query, setQuery] = useState(initialQuery);
 	const [category, setCategory] = useState("all");
 	const [sortBy, setSortBy] = useState("stars");
 	const [page, setPage] = useState(1);
@@ -2220,7 +2293,17 @@ function PluginManagerProPage(props) {
 		<section data-plugin-panel="plugin-manager-pro" style={{ boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden", padding: "22px 26px 44px", color: "var(--dsw-alias-label-primary)" }}>
 			<div style={{ maxWidth: 960, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
 			<header data-window-drag="true">
-				<h1 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{t("title")}</h1>
+				<div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+					<h1 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{t("title")}</h1>
+					<span style={{
+						fontSize: 11,
+						fontWeight: 600,
+						padding: "2px 9px",
+						borderRadius: 999,
+						background: "color-mix(in srgb, var(--dsw-alias-state-business-primary, #4f8cff) 14%, transparent)",
+						color: "var(--dsw-alias-state-business-primary, #4f8cff)"
+					}}>{t("managerBadge")}</span>
+				</div>
 				<p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--dsw-alias-label-tertiary)" }}>{t("pageSubtitle")}</p>
 			</header>
 			<nav style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--dsw-alias-border-l2)", flexWrap: "wrap" }}>
@@ -2317,7 +2400,7 @@ const zh = {
 	exemptionsEmpty: "暂无版本豁免记录。",
 	exemptionRevoke: "撤销",
 	installHint: "「启用」会通过 pnpm 安装该组合包，可能需要下载依赖。",
-	title: "插件管理",
+	title: "引擎与插件管理台",
 	profile: "当前配置",
 	search: "搜索插件名称/简介/包名",
 	refresh: "检查更新并刷新状态",
@@ -2338,9 +2421,17 @@ const zh = {
 	configEntryHint: "打开该插件的自带配置面板（由插件自身提供）",
 	configBundleEntry: "插件配置",
 	configMainPageHint: "请在侧边栏「插件管理」页中打开该配置页。",
-	necessityCore: "必须",
-	necessityRecommended: "推荐",
-	necessityOptional: "可选",
+	necessityCore: "核心组件（引擎必需，不允许禁用）",
+	badgeCore: "核心",
+	necessityBuiltin: "引擎内置组件",
+	badgeBuiltin: "内置",
+	necessityUser: "用户插件",
+	badgeUser: "用户",
+	recommendedTag: "推荐",
+	recommendedTagHint: "推荐加装：管理器建议安装的第三方增强插件",
+	managerBadge: "管理器",
+	marketDetail: "市场详情",
+	marketDetailHint: "在插件市场（dshfind 精选目录）中查看该插件",
 	statusError: "错误/需检查",
 	statusUpdate: "需更新",
 	statusDisabled: "未启用",
@@ -2351,7 +2442,7 @@ const zh = {
 	update: "更新",
 	updateInternal: "内置",
 	updateInternalHint: "使用管理器内置下载器（HTTP/P2P/aria2），不走浏览器下载",
-	updateAll: "全部更新",
+	updateAll: "检查更新",
 	upToDate: "已是最新版本",
 	notManaged: "随安装更新",
 	updateAvailable: "可更新",
@@ -2375,10 +2466,12 @@ const zh = {
 	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
 	resetDone: "已还原所有开关状态。",
 	archived: "架构保留",
-	rescue: "救砖",
+	rescue: "救援",
 	rescueTitle: "救援中心",
 	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
 	rescueDiagnose: "运行诊断",
+	rescueModHealth: "🩺 mod 体检",
+	rescueModHealthHint: "mod 体检（preflight 只读校验 + 引擎日志错误聚合）由启动器兜底页提供，点击「mod 体检」在 3081 兜底页查看；救援诊断与本面板共用救援球入口。",
 	rescueClean: "✓ 未发现加载失败或运行期错误。",
 	rescueDisable: "禁用此插件",
 	rescueUninstall: "卸载",
@@ -2499,7 +2592,7 @@ const zh = {
 	verifyRun: "运行检查",
 	verifyOk: "✓ profile 配置正常，引擎可以正常启动。",
 	verifyBad: "⚠ 发现问题（引擎可能无法启动）：",
-	verifyHint: "损坏的 bundle（包未安装/未声明 dsh.bundle）或无法解析的 cordis.patch.yml 会让引擎在启动阶段失败——这是救砖的首要修复目标；双击桌面快捷方式启动时也会自动执行同样的检查。",
+	verifyHint: "损坏的 bundle（包未安装/未声明 dsh.bundle）或无法解析的 cordis.patch.yml 会让引擎在启动阶段失败——这是救援流程的首要修复目标；双击桌面快捷方式启动时也会自动执行同样的检查。",
 	fixProfile: "修复引擎配置",
 	fixProfileConfirm: "确认执行？将备份并隔离损坏的 bundle、还原损坏的补丁文件。",
 	dlTitle: "下载目录（自动安装）",
@@ -2540,7 +2633,7 @@ const en = {
 	exemptionsEmpty: "No version exemptions.",
 	exemptionRevoke: "Revoke",
 	installHint: "Enabling installs this bundle through pnpm and may download packages.",
-	title: "Plugin manager",
+	title: "Engine & Plugin Console",
 	profile: "Active profile",
 	search: "Search by name, description or package",
 	refresh: "Check updates and refresh",
@@ -2561,9 +2654,17 @@ const en = {
 	configEntryHint: "Open this plugin's own config panel (provided by the plugin itself)",
 	configBundleEntry: "Plugin config",
 	configMainPageHint: "Open this config page from the sidebar Plugin manager entry.",
-	necessityCore: "Essential",
-	necessityRecommended: "Recommended",
-	necessityOptional: "Optional",
+	necessityCore: "Core components (engine-required — cannot be disabled)",
+	badgeCore: "Core",
+	necessityBuiltin: "Engine built-ins",
+	badgeBuiltin: "Built-in",
+	necessityUser: "User plugins",
+	badgeUser: "User",
+	recommendedTag: "Recommended",
+	recommendedTagHint: "Recommended add-on: a third-party enhancement plugin suggested by the manager",
+	managerBadge: "Manager",
+	marketDetail: "Market",
+	marketDetailHint: "View this plugin in the curated market (dshfind)",
 	statusError: "Error/Check",
 	statusUpdate: "Update",
 	statusDisabled: "Disabled",
@@ -2574,7 +2675,7 @@ const en = {
 	update: "Update",
 	updateInternal: "Built-in",
 	updateInternalHint: "Use the manager's built-in downloader (HTTP/P2P/aria2) instead of the browser",
-	updateAll: "Update all",
+	updateAll: "Check updates",
 	upToDate: "Already up to date",
 	notManaged: "ships with install",
 	updateAvailable: "updates",
@@ -2602,6 +2703,8 @@ const en = {
 	rescueTitle: "Rescue center",
 	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🛟 button, bottom right).",
 	rescueDiagnose: "Diagnose",
+	rescueModHealth: "Mod health check",
+	rescueModHealthHint: "Mod health (preflight read-only check + engine log error aggregation) is served by the launcher fallback page; open it on 127.0.0.1:3081/plugins.",
 	rescueClean: "✓ No failing plugins found.",
 	rescueDisable: "Disable",
 	rescueUninstall: "Uninstall",
@@ -2945,17 +3048,75 @@ async function apply(ctx) {
 			}));
 		});
 	});
-	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页
+	// 浮动救援球：设置页/其他 UI 插件损坏时仍可进入 /rescue 救援页。
+	// 支持指针拖动换位（localStorage 记忆）+ 双击打开；拖动超过阈值松手后不算点击，原地点击仍直接打开。
 	let rescueBall = null;
 	if (typeof document !== "undefined" && document.body !== null) {
 		rescueBall = document.createElement("button");
 		rescueBall.textContent = "🛟";
-		rescueBall.title = "DSH 救援中心（设置页不可用时的救砖入口）";
+		rescueBall.title = "DSH 救援中心（可拖动换位；单击打开。设置页不可用时的救援入口）";
 		rescueBall.setAttribute("aria-label", "DSH 救援中心");
-		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;";
+		rescueBall.style.cssText = "position:fixed;right:14px;bottom:14px;width:40px;height:40px;border-radius:50%;border:1px solid #d64541;background:#d64541;color:#fff;font-size:18px;cursor:pointer;z-index:2147483000;box-shadow:0 2px 10px rgba(0,0,0,.45);display:grid;place-items:center;touch-action:none;user-select:none;";
+		// 恢复记忆位置（存在有效 left/top 时覆盖默认 right/bottom）
+		try {
+			const savedPos = JSON.parse(localStorage.getItem("dsh-rescue-ball") || "null");
+			if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)
+				&& savedPos.left >= 0 && savedPos.top >= 0 && savedPos.left < window.innerWidth && savedPos.top < window.innerHeight) {
+				rescueBall.style.left = `${Math.round(savedPos.left)}px`;
+				rescueBall.style.top = `${Math.round(savedPos.top)}px`;
+				rescueBall.style.right = "auto";
+				rescueBall.style.bottom = "auto";
+			}
+		} catch { /* 损坏的记忆数据按默认位置处理 */ }
+		let dragging = false;
+		let moved = false;
+		let startX = 0, startY = 0, originLeft = 0, originTop = 0;
+		rescueBall.addEventListener("pointerdown", (event) => {
+			if (event.button !== 0) return;
+			dragging = true;
+			moved = false;
+			startX = event.clientX;
+			startY = event.clientY;
+			const rect = rescueBall.getBoundingClientRect();
+			originLeft = rect.left;
+			originTop = rect.top;
+			try { rescueBall.setPointerCapture(event.pointerId); } catch { /* 老宿主不支持捕获时拖拽仍可用 */ }
+		});
+		rescueBall.addEventListener("pointermove", (event) => {
+			if (!dragging) return;
+			const dx = event.clientX - startX;
+			const dy = event.clientY - startY;
+			if (!moved && Math.abs(dx) + Math.abs(dy) <= 4) return; // 小于阈值 = 抖动，不是拖拽
+			moved = true;
+			const width = rescueBall.offsetWidth;
+			const height = rescueBall.offsetHeight;
+			const left = Math.min(Math.max(0, originLeft + dx), Math.max(0, window.innerWidth - width));
+			const top = Math.min(Math.max(0, originTop + dy), Math.max(0, window.innerHeight - height));
+			rescueBall.style.left = `${Math.round(left)}px`;
+			rescueBall.style.top = `${Math.round(top)}px`;
+			rescueBall.style.right = "auto";
+			rescueBall.style.bottom = "auto";
+		});
+		const finishDrag = (event) => {
+			if (!dragging) return;
+			dragging = false;
+			try { rescueBall.releasePointerCapture(event.pointerId); } catch { /* 已释放或未捕获 */ }
+			if (!moved) return;
+			try {
+				localStorage.setItem("dsh-rescue-ball", JSON.stringify({
+					left: parseFloat(rescueBall.style.left) || 0,
+					top: parseFloat(rescueBall.style.top) || 0
+				}));
+			} catch { /* 隐私模式等写不进去就只在本次会话内生效 */ }
+		};
+		rescueBall.addEventListener("pointerup", finishDrag);
+		rescueBall.addEventListener("pointercancel", finishDrag);
 		rescueBall.addEventListener("click", () => {
+			if (moved) { moved = false; return; } // 拖拽结束的这一次 click 不触发打开
 			window.open("/rescue", "_blank");
 		});
+		// rc.2 P2-8：移除 dblclick 监听——click 已经打开一次，双击会再触发两个浏览器默认
+		// dblclick→click 序列，一次双击会开出 3 个救援标签页（实测复现的 bug）。
 		document.body.appendChild(rescueBall);
 	}
 	return async () => {
@@ -2966,4 +3127,4 @@ async function apply(ctx) {
 	};
 }
 
-export { PluginManagerTab, OfficialPluginsPanel, apply, inject, marketFilterItems, entryInstalled, configSurfacesFor };
+export { PluginManagerTab, OfficialPluginsPanel, apply, inject, marketFilterItems, entryInstalled, configSurfacesFor, sectionKeyOfEntry };

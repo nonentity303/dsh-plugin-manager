@@ -29,7 +29,7 @@
 
 ## 1. 版本号
 
-- 唯一来源：`package.json` 的 `version`（当前 **0.9.1**）。构建产物不写版本号，`lib/client.js` 是源码的编译结果。
+- 唯一来源：`package.json` 的 `version`（当前 **1.0.0-rc.2**，未发布；npm 上 `latest` 仍是 0.9.1，`next` 上是旧的 0.9.1-rc2）。构建产物不写版本号，`lib/client.js` 是源码的编译结果。
 - 每个版本必须有 `docs/releases/<version>.md`（发布说明）。缺它就不算可发布。
 - 预发布段（如 `0.9.0-1`）用于"同一版本的修补"：`dsh plugin add` 按版本号缓存 tarball，
   **内容改了就必须改版本号**，否则 pnpm 会报 "Already up to date"。

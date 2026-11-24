@@ -1,12 +1,15 @@
 // 1.0.0-rc.1 冒烟：/plugins API + /api/launcher/stop + dsh-launcher.cmd 生成。
 // 全程隔离：临时 profile + 临时 DSH_HOME + 独立端口 3093；不触碰 live 引擎/启动器。
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const ROOT = process.cwd();
 const PORT = 3093;
+// rc.2：引擎端口也必须隔离——否则 /api/boot 会探测（甚至试图启动）**live 3080 引擎**。
+const FAKE_ENGINE_PORT = 3095;
 const tmp = mkdtempSync(join(tmpdir(), "pm-smoke-"));
 const profile = join(tmp, "profile");
 const home = join(tmp, "home");
@@ -25,7 +28,7 @@ const check = (name, cond, detail = "") => {
 };
 
 const child = spawn(process.execPath, [join(ROOT, "bin", "open-boot.mjs"), "--port", String(PORT), "--profile", profile, "--no-window"], {
-	env: { ...process.env, DSH_HOME: home }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true
+	env: { ...process.env, DSH_HOME: home, DSH_ENGINE_PORT: String(FAKE_ENGINE_PORT) }, stdio: ["ignore", "pipe", "pipe"], windowsHide: true
 });
 child.stderr.on("data", (d) => process.stderr.write(`[launcher] ${d}`));
 
@@ -69,25 +72,71 @@ try {
 	const on = await fetch(`${base}/plugins/api/bundles`, { method: "POST", headers: H, body: JSON.stringify({ name: "@linxin666/dsh-client-ui-skill-explorer", action: "enable" }) }).then((r) => r.json());
 	check("重新启用 bundle 成功", on.ok === true && on.changed === true);
 	const coreOff = await fetch(`${base}/plugins/api/bundles`, { method: "POST", headers: H, body: JSON.stringify({ name: "@deepseek-ai/dsh-base", action: "disable" }) }).then((r) => r.json());
-	check("命脉 bundle 拒绝禁用", coreOff.ok === false && coreOff.error.includes("命脉"), JSON.stringify(coreOff).slice(0, 160));
+	check("核心组件 bundle 拒绝禁用", coreOff.ok === false && coreOff.error.includes("核心"), JSON.stringify(coreOff).slice(0, 160));
 	const noToken = await fetch(`${base}/plugins/api/bundles`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "x", action: "enable" }) });
 	check("缺令牌写请求被 401 拒绝", noToken.status === 401, `status=${noToken.status}`);
 
-	// 引擎重启：PID 文件缺失 → 防误杀保护生效，且本机 3080 是 live 引擎 → 必须拒绝而不动它
-	const beforeEngine = await fetch("http://127.0.0.1:3080/api/status", { signal: AbortSignal.timeout(1500) }).then((r) => r.status).catch(() => 0);
+	// P1-6：GET /updates 与 /health 也是写级敏感端点（health 会读日志聚合）→ 必须带令牌
+	const updatesNoToken = await fetch(`${base}/plugins/api/updates`);
+	check("GET /updates 缺令牌被 401 拒绝", updatesNoToken.status === 401, `status=${updatesNoToken.status}`);
+	const updates = await fetch(`${base}/plugins/api/updates`, { headers: H });
+	const updatesJson = await updates.json().catch(() => null);
+	check("GET /updates 带令牌放行且返回 ok 字段", updates.status !== 401 && updatesJson && typeof updatesJson.ok === "boolean", `status=${updates.status} body=${JSON.stringify(updatesJson).slice(0, 160)}`);
+	const healthNoToken = await fetch(`${base}/plugins/api/health`);
+	check("GET /health 缺令牌被 401 拒绝", healthNoToken.status === 401, `status=${healthNoToken.status}`);
+	const health = await fetch(`${base}/plugins/api/health`, { headers: H });
+	const healthJson = await health.json().catch(() => null);
+	check("GET /health 带令牌放行且返回 rows/globalIssues", health.status !== 401 && healthJson && Array.isArray(healthJson.rows) && Array.isArray(healthJson.globalIssues), `status=${health.status} body=${JSON.stringify(healthJson).slice(0, 160)}`);
+
+	// G03（Track C①）：boot 页 entryUrl=null 的降级指引文案（静态存在于页面 JS），且降级分支不渲染假 token 链接
+	check("boot 页含降级指引（未捕获到登录链接提示）", homeHtml.includes("未捕获到本次启动的登录链接"), "");
+	check("boot 页降级指引含 cookie 直开 + web.log 两条出路", homeHtml.includes("登录 cookie 仍有效") && homeHtml.includes("web.log"), "");
+	const goEntryStart = homeHtml.indexOf("function goEntry");
+	const goEntryEnd = homeHtml.indexOf("(async () => {", goEntryStart);
+	const goEntryBlock = goEntryStart >= 0 && goEntryEnd > goEntryStart ? homeHtml.slice(goEntryStart, goEntryEnd) : "";
+	// 降级指引文案允许出现「…?token=…」（教用户去哪找），但**不允许渲染出带真实 token 的链接**：
+	// 真 token 是 ≥8 位的 [A-Za-z0-9_-.]，文案里是省略号，不会命中。
+	check("goEntry 降级分支不渲染真实形态的假 token 链接", goEntryBlock !== "" && !/\?token=[A-Za-z0-9_\-.]{8,}/.test(goEntryBlock), goEntryBlock.slice(0, 160));
+
+	// G03/G04（Track C②③，动态）：web.log 写入假 token 行 + 起一个"假引擎"（200 + __DSH_BOOT__ 指纹，
+	// 能验证该 token）。引擎端口已隔离（DSH_ENGINE_PORT=3095），不会触碰 live 3080。
+	const fakeUrl = `http://127.0.0.1:${FAKE_ENGINE_PORT}/?token=fakesmoke123`;
+	const fakeEngine = createServer((_req, res) => {
+		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+		res.end("<!doctype html><html><body>__DSH_BOOT__ dsh web authentication required</body></html>");
+	});
+	await new Promise((r) => fakeEngine.listen(FAKE_ENGINE_PORT, "127.0.0.1", r));
+	appendFileSync(join(home, "logs", "web.log"), `2026-11-24T00:00:00.000Z [info] dsh web: ${fakeUrl}\n`, "utf8");
+
+	// 引擎重启（P0-1）：PID 文件缺失 → 无法确认端口上监听者身份 → **拒绝**（即使假引擎"健康"）。
+	// rc.2 引擎端口已隔离：3095 上的假引擎此时在监听 → 正好复现"端口有主但归属未证实"的拒绝路径。
 	const restart = await fetch(`${base}/plugins/api/engine/restart`, { method: "POST", headers: H, body: "{}" }).then((r) => r.json());
-	const afterEngine = await fetch("http://127.0.0.1:3080/api/status", { signal: AbortSignal.timeout(1500) }).then((r) => r.status).catch(() => 0);
-	check("重启 API 存在且在无 PID 文件时拒绝", restart.ok === false, JSON.stringify(restart).slice(0, 200));
-	check("live 引擎（3080）未受影响", beforeEngine === afterEngine && beforeEngine !== 0, `before=${beforeEngine} after=${afterEngine}`);
+	check("重启 API 在无 PID 文件时拒绝（不冒进启动新引擎）", restart.ok === false, JSON.stringify(restart).slice(0, 240));
+
+	// Track C②：POST /api/boot → alreadyRunning（假引擎健康）→ latestTokenUrl 捕获假 token 行为 entryUrl
+	const boot = await fetch(`${base}/api/boot`, { method: "POST", headers: H, body: "{}" }).then((r) => r.json());
+	check("boot 捕获 web.log 假 token 行为 entryUrl（Track C② 链路）", boot.ok === true && boot.entryUrl === fakeUrl, JSON.stringify({ ok: boot.ok, entryUrl: boot.entryUrl, alreadyRunning: boot.alreadyRunning }).slice(0, 220));
+	await new Promise((r) => fakeEngine.close(r));
+
+	// live 引擎（3080）不受任何影响（只读探测对照）
+	const beforeEngine = await fetch("http://127.0.0.1:3080/api/status", { signal: AbortSignal.timeout(1500) }).then((r) => r.status).catch(() => 0);
+	if (beforeEngine === 0) {
+		console.log(`SKIP: live 引擎（3080）不可达 —— 跳过"live 引擎未受影响"断言（无引擎环境属正常，beforeEngine=0 不应算假失败）`);
+	} else {
+		const afterEngine = await fetch("http://127.0.0.1:3080/api/status", { signal: AbortSignal.timeout(1500) }).then((r) => r.status).catch(() => 0);
+		check("live 引擎（3080）未受影响", beforeEngine === afterEngine, `before=${beforeEngine} after=${afterEngine}`);
+	}
 
 	const stop = await fetch(`${base}/api/launcher/stop`, { method: "POST", headers: H, body: "{}" }).then((r) => r.json());
 	check("stop API 应答 ok", stop.ok === true, JSON.stringify(stop));
-	// 优雅退出 = 服务停止应答（约 1s 后端口拒绝连接）。注意 catch 返回"是否拒绝连接"：
-	// refused → "down"。诊断脚本（tools/diag-stop.mjs）实测 +1.05s 端口 ECONNREFUSED、exitCode 0。
+	// 优雅退出 = 服务停止应答（约 1s 后端口拒绝连接）。catch 只认**连接类错误码**（拒绝连接 = 已下线）：
+	// AbortError 是本端超时（对端还挂着），不能当作"已下线"，否则误判。连接类失败码：
+	// ECONNREFUSED / ECONNRESET / ECONNABORTED / EHOSTUNREACH / ENETDOWN / ENETUNREACH。
+	const OFFLINE_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ECONNABORTED", "EHOSTUNREACH", "ENETDOWN", "ENETUNREACH"]);
 	const wentDown = await until(async () => {
 		const refused = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(1200) })
 			.then(() => false)
-			.catch((e) => e?.cause?.code === "ECONNREFUSED" || e?.name === "AbortError");
+			.catch((e) => OFFLINE_CODES.has(e?.cause?.code));
 		return refused;
 	}, 6000);
 	check("启动器进程已优雅退出（端口停止应答）", wentDown === true);

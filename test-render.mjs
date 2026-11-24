@@ -111,8 +111,7 @@ try {
 	});
 	if (rootEl.textContent.includes("agent")) throw new Error("builtin entry still visible after originUser filter");
 	await act(async () => {
-		findHeader("necessityRecommended").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-		findHeader("necessityOptional").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		findHeader("necessityUser").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 	});
 	const textAfterUser = rootEl.textContent;
 	if (!textAfterUser.includes("broken-mod") || !textAfterUser.includes("community-mod")) {
@@ -122,6 +121,9 @@ try {
 	// 架构自带
 	await act(async () => {
 		findBtnByText("originBuiltin").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await act(async () => {
+		findHeader("necessityBuiltin").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 	});
 	const textAfterBuiltin = rootEl.textContent;
 	if (!textAfterBuiltin.includes("agent") || textAfterBuiltin.includes("community-mod")) {
@@ -176,6 +178,12 @@ try {
 		root2Instance.render(React.createElement(PluginManagerTab, { ...apiFail, t }));
 	});
 	await act(async () => {
+		// v5 分区重构：默认只展开 core 区，fixture 里没有核心组件条目 → 先点开第一个分区头
+		const sectionHeader = Array.from(root2.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessity"));
+		if (sectionHeader) sectionHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await act(async () => {
+		// 注意：act 回调结束时才 flush 重渲染，点击后的查询必须放进下一个 act
 		const checkbox = document.querySelector('#root + div input[type="checkbox"]') ?? root2.querySelector('input[type="checkbox"]');
 		if (!checkbox) throw new Error("no checkbox in fail instance");
 		checkbox.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -192,11 +200,20 @@ try {
 	process.exitCode = 1;
 }
 
-// ---- 6. 受保护行的开关应 disabled
+// ---- 6. 受保护行的开关应 disabled（v4 分区重构后按 configId 定位受保护行，不再假设它是第一行）
 if (!failError) {
-	const protectedCheckbox = root2.querySelector('input[type="checkbox"]');
+	// 展开所有分区（受保护的 agent 条目在 builtin 区；只点「▸」折叠态的头，避免把已展开的分区点关）
+	const closedHeaders = Array.from(root2.querySelectorAll("header")).filter((h) => h.textContent.startsWith("necessity") && h.textContent.includes("▸"));
+	await act(async () => {
+		for (const h of closedHeaders) h.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	const agentRow = Array.from(root2.querySelectorAll("li")).find((li) => li.textContent.includes("agent"));
+	const protectedCheckbox = agentRow ? agentRow.querySelector('input[type="checkbox"]') : null;
 	const firstRowProtected = entries[0].protected;
-	if (firstRowProtected && !protectedCheckbox.disabled) {
+	if (!agentRow) {
+		console.error("FAIL: protected entry row (agent) not rendered");
+		process.exitCode = 1;
+	} else if (firstRowProtected && protectedCheckbox && !protectedCheckbox.disabled) {
 		console.error("FAIL: protected entry toggle should be disabled");
 		process.exitCode = 1;
 	} else {
@@ -390,10 +407,10 @@ try {
 	});
 	await settle();
 	const text5 = () => root5.textContent;
-	const optionalHeader5 = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
-	if (!optionalHeader5) throw new Error("optional section header missing");
+	const userHeader5 = Array.from(root5.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityUser"));
+	if (!userHeader5) throw new Error("user section header missing");
 	await act(async () => {
-		optionalHeader5.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+		userHeader5.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
 	});
 	// 行内 summary（契约的 view:'summary'）+ 行内配置按钮
 	if (!text5().includes("ROW-SUMMARY")) throw new Error("row summary (view:'summary') not rendered: " + text5().slice(0, 300));
@@ -548,9 +565,9 @@ try {
 }
 
 // ---- 11. 行内卸载按钮：用户安装行有「卸载」，架构自带行没有 ----
-// root5 只展开了 optional 分组 => 可见用户行 e3/e5/e6（3 行），e4 在未展开的 recommended 分组
+// root5 只展开了 user 分区 => 可见用户行 e3/e4/e5/e6（4 行，v5 分区重构后 e4 按 origin=user 归入 user 区）
 const uninstallBtnCount = (root5.textContent.match(/rescueUninstall/g) || []).length;
-if (uninstallBtnCount !== 3) throw new Error(`expected 3 row uninstall buttons (visible user rows e3/e5/e6), got ${uninstallBtnCount}`);
+if (uninstallBtnCount !== 4) throw new Error(`expected 4 row uninstall buttons (visible user rows e3/e4/e5/e6), got ${uninstallBtnCount}`);
 const agentRow = Array.from(root5.querySelectorAll("li")).find((li) => li.textContent.includes("agent"));
 if (agentRow !== undefined && agentRow.textContent.includes("rescueUninstall")) throw new Error("builtin row should not have uninstall button");
 console.log("RESULT: PASS - row uninstall buttons (user entries only)");
@@ -562,8 +579,8 @@ const root9 = document.createElement("div");
 document.body.appendChild(root9);
 const root9Instance = createRoot(root9);
 let impactError = null;
-const expandOptional = async (container) => {
-	const header = Array.from(container.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityOptional"));
+const expandUserSection = async (container) => {
+	const header = Array.from(container.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityUser"));
 	if (header !== undefined) {
 		await act(async () => {
 			header.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
@@ -620,7 +637,7 @@ try {
 	await act(async () => {
 		root9Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
 	});
-	await expandOptional(root9);
+	await expandUserSection(root9);
 	await openUninstallFlow(root9, "community-mod");
 	const verdictEl = root9.querySelector("[data-check-verdict]");
 	if (verdictEl === null) throw new Error("verdict line not rendered: " + root9.textContent.slice(0, 300));
@@ -667,18 +684,18 @@ try {
 	const root10 = document.createElement("div");
 	document.body.appendChild(root10);
 	const root10Instance = createRoot(root10);
-	// 管理器自身的行：origin=user（profile 依赖）+ protected（不能停用自身），但可以卸载（L9）
+	// 管理器自身的行：origin=user（profile 依赖）+ protected（3080 界面内不可自禁，统一口径），但可以卸载（L9）
 	const selfEntries = [...entries, {
 		entryId: "e7", configId: "plugin-manager-pro", moduleName: "dsh-plugin-manager-pro", packageName: "dsh-plugin-manager-pro",
 		description: "插件管理器", necessity: "optional", enabled: true, phase: "active", error: null,
-		protected: true, protectionReason: "插件管理器不能停用自身。", archived: false, origin: "user",
+		protected: true, protectionReason: "管理器不能在自身管理界面（3080）中停用自己；如需禁用或卸载，请前往启动器兜底页（3081 /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。", archived: false, origin: "user",
 		installedVersion: "0.9.1", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
 	}];
 	const selfApi = { ...impactApi, list: async () => makeSnapshot(selfEntries) };
 	await act(async () => {
 		root10Instance.render(React.createElement(PluginManagerTab, { ...selfApi, t }));
 	});
-	await expandOptional(root10);
+	await expandUserSection(root10);
 	await openUninstallFlow(root10, "dsh-plugin-manager-pro");
 	const selfVerdict = root10.querySelector("[data-check-verdict]");
 	if (selfVerdict === null || selfVerdict.getAttribute("data-check-verdict") !== "caution") throw new Error(`self verdict wrong: ${selfVerdict?.getAttribute("data-check-verdict")}`);
@@ -707,7 +724,7 @@ try {
 	await act(async () => {
 		root11Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
 	});
-	await expandOptional(root11);
+	await expandUserSection(root11);
 	await openUninstallFlow(root11, "pkg-no-version");
 	const safeVerdict = root11.querySelector("[data-check-verdict]");
 	if (safeVerdict === null || safeVerdict.getAttribute("data-check-verdict") !== "safe") throw new Error(`safe verdict wrong: ${safeVerdict?.getAttribute("data-check-verdict")}`);
@@ -725,13 +742,8 @@ try {
 	await act(async () => {
 		root12Instance.render(React.createElement(PluginManagerTab, { ...impactApi, t }));
 	});
-	await expandOptional(root12);
-	const recommendedHeader = Array.from(root12.querySelectorAll("header")).find((h) => h.textContent.startsWith("necessityRecommended"));
-	if (recommendedHeader !== undefined) {
-		await act(async () => {
-			recommendedHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
-		});
-	}
+	await expandUserSection(root12);
+	// broken-mod 现按 origin=user 归入 user 分区，expandUserSection 已展开，无需再点其它分区头
 	await openUninstallFlow(root12, "broken-mod");
 	const legacyVerdict = root12.querySelector("[data-check-verdict]");
 	if (legacyVerdict === null || legacyVerdict.getAttribute("data-check-verdict") !== "safe") throw new Error("legacy host preview should degrade to safe verdict");
@@ -743,6 +755,54 @@ try {
 	process.exitCode = 1;
 }
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError) {
+// ---- 13. 分区归属按 origin 判定（v5 分区重构）：核心组件（包名白名单）/ 引擎内置组件（origin=builtin）/ 用户插件（origin=user）+ 行内「推荐」小标签 ----
+let originSectionError = null;
+try {
+	const originEntries = [
+		{ entryId: "o1", configId: "web-runtime", moduleName: "@deepseek-ai/dsh-web-app", packageName: "@deepseek-ai/dsh-web-app", description: "引擎核心", necessity: "core", enabled: true, phase: "active", error: null, protected: true, protectionReason: "引擎必需", archived: false, origin: "builtin", installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false },
+		{ entryId: "o2", configId: "agent-team", moduleName: "@deepseek-ai/dsh-agent-team", packageName: "@deepseek-ai/dsh-agent-team", description: "引擎内置 bundle", necessity: "core", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "builtin", installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false },
+		{ entryId: "o3", configId: "browser-control", moduleName: "@caob23/dsh-browser-control", packageName: "@caob23/dsh-browser-control", description: "浏览器控制", necessity: "optional", enabled: true, phase: "active", error: null, protected: false, protectionReason: null, archived: false, origin: "builtin", installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: false },
+		{ entryId: "o4", configId: "user-mod", moduleName: "user-mod", packageName: "user-mod", description: "用户安装", necessity: "optional", enabled: false, phase: null, error: null, protected: false, protectionReason: null, archived: false, origin: "user", installedVersion: "1.0.0", latestVersion: null, updateSource: null, needsUpdate: null, managed: true }
+	];
+	const root13 = document.createElement("div");
+	document.body.appendChild(root13);
+	const root13Instance = createRoot(root13);
+	const originApi = { ...api, list: async () => makeSnapshot(originEntries) };
+	await act(async () => {
+		root13Instance.render(React.createElement(PluginManagerTab, { ...originApi, t }));
+	});
+	const headerOf = (key) => Array.from(root13.querySelectorAll("header")).find((h) => h.textContent.startsWith(key));
+	const coreHeader = headerOf("necessityCore");
+	const builtinHeader = headerOf("necessityBuiltin");
+	const userHeader = headerOf("necessityUser");
+	if (!coreHeader || !builtinHeader || !userHeader) throw new Error("expected 3 section headers (core/builtin/user), got: " + root13.textContent.slice(0, 200));
+	// 核心区：默认展开，只含 dsh-web-app；necessity="core" 的 agent-team 必须被降级进 builtin（引擎 necessity 不驱动分区）
+	const coreText = coreHeader.parentElement.textContent;
+	if (!coreText.includes("web-runtime")) throw new Error("core section must contain dsh-web-app entry");
+	if (coreText.includes("agent-team")) throw new Error("engine necessity=core must NOT drive sectioning (agent-team leaked into core)");
+	if (!coreText.includes("1/1")) throw new Error("core section count wrong: " + coreText.slice(0, 120));
+	// 内置区：origin=builtin 非 core 全部归入（含 necessity=recommended/core 信号均无效）
+	await act(async () => { builtinHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+	const builtinText = builtinHeader.parentElement.textContent;
+	if (!builtinText.includes("agent-team") || !builtinText.includes("browser-control")) throw new Error("builtin section must contain arch entries by origin");
+	if (!builtinText.includes("2/2")) throw new Error("builtin section count wrong: " + builtinText.slice(0, 200));
+	if (!builtinText.includes("badgeBuiltin")) throw new Error("builtin rows must carry badgeBuiltin");
+	// 推荐 tag：browser-control 在推荐加装清单 → 行内 recommendedTag；agent-team 不应带
+	const bcRow = Array.from(root13.querySelectorAll("li")).find((li) => li.textContent.includes("browser-control"));
+	const atRow = Array.from(root13.querySelectorAll("li")).find((li) => li.textContent.includes("agent-team"));
+	if (!bcRow || !bcRow.textContent.includes("recommendedTag")) throw new Error("browser-control row must carry inline recommendedTag");
+	if (atRow.textContent.includes("recommendedTag")) throw new Error("arch bundle must not carry recommendedTag");
+	// 用户区：origin=user
+	await act(async () => { userHeader.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+	const userText = userHeader.parentElement.textContent;
+	if (!userText.includes("user-mod") || !userText.includes("badgeUser")) throw new Error("user section must contain origin=user entries with badgeUser");
+	console.log("RESULT: PASS - origin-based sectioning (core whitelist / builtin / user) + inline recommended tag");
+} catch (error) {
+	originSectionError = error;
+	console.error("ORIGIN-SECTION ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError && !originSectionError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

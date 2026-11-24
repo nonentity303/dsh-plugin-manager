@@ -24,4 +24,4 @@
   仓库根只放源码、配置、`build.mjs`、四个 `test-*.mjs` 与文档。
 - **随机端口/临时目录**：给启动器写自动化测试时请照 `test-launcher.mjs` 的做法（`listen(0)` 取空闲端口 + `mkdtemp` 临时 profile），
   不要用 3080/3081 或真 profile。
-- 一键回归：仓库根 `npm test`（其中 `test-launcher.mjs` 覆盖启动器/救砖链路）。
+- 一键回归：仓库根 `npm test`（其中 `test-launcher.mjs` 覆盖启动器/救援链路）。

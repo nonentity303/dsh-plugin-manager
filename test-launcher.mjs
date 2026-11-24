@@ -703,7 +703,10 @@ if (openBoot) {
 
 	// P1-5 轮转：保留最近 7 天 / 最多 1000 行
 	if (typeof openBoot.pruneHealthEntries === "function") {
-		const nowMs = Date.parse("2026-10-06T12:00:00.000Z");
+		// v1.0.0-rc.1 修时间炸弹：fixture 改用真实"现在"。appendHealthLog 的 7 天轮转按真实时钟剪枝，
+		// 写死的 fixture 日期（2026-10-06）在 7 天后必然全被剪掉 → 断言永远失败。
+		// 显式传 {now} 的纯函数用例对任意 nowMs 都成立，不受影响。
+		const nowMs = Date.now();
 		const DAY = 24 * 60 * 60 * 1000;
 		const line = (ms, verdict = "OK") => `${new Date(ms).toISOString()} ${verdict} boot=up@3081 engine=up@3080`;
 		const tooOld = line(nowMs - 8 * DAY, "FAIL");

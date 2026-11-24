@@ -49,7 +49,7 @@
  * 零新依赖（复用 lib/preflight.mjs 与 lib/enginectl.mjs）。
  */
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createLockServer } from "node:net";
 import { homedir } from "node:os";
@@ -60,7 +60,7 @@ import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mj
 import {
 	ENGINE_PORT, LAUNCHER_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
 	launcherHealth, looksLikeProfileDir, newApiToken, portOwner, portOwnerProbe, probe, processImage,
-	processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine,
+	processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine, stopEngine,
 	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine
 } from "../lib/enginectl.mjs";
 
@@ -235,8 +235,14 @@ export function unknownTokenPolicy(args) {
  * 由 `main()` 在任何动作之前打印用法并 exit 1（零副作用）。
  */
 function parseArgs(argv) {
+	// 1.0.0-rc.1 可迁移性：启动器端口可用 DSH_LAUNCHER_PORT 覆盖（默认仍 3081），
+	// 整机迁移/多实例时不再依赖写死端口；CLI --port 仍然优先。
+	const defaultLauncherPort = (() => {
+		const n = Number(process.env.DSH_LAUNCHER_PORT);
+		return Number.isInteger(n) && n > 0 && n < 65536 ? n : 3081;
+	})();
 	const args = {
-		profile: PROFILE_DEFAULT, port: 3081, dsh: "dsh", cwd: null,
+		profile: PROFILE_DEFAULT, port: defaultLauncherPort, dsh: "dsh", cwd: null,
 		supervise: false, ensure: false, status: false, help: false,
 		interval: 60, heartbeatMin: 10, quiet: false, window: true, waitMs: 90000,
 		autostart: null, uninstall: false, usageError: null, unknown: [], modes: []
@@ -1311,7 +1317,7 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 <div class="sub">正在执行 自检 → 修复 → 启动，完成后自动打开主界面…</div>
 <div class="spinner" id="spin"></div>
 <pre id="out"></pre>
-<div class="sub" style="margin:16px 0 0">引擎起不来？打开 <a href="/rescue">救援中心</a>（检查 / 修复 / 启动 / 停止 / 状态）</div>
+<div class="sub" style="margin:16px 0 0"><a href="/rescue">救援中心</a>（检查 / 修复 / 启动 / 停止 / 状态）· <a href="/plugins">插件管理</a>（启停 mod / 重启引擎 / 停止启动器）</div>
 <script>
 const out = document.getElementById("out");
 const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
@@ -1346,8 +1352,307 @@ function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + St
 </div></body></html>`;
 }
 
+// ---------------------------------------------------------------- 1.0.0-rc.1：启动器内置插件管理 + 用户可控启停
+
+/** 引擎 UI 的命脉 bundle：禁用它们等于把 3080 的网页入口拆了 → 拒绝一键禁用，提示走救援中心。 */
+const CORE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+const BUNDLES_BACKUP_NAME = "package.json.bundles-backup.json";
+const BUNDLES_BACKUP_KEEP = 5;
+
+function readProfileManifest(profile) {
+	try { return JSON.parse(readFileSync(join(profile, "package.json"), "utf8")); }
+	catch { return null; }
+}
+
+function bundlesBackupPathOf(profile) { return join(profile, BUNDLES_BACKUP_NAME); }
+
+/** 写 profile 清单前的滚动备份（保留最近 5 份，带时间戳，绝不覆盖更旧的备份）。 */
+function backupProfileManifest(profile) {
+	const manifest = readProfileManifest(profile);
+	if (!manifest) return null;
+	const dir = profile;
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+	const target = join(dir, `package.json.bak-${stamp}`);
+	writeFileSync(target, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+	writeFileSync(bundlesBackupPathOf(profile), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+	try {
+		const olds = readdirSync(dir)
+			.filter((f) => /^package\.json\.bak-\d{4}-\d{2}-\d{2}T/.test(f))
+			.sort().reverse().slice(BUNDLES_BACKUP_KEEP);
+		for (const f of olds) { try { unlinkSync(join(dir, f)); } catch { /* 清不掉不影响主流程 */ } }
+	} catch { /* 清理失败不影响主流程 */ }
+	return target;
+}
+
+/** 列出 profile 里安装的所有 bundle：enabled 来自 dsh.profile.bundles（0.2.x 的唯一加载开关）。 */
+function listBundles(profile) {
+	const manifest = readProfileManifest(profile);
+	if (!manifest) return { ok: false, error: `无法读取 profile 清单：${join(profile, "package.json")}` };
+	const enabled = manifest?.dsh?.profile?.bundles ?? [];
+	const installed = Object.keys(manifest.dependencies ?? {});
+	const names = [...new Set([...installed, ...enabled])].sort();
+	return {
+		ok: true, profile,
+		bundles: names.map((name) => ({ name, enabled: enabled.includes(name), core: CORE_BUNDLES.includes(name) })),
+		backup: existsSync(bundlesBackupPathOf(profile)) ? bundlesBackupPathOf(profile) : null
+	};
+}
+
+/** 启用/禁用一个 bundle：写前备份 → 改 dsh.profile.bundles → 原子写回（写失败时备份还在）。 */
+function setBundleEnabled(profile, name, enabled) {
+	if (typeof name !== "string" || !name.trim()) return { ok: false, error: "bundle 名缺失" };
+	name = name.trim();
+	if (!enabled && CORE_BUNDLES.includes(name)) {
+		return { ok: false, error: `${name} 是引擎网页 UI 的命脉 bundle，不允许从这里禁用（否则 3080 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
+	}
+	const manifest = readProfileManifest(profile);
+	if (!manifest) return { ok: false, error: `无法读取 profile 清单：${join(profile, "package.json")}` };
+	const known = new Set([...Object.keys(manifest.dependencies ?? {}), ...(manifest?.dsh?.profile?.bundles ?? [])]);
+	if (!known.has(name)) return { ok: false, error: `profile 里没有安装 ${name}，不认识这个 bundle。` };
+	const enabledList = [...(manifest?.dsh?.profile?.bundles ?? [])];
+	const before = enabledList.includes(name);
+	if (before === enabled) return { ok: true, changed: false, message: `${name} 已经是${enabled ? "启用" : "禁用"}状态，无需变更。`, ...listBundles(profile) };
+	backupProfileManifest(profile);
+	const next = enabled ? [...enabledList, name].sort() : enabledList.filter((b) => b !== name);
+	manifest.dsh = manifest.dsh || {};
+	manifest.dsh.profile = manifest.dsh.profile || {};
+	manifest.dsh.profile.bundles = next;
+	try {
+		writeFileSync(join(profile, "package.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+	} catch (error) {
+		return { ok: false, error: `写回清单失败（备份未动，原文件未损坏风险）：${error.message}` };
+	}
+	return { ok: true, changed: true, message: `${enabled ? "启用" : "禁用"} ${name} 完成；重启引擎后生效。`, ...listBundles(profile) };
+}
+
+/** 重启引擎：停（多重校验 + force 兜底）→ 起（带失败隔离）。与 /api/boot 共用单飞闸门。 */
+async function restartEngine(args, flight, entered) {
+	try {
+		const stop = await stopEngine(args.profile, { force: true, port: ENGINE_PORT });
+		const stillUp = await probe(ENGINE_PORT);
+		if (!stop.ok && stillUp) {
+			// 停不掉且端口仍被占（典型：PID 文件缺失/身份不符，防误杀保护生效）→ 不继续拉起第二个引擎
+			return { ok: false, message: `停止旧引擎失败，且端口 ${ENGINE_PORT} 仍被占用，未尝试重启：${stop.message}` };
+		}
+		// 走到这里 = ①停成功 ②引擎本来就不在（PID 文件缺失但端口空闲）
+		const start = await startEngineWithQuarantine({ profileDir: args.profile, dshCmd: args.dsh, waitMs: args.waitMs, cwd: args.cwd });
+		return {
+			ok: start.ok, stoppedPid: stop.pid ?? null,
+			quarantined: start.quarantined ?? [], quarantineMessage: start.quarantineMessage ?? null,
+			entryUrl: start.ok ? await latestTokenUrl() : null,
+			message: (stop.ok ? `旧引擎已停（${stop.message}）→ ` : "") + (start.message || "")
+		};
+	} catch (error) {
+		return { ok: false, message: `重启流程异常：${error instanceof Error ? error.message : String(error)}` };
+	} finally {
+		flight.leave(entered.entry);
+	}
+}
+
+/**
+ * 生成/更新 `<DSH_HOME>/scripts/dsh-launcher.cmd`（start|stop|status）与配套 WMI 启动脚本。
+ * 每次启动器进程起来都重写一遍 → 重装/升级后自愈；内容全部 ASCII + CRLF、路径全部加引号、
+ * 不含任何写死的盘符/用户名（node/profile/cwd 全部来自当前进程实况）。
+ * start 用 WMI Win32_Process.Create（父进程是 WmiPrvSE）→ 从 agent Job/控制台里发起也能存活。
+ */
+function ensureLauncherCmd(args) {
+	try {
+		const dshHome = process.env.DSH_HOME || join(homedir(), ".dsh");
+		const scriptsDir = join(dshHome, "scripts");
+		const logDir = join(dshHome, "logs");
+		mkdirSync(scriptsDir, { recursive: true });
+		mkdirSync(logDir, { recursive: true });
+		const node = process.execPath;
+		const boot = SELF;
+		const profile = args.profile;
+		const port = String(args.port);
+		const cwd = args.cwd || process.cwd();
+		const launcherLog = join(logDir, "open-boot.log");
+		const ps1Path = join(scriptsDir, "dsh-launcher-start.ps1");
+
+		const ps1 = [
+			"# Generated by dsh-plugin-manager-pro open-boot (launcher 1.0.0-rc.1); regenerated at every launcher start.",
+			"# Escapes any console Job object by parenting the new process to WmiPrvSE via Win32_Process.Create.",
+			"# Written as UTF-8 with BOM so PowerShell 5.1 parses non-ASCII (dev-copy) paths correctly.",
+			"$node = '" + node + "'",
+			"$boot = '" + boot + "'",
+			"$profile = '" + profile + "'",
+			"$port = '" + port + "'",
+			"$cwd = '" + cwd + "'",
+			"$log = '" + launcherLog + "'",
+			"$line = 'cmd.exe /s /c \"\"' + $node + '\" \"' + $boot + '\" --supervise --profile \"' + $profile + '\" --port ' + $port + ' --no-window >> \"' + $log + '\" 2>&1\"'",
+			"$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $line; CurrentDirectory = $cwd }",
+			"if ($r.ReturnValue -ne 0) { Write-Error ('WMI Win32_Process.Create failed with ReturnValue ' + $r.ReturnValue); exit 1 }",
+			"Write-Output ('dsh-launcher: started launcher pid ' + $r.ProcessId)",
+			""
+		].join("\r\n");
+
+		const cmd = [
+			"@echo off",
+			"rem Line 1-3 are pure ASCII: cmd parses them before the codepage switch below.",
+			"rem Non-ASCII paths (dev copies) need the file itself to be UTF-8 + this switch;",
+			"rem production install paths are pure ASCII and unaffected.",
+			"chcp 65001 >nul",
+			"rem DSH launcher control script, generated by open-boot (dsh-plugin-manager-pro 1.0.0-rc.1).",
+			"rem Regenerated automatically at every launcher start; safe to delete (it will come back).",
+			"rem Usage: dsh-launcher.cmd start|stop|status",
+			"setlocal EnableExtensions",
+			"set \"NODE=" + node + "\"",
+			"set \"BOOT=" + boot + "\"",
+			"set \"PROFILE=" + profile + "\"",
+			"set \"PORT=" + port + "\"",
+			"set \"WORKDIR=" + cwd + "\"",
+			"set \"LOGDIR=" + logDir + "\"",
+			"set \"PS1=" + ps1Path + "\"",
+			"set \"PIDFILE=%PROFILE%\\.open-boot.pid\"",
+			"if /i \"%~1\"==\"start\" goto start",
+			"if /i \"%~1\"==\"stop\" goto stop",
+			"if /i \"%~1\"==\"status\" goto status",
+			"echo Usage: %~nx0 start^|stop^|status",
+			"endlocal & exit /b 2",
+			":start",
+			"if not exist \"%NODE%\" echo [dsh-launcher] node.exe missing: %NODE% & endlocal & exit /b 2",
+			"if not exist \"%BOOT%\" echo [dsh-launcher] open-boot.mjs missing: %BOOT% & endlocal & exit /b 2",
+			"powershell -NoProfile -ExecutionPolicy Bypass -File \"%PS1%\"",
+			"endlocal & exit /b %ERRORLEVEL%",
+			":stop",
+			"if not exist \"%PIDFILE%\" echo [dsh-launcher] no pid file - launcher not running (or already stopped) & endlocal & exit /b 0",
+			"for /f usebackq delims= %%p in (`powershell -NoProfile -Command \"(Get-Content -Raw '%PIDFILE%' | ConvertFrom-Json).pid\"`) do set \"LPID=%%p\"",
+			"if not defined LPID echo [dsh-launcher] pid file unreadable, remove it manually: %PIDFILE% & endlocal & exit /b 1",
+			"echo [dsh-launcher] stopping launcher tree, pid %LPID% ...",
+			"taskkill /T /F /PID %LPID% >nul 2>&1",
+			"del /q \"%PIDFILE%\" >nul 2>&1",
+			"echo [dsh-launcher] stopped.",
+			"endlocal & exit /b 0",
+			":status",
+			"powershell -NoProfile -Command \"$ErrorActionPreference='Stop'; try { $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 ('http://127.0.0.1:' + '%PORT%' + '/api/status'); if ($r.Content -match 'dsh-open-boot') { Write-Output ('RUNNING ' + (ConvertFrom-Json $r.Content).pid); exit 0 } } catch { }; Write-Output 'DOWN'; exit 1\"",
+			"endlocal & exit /b %ERRORLEVEL%",
+			""
+		].join("\r\n");
+
+		// ps1 加 UTF-8 BOM：PowerShell 5.1 无 BOM 会按 ANSI(GBK) 读，中文路径（开发副本）会乱码
+		writeFileSync(ps1Path, "\uFEFF" + ps1, "utf8");
+		writeFileSync(join(scriptsDir, "dsh-launcher.cmd"), cmd, "utf8");
+		return join(scriptsDir, "dsh-launcher.cmd");
+	} catch (error) {
+		console.error(`[open-boot] 生成 dsh-launcher.cmd 失败（不影响本次启动）：${error.message}`);
+		return null;
+	}
+}
+
+/** 启动器内置插件管理页（独立于引擎 UI：mod 全被禁用时它是唯一能重新打开它们的入口）。 */
+function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT } = {}) {
+	return `<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>DSH 插件管理（启动器内置）</title>
+<meta name="dsh-pm-token" content="${token}">
+<style>
+body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:32px 20px;display:flex;justify-content:center}
+.wrap{max-width:680px;width:100%}
+.card{background:#1a1d24;border:1px solid #2a2e38;border-radius:12px;padding:20px;margin-bottom:16px}
+h1{font-size:18px;color:#fff;margin:0 0 4px}.sub{color:#8b93a3;font-size:13px;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:7px 6px;border-bottom:1px solid #23262f}
+.name{font-family:ui-monospace,monospace}.dim{color:#8b93a3}
+.badge{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px}
+.on{background:#14351f;color:#4ade80}.off{background:#3a1d1d;color:#f87171}.core{background:#2b2b16;color:#fbbf24}
+button{cursor:pointer;border:1px solid #2a2e38;background:#23262f;color:#e6e6e6;border-radius:8px;padding:5px 12px;font-size:13px}
+button:hover{background:#2c3038}button:disabled{opacity:.45;cursor:not-allowed}
+.danger{border-color:#7f2d2d;color:#fca5a5}
+pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:10px;font-size:12px;white-space:pre-wrap;max-height:220px;overflow:auto}
+.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}a{color:#60a5fa}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+</style></head><body><div class="wrap">
+<div class="card">
+<h1>🧩 插件管理（启动器内置）</h1>
+<div class="sub">启用 / 禁用 profile 里的 bundle（写 dsh.profile.bundles，写前自动备份）；改动后需重启引擎生效。
+<a href="/">← 启动器</a> · <a href="/rescue">救援中心</a> · <a href="http://127.0.0.1:${enginePort}/">主界面</a></div>
+<div class="row">
+<span id="engstate" class="dim">引擎状态检测中…</span>
+<button id="restartBtn" class="danger">🔄 重启引擎</button>
+<button id="stopBtn" class="danger">⛔ 停止本启动器</button>
+</div>
+</div>
+<div class="card">
+<div class="sub" style="margin-bottom:8px">已安装 bundle（黄色 = 引擎命脉，不允许禁用）</div>
+<table id="tbl"><tbody><tr><td class="dim">加载中…</td></tr></tbody></table>
+<pre id="msg" style="display:none"></pre>
+</div>
+<script>
+const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
+const tbl = document.getElementById("tbl");
+const msg = document.getElementById("msg");
+const engstate = document.getElementById("engstate");
+function show(text, cls){ msg.style.display = "block"; msg.className = cls || ""; msg.textContent = text; }
+function esc(s){ return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;"); }
+async function api(path, body){
+	const opt = body ? { method: "POST", headers: { "Content-Type": "application/json", "X-DSH-PM-Token": TOKEN }, body: JSON.stringify(body) } : {};
+	return fetch(path, opt).then(function(x){ return x.json(); });
+}
+async function loadBundles(){
+	const r = await api("/plugins/api/bundles");
+	if (!r.ok) { show(r.error || "读取失败", "bad"); return; }
+	tbl.innerHTML = "";
+	r.bundles.forEach(function(b){
+		const tr = document.createElement("tr");
+		const badge = b.enabled ? '<span class="badge on">启用</span>' : '<span class="badge off">禁用</span>';
+		const core = b.core ? ' <span class="badge core">命脉</span>' : "";
+		tr.innerHTML = '<td class="name">' + esc(b.name) + core + '</td><td>' + badge + '</td>' +
+			'<td style="text-align:right"><button data-name="' + esc(b.name) + '" data-to="' + (b.enabled ? "0" : "1") + '"' + (b.core ? " disabled" : "") + '>' + (b.enabled ? "禁用" : "启用") + '</button></td>';
+		tbl.appendChild(tr);
+	});
+	if (!r.bundles.length) tbl.innerHTML = '<tr><td class="dim">profile 里没有安装任何 bundle</td></tr>';
+	if (r.backup) show("最近一次变更前的清单备份：" + r.backup, "dim");
+}
+tbl.addEventListener("click", async function(ev){
+	const btn = ev.target.closest("button"); if (!btn || btn.disabled) return;
+	btn.disabled = true;
+	const r = await api("/plugins/api/bundles", { name: btn.dataset.name, action: btn.dataset.to === "1" ? "enable" : "disable" });
+	if (!r.ok) { show(r.error || "操作失败", "bad"); btn.disabled = false; return; }
+	show(r.message || "已更新（重启引擎后生效）", r.changed === false ? "warn" : "ok");
+	await loadBundles();
+});
+document.getElementById("restartBtn").addEventListener("click", async function(){
+	this.disabled = true; show("重启引擎中：停旧 → 起（失败条目自动隔离一次）→ 等握手…", "warn");
+	const r = await api("/plugins/api/engine/restart", {});
+	show(r.message || (r.ok ? "引擎已重启。" : "重启失败。"), r.ok ? "ok" : "bad");
+	engstate.textContent = r.ok ? "引擎：运行中" : "引擎：未就绪";
+	this.disabled = false;
+});
+document.getElementById("stopBtn").addEventListener("click", async function(){
+	this.disabled = true;
+	const r = await api("/api/launcher/stop", {});
+	show(r.message || "启动器即将退出。", "warn");
+	setTimeout(function(){ location.reload(); }, 1200);
+});
+async function loadEngine(){
+	try {
+		const s = await fetch("/api/status").then(function(x){ return x.json(); });
+		engstate.textContent = s.engineUp ? "引擎：运行中（端口 " + s.enginePort + "）" : "引擎：未运行（点上方按钮可启动/重启）";
+		engstate.className = s.engineUp ? "ok" : "warn";
+	} catch { engstate.textContent = "启动器状态不可用"; engstate.className = "bad"; }
+}
+loadBundles(); loadEngine();
+</script>
+</div></body></html>`;
+}
+
+/** 读取并解析 POST JSON body（≤64KB；解析失败/超限返回 null）。 */
+function readJsonBody(req) {
+	return new Promise((resolveBody) => {
+		let data = "";
+		req.on("data", (chunk) => {
+			data += chunk;
+			if (data.length > 65536) { resolveBody(null); try { req.destroy(); } catch { /* ignore */ } }
+		});
+		req.on("end", () => { try { resolveBody(data.trim() ? JSON.parse(data) : {}); } catch { resolveBody(null); } });
+		req.on("error", () => resolveBody(null));
+	});
+}
+
 function startServer(args) {
 	const startedAt = new Date().toISOString();
+	// 1.0.0-rc.1：每次启动器进程起来都重写 dsh-launcher.cmd（重装/升级后自愈，路径全部来自当前实况）
+	const launcherCmdPath = ensureLauncherCmd(args);
 	// L11 ②：一次性令牌（每次启动随机生成）——只注入页面 meta 与请求头，**不写日志、不落 profile 文件**
 	const token = newApiToken();
 	// L11 ③：boot 与救援 /api/start 共用同一个单飞闸门
@@ -1391,6 +1696,53 @@ function startServer(args) {
 			await handleRescueApi(sub, req.method, req, res, url, rescueCtx);
 			return;
 		}
+		// 1.0.0-rc.1：启动器内置插件管理页 —— mod 全被禁用、引擎 UI 没有插件页可用时，
+		// 这里是重新打开它们的唯一入口（写 profile 的 dsh.profile.bundles，与引擎同一开关）。
+		if (pathname === "/plugins" || pathname === "/plugins/") {
+			sendHtml(res, pluginsPageHtml({ token, enginePort: ENGINE_PORT }));
+			return;
+		}
+		if (pathname === "/plugins/api/bundles" && req.method === "GET") {
+			sendJson(res, 200, listBundles(args.profile));
+			return;
+		}
+		if (pathname === "/plugins/api/bundles" && req.method === "POST") {
+			if (rejectWrite(req, res)) return;
+			const body = await readJsonBody(req);
+			if (!body) { sendJson(res, 400, { ok: false, error: "请求体不是合法 JSON（或超过 64KB）" }); return; }
+			const enable = body.action === "enable";
+			if (body.action !== "enable" && body.action !== "disable") {
+				sendJson(res, 400, { ok: false, error: `action 必须是 "enable" 或 "disable"，收到 ${JSON.stringify(body.action ?? null)}` });
+				return;
+			}
+			sendJson(res, 200, setBundleEnabled(args.profile, body.name, enable));
+			return;
+		}
+		if (pathname === "/plugins/api/engine/restart" && req.method === "POST") {
+			if (rejectWrite(req, res)) return;
+			const enteredRestart = flight.tryEnter("open-boot:restart");
+			if (!enteredRestart.ok) {
+				sendJson(res, 409, { ok: false, code: 409, busy: true, error: `已有启动/重启流程在执行中（已进行 ${Math.round(enteredRestart.waited / 1000)}s），本次请求被拒。` });
+				return;
+			}
+			try {
+				sendJson(res, 200, await restartEngine(args, flight, enteredRestart));
+			} catch (error) {
+				sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+			}
+			return;
+		}
+		if (pathname === "/api/launcher/stop" && req.method === "POST") {
+			// 1.0.0-rc.1 用户可控启停：优雅退出本启动器并清理 pid 文件（引擎不受影响）。
+			if (rejectWrite(req, res)) return;
+			sendJson(res, 200, { ok: true, pid: process.pid, message: `启动器（pid ${process.pid}）将在 1s 内退出；pid 文件已清理。引擎与浏览器本页不受影响，重新打开 3081 会重新拉起启动器。` });
+			setTimeout(() => {
+				try { unlinkSync(pidPathOf(args)); } catch { /* 已不存在 */ }
+				try { supLogRaw(args, `[${stamp()}] [open-boot] 收到 /api/launcher/stop，优雅退出。`); } catch { /* ignore */ }
+				process.exit(0);
+			}, 1000);
+			return;
+		}
 		if (pathname === "/api/boot" && req.method === "POST") {
 			if (rejectWrite(req, res)) return;
 			const entered = flight.tryEnter("open-boot:/api/boot");
@@ -1422,6 +1774,8 @@ function startServer(args) {
 				engineUp: engine.ok, enginePort: ENGINE_PORT,
 				engineMarker: engine.marker || null, engineHttpStatus: engine.status ?? null,
 				window: args.window,
+				pluginsPage: "/plugins", pluginsApiPrefix: "/plugins/api",
+				dshLauncherCmd: launcherCmdPath,
 				rescuePage: "/rescue", rescueApiPrefix: "/rescue/api"
 			});
 			return;
@@ -1495,7 +1849,7 @@ async function main(argv = process.argv.slice(2)) {
 	if (args.autostart === "uninstall") { const r = uninstallAutostart(args); console.log(r.message); return r.ok ? 0 : 1; }
 	if (args.autostart === "status") { const r = await autostartStatus(args); console.log(r.message); return r.ok ? 0 : 1; }
 	if (args.status) { const r = await reportStatus(args); console.log(r.message); return r.ok ? 0 : 1; }
-	if (args.supervise) { mkdirSync(args.profile, { recursive: true }); return await supervise(args); }
+	if (args.supervise) { mkdirSync(args.profile, { recursive: true }); ensureLauncherCmd(args); return await supervise(args); }
 	if (args.ensure) {
 		mkdirSync(args.profile, { recursive: true });
 		const result = await ensureServer(args);

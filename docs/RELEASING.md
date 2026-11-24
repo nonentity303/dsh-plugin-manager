@@ -408,18 +408,19 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 > **固定五步，不得跳步或换序**：**① 独立端口验证 → ② 打包 → ③ 主端口安装 → ④ 补充打包 → ⑤ 上传**。
 > 适用于所有自研 mod（本包与后续新 mod）。下面 18 条按这五步分组，编号即执行顺序。
 
-**红线（先看这三条）**
+**红线（先看这四条）**
 
 1. **未经用户明确确认，不得进入第 ⑤ 步** —— 推送 / tag / npm 发布一律等用户点头。
 2. **任何改动之后必须回到第 ② 步重新打包**（代码、文档、版本号、发布日期都算）；"版本号相同、内容陈旧"是最隐蔽的坑。
 3. 每一步都要留下**可复核证据**（命令原文 + 输出 + 哈希 / 截图）；**未实测的不写"通过"**。
+4. **预发布版绝不能发成 `latest`** —— 版本号含 `-`（如 `0.9.1-rc2`）时，`release.yml` 会自动改用 dist-tag **`next`**；走人工兜底路径（第 14 步）时必须**显式** `--tag next`。发错会让 `npm i dsh-plugin-manager-pro` 的用户拿到 RC（见下文「预发布版（RC）专项」）。
 
 ### ① 独立端口验证（绝不碰真机 3080/3081/4081）
 
 | # | 步骤 | 命令 | 通过标准 |
 |---|---|---|---|
 | 1 | 搭隔离环境 | 独立 `DSH_HOME` + 克隆 profile（排除 `node_modules` 后重建）+ 非默认端口（如 3090/3091/3092） | 真机 3080/3081/4081 全程未被动过（记录前后 pid 与注册表值） |
-| 2 | 装候选件，跑通**全部新功能** | `dsh plugin --profile <名> add <候选 tgz> --config.minimumReleaseAge=0`；`node test-launcher.mjs --strict` / `npm test` | 四套件全绿（启动器断言数以当次输出为准）；**每个新功能**都有命令原文 + 输出 + 截图或用户点检清单 |
+| 2 | 装候选件，跑通**全部新功能** | `dsh plugin --profile <名> add <候选 tgz> --config.minimumReleaseAge=0`；`node test-launcher.mjs --strict` / `npm test` | 四套件全绿；**启动器断言数以 `node test-launcher.mjs --strict` 的输出为准**（别把历史数字抄进报告）；**每个新功能**都有命令原文 + 输出 + 截图或用户点检清单 |
 | 3 | 补彩排结论 | 需要时按 §9 跑引擎升级彩排的三类破坏性变更（行 id / 槽位 / 包存在性） | 结论写进 `docs/releases/<版本>.md` 的「验证」段；**未取得的证据如实记为"未取得"** |
 
 ### ② 打包（canonical 路径 + 记录指纹）
@@ -428,7 +429,7 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 |---|---|---|---|
 | 4 | 干净树构建 | `rm -rf node_modules && npm ci && npm run build` | `lib/client.js` 的 sha256 == 你测过的那份（§2bis）。**只用 canonical `node build.mjs`**；不要用 shell 拼 `--banner:js=`（D4：PowerShell 吞引号与 `\n`/`\t`，产物变成另一份字节） |
 | 5 | 四套测试 | `npm test`；发布前再加 `npm run test:strict` | 全绿（bundle / render / integration / launcher）。统计断言数时注意 **`test-bundle.mjs` 不以 `^OK:` 开头**（D3，按 `^OK:` 会数成 0，实际 11 条） |
-| 6 | bump 版本 + 发布说明 + CHANGELOG | 改 `package.json` 的 `version`；写/更新 `docs/releases/<版本>.md`（发布日期可在第 ④ 步回填）；`node tools/dev/gen-changelog.mjs` | `node tools/dev/gen-changelog.mjs --check` exit 0（发布说明已进 CHANGELOG，版本倒序正确） |
+| 6 | bump 版本 + 元数据 + 发布说明 + CHANGELOG | 改 `package.json` 的 `version`；核对 `engines`；写/更新 `docs/releases/<版本>.md`（发布日期可在第 ④ 步回填）；`node tools/dev/gen-changelog.mjs` | `node tools/dev/gen-changelog.mjs --check` exit 0（发布说明已进 CHANGELOG；**排序口径 = 发布顺序（新→旧）：日期倒序 → 同一天同族的预发布版在正式版之上 → 无日期者垫底**；预发布段头必须带**（预发布）**标注，如 `## [0.9.1-rc2] - 2026-10-07（预发布）`）。生成器另有**静默漏版护栏**：`docs/releases/` 下出现"版本号打头却没被识别成发布说明"的文件时直接 exit 1（白名单见脚本注释 `NON_RELEASE_SUFFIXES`）；预发布形态支持 `-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`；**`engines.node` 与实现要求一致** —— 核对：`node -p "JSON.stringify(require('./package.json').engines)"`。本轮已发现一处运行时门槛：`findPackageJSON` 在 Node 18/20 上加载失败，**最终下限以 `package.json` 的 `engines` 落地值为准**（改完 engines 要回到第 ② 步重打包） |
 | 7 | vendor 刷新 + 内容级校验 | 先按 §5 用**本轮** tgz 刷新 `migration/pkg/main/vendor/` 与 `manifest.json`，再 `npm run check:vendor` | 版本链 + 正反双向逐文件 sha256 全绿。**vendor 还停在上一版时这一步必然红**（开发期为预期状态，打包后必须刷新） |
 | 8 | 打包 + 记录指纹 + 逐文件比对 | `npm run pack`（= `node build.mjs && npm pack`）→ 记录 **sha256 + 文件数 + 关键文件哈希** → **逐文件比对 tgz 与工作树**（可用 `node tools/dev/verify-triple.mjs` 做「本地 tgz / 工作树 / registry」三方比对） | 逐文件一致（**不一致 = 作废重打**）；`npm pack --dry-run` 的输出里有四个 `bin/*` 与两个 `lib/*.mjs` |
 
@@ -449,23 +450,50 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 
 | # | 步骤 | 命令 | 通过标准 |
 |---|---|---|---|
-| 12 | 提交 + 推送 + tag | `git add -A && git commit -m "v<版本>: …"` → `git tag v<版本>` → 推送 master 与 tag | 发布提交里同时含发布说明、刷新后的 `CHANGELOG.md`、以及 README 的图片绝对 URL（图片与 README 同 commit，不存在坏图窗口） |
-| 13 | CI 发布（OIDC，零 token） | tag 触发 `.github/workflows/release.yml` 走 `npm publish --provenance` | tag 与 `package.json` 版本一致性校验通过、日志里 token 是占位符、发布成功；CI 里也跑过与第 4–5、7 步相同的构建 / 测试 / vendor |
-| 14 | 兜底路径（仅本机、无 TOTP 时） | `npm run publish:webauth`（取未打码 `npm-notice` 链接 → Windows Hello → 每 20 秒重试真发布） | 见 §4.2 ①；**0.9.0 就是这么发的** |
-| 15 | **双轨发布必须同字节（D1，强制）** | npm 发布完成后，**从 registry 下载该版本的 tarball**，与候选件比对 `sha256` 与字节数；**一致后把这个下载下来的文件作为 GitHub Release 附件上传**，并记录两边 sha256 与字节数 | 两处 sha256 与字节数**逐字相等**。**禁止**用"本机重新打包"的 tgz 当 Release 附件（v0.9.0 就是这么错的：附件 `217,689 B` / `sha256 a29ead25…`，npm 上 `217,699 B` / `9cbd3684…`，差 10 B） |
-| 16 | 发完立刻核对 | `npm view dsh-plugin-manager-pro version` / `time.<版本>` | 等于 `package.json` 的 version；README 的版本行同步更新 |
+| 12 | 提交 + 推送 + tag | `git add -A && git commit -m "v<版本>: …"` → `git tag v<版本>` → 推送 master 与 tag | 发布提交里同时含发布说明、刷新后的 `CHANGELOG.md`、以及 README 的图片绝对 URL（图片与 README 同 commit，不存在坏图窗口）。**tag 必须与 `package.json` 的 `version` 逐字一致**（含 `-rc2` 这类后缀，tag 形如 `v0.9.1-rc2`）；不一致时 `release.yml` 的「校验 tag 与 package.json 版本一致」这一步会 throw 并中止 |
+| 13 | CI 发布（OIDC，零 token） | tag 触发 `.github/workflows/release.yml` 走 `npm publish --provenance --access public --tag <dist-tag>` | tag 与 `package.json` 版本一致性校验通过、日志里 token 是占位符、发布成功；CI 里也跑过与第 4–5、7 步相同的构建 / 测试 / vendor。**dist-tag 由工作流自动判定**：版本号含 `-` → `next`，否则 → `latest`（人工兜底发布时要自己加 `--tag next`） |
+| 14 | 兜底路径（仅本机、无 TOTP 时） | `npm run publish:webauth`（取未打码 `npm-notice` 链接 → Windows Hello → 每 20 秒重试真发布） | 见 §4.2 ①；**0.9.0 就是这么发的**。**注意**：手动路径不会自动判定 dist-tag —— 预发布版必须自己加 `--tag next` |
+| 15 | **双轨发布必须同字节（D1，强制）** | npm 发布完成后，**从 registry 下载该版本的 tarball**，与候选件比对 `sha256` 与字节数；**一致后把这个下载下来的文件作为 GitHub Release 附件上传**，并记录两边 sha256 与字节数 | 两处 sha256 与字节数**逐字相等**。**禁止**用"本机重新打包"的 tgz 当 Release 附件（v0.9.0 就是这么错的：附件 `217,689 B` / `sha256 a29ead25…`，npm 上 `217,699 B` / `9cbd3684…`，差 10 B）。**本轮起 `release.yml` 已把这一步自动化**：它用 `npm pack` 与 registry 下载件做 sha256 比对，不一致直接 throw；CI 日志末行打印「Release 附件请用 registry 下载的同一份」 |
+| 16 | 发完立刻核对（**两段判定**） | ① packument：`npm view dsh-plugin-manager-pro@<版本> version`；② tarball：`https://registry.npmjs.org/dsh-plugin-manager-pro/-/dsh-plugin-manager-pro-<版本>.tgz` 的 `HEAD` 是否 200；③ `npm view dsh-plugin-manager-pro dist-tags` | ① 必须等于 `package.json` 的 version —— **只有它缺失才算"发布失败"**；② **packument 出现 ≠ tarball 可用**：tarball 在 CDN 上可能滞后数分钟（0.9.1 首次实测约 5 分钟），因此要**先 packument、再 tarball 可达**，两段合起来等 **≥10 分钟**；tarball 仍未就绪只记"传播中"、不判失败（稍后手动回读）；③ dist-tags 见「预发布版（RC）专项」 |
 | 17 | 图片可达性回读（D2） | `https://api.github.com/repos/nonentity303/dsh-plugin-manager/contents/docs/images/pm-090-official2.png`（另两张同理） | HTTP **200** 且 `download_url` 可用。**推送前必然 404**（图是未跟踪的新文件）；本机 raw 域名受网络分区影响，回读用 api.github.com contents，必要时 jsDelivr 镜像，**不要**用 raw 链接自检 |
 | 18 | 冷静期提示 + 收尾 | `README.md` 安装小节保留"显式写版本号"（§8）；关掉临时 profile/端口；`git status` 干净 | 用户能按 README 就地装上当天发布的版本；工作树干净 |
+
+### 预发布版（RC）专项（版本号含 `-` 时适用）
+
+> 场景：用户要求某一轮先用**预发布版本号**（如 `0.9.1-rc2`）给尝鲜用户，验证通过后再发正式版。
+> 下列规则由 `release.yml`（tag 校验 / dist-tag 判定 / 发布后核对）与人工核对共同保证，**逐条可勾选**。
+
+| # | 项 | 怎么做 | 判据 / 命令 |
+|---|---|---|---|
+| R1 | 版本号 | `package.json` 的 `version` 写成 `0.9.1-rc2`（**含 `-rc2` 后缀**，npm 视为预发布） | `node -p "require('./package.json').version"` → `0.9.1-rc2` |
+| R2 | tag | `git tag v0.9.1-rc2`（与 `version` **逐字一致**，含后缀） | `release.yml` 的「校验 tag 与 package.json 版本一致」这一步通过；不一致会 throw 并中止（第 5 步） |
+| R3 | dist-tag | CI 自动判定：版本号含 `-` → **`next`**；人工兜底发布（第 14 步）时自己加 `--tag next` | `npm view dsh-plugin-manager-pro dist-tags` → 必须同时看到 `next: 0.9.1-rc2` **且 `latest: 0.9.1`（保持指向当时最新正式版）** |
+| R4 | **红线** | **绝不能把 RC 发成 `latest`** —— 否则 `npm i dsh-plugin-manager-pro` 的人会装到预发布版 | 若发现 `latest` 变成了 RC：立刻 `npm dist-tag add dsh-plugin-manager-pro@<最近正式版> latest` 把标签拨回去，并在发布记录里注明 |
+| R5 | GitHub Release | 预发布版创建时勾 **`prerelease: true`**，**不要**标 "Latest" | Release 页显示 Pre-release 徽标；Latest 仍指向最近的正式版（附件仍按第 15 步用 registry 下载件） |
+| R6 | 尝鲜安装（对外写法） | 文档/公告写 `npm i dsh-plugin-manager-pro@next` 或 `@0.9.1-rc2` | 装出来的版本 = `0.9.1-rc2`；不要写"装最新版" |
+| R7 | 正式版收口 | RC 验证通过后，把它的内容并入**下一个正式版本号**（例如紧跟 `0.9.1-rc2` 的是 `0.9.2`）再发正式版 —— **此时 `latest` 才前移**；npm 不允许把已发布的正式版号重发 | `dist-tags` 的 `latest` 前移到新正式版；RC 留在 `next`（可选：发完正式版后 `npm dist-tag rm dsh-plugin-manager-pro next` 收掉 `next`） |
 
 > **D1 的由来**：v0.9.0 的 GitHub Release 附件与 npm 发布件**不是同一份字节** —— 附件 `217,689 B` / `sha256 a29ead25…`，
 > npm `217,699 B` / `9cbd3684…`（差 10 B）。这是 F5 的同族问题：**版本号相同、内容不同**；两个渠道拿到的包不一样，
 > 用户无法用任何哈希互相验证。第 15 步就是为它加的硬关卡。
 >
+> **发布后核对为什么分两段（0.9.1 首次真实运行暴露）**：registry 的 **packument**（`npm view <包>@<版本> version`）通常立刻可见，
+> 但**同一版本的 tarball 在 CDN 上可能滞后数分钟**（0.9.1 首次实测约 5 分钟）—— 旧版"短轮询"会把这种情况误报成失败。
+> 现在 `release.yml` 的「发布后核对 registry」按两段判定：① packument（30×20s ≈ 10 分钟，**只有它缺失才 throw**）；
+> ② tarball `HEAD`（30×20s ≈ 10 分钟，未就绪只 `Write-Warning` 并按成功退出）；最后做**双渠道同字节** sha256 比对（D1 自动化，不一致 throw）。
+> 人工核对按第 16 步照做即可，**总时长 ≥10 分钟**。
+>
+> **最低 Node 版本**：以 `package.json` 的 `engines.node` 为**唯一口径**（本文件刻意不写具体数字，避免与实现漂移）。
+> 本轮已知一处运行时门槛：`findPackageJSON` 需要较新的 Node，Node 18/20 上会加载失败 —— 修完由实现方落进 `engines`，
+> 发布前按第 6 步核对 `node -p "JSON.stringify(require('./package.json').engines)"`。注意：CI 的**发布** runner 固定 Node 24
+> （`.github/workflows/release.yml`），它只说明"发布环境能跑"，**不等于**用户侧最低要求。
+>
 > **D2 / D3 / D4**（低优先观察，已就近写进上文）：**D2** 图片是 `raw.githubusercontent…/master/…` 绝对 URL → 推送前 404，推送后按第 17 步回读；
 > **D3** `test-bundle.mjs` 的断言不以 `OK:` 开头 → 统计别用 `^OK:`（见 §2）；**D4** 复现构建只用 canonical `node build.mjs`，别用 shell 拼 banner（见 §2bis 第 4 条）。
 >
-> **与旧版的对应**：第 4–13、15–18 条即上一版核对表的 1–13 条；变化只在于**顺序**（新增"主端口安装"为第 ③ 步、把它放在上传之前，
-> 并把"补充打包"独立成第 ④ 步）与红线三条。
+> **与旧版的对应**：第 4–13、15–18 条即上一版核对表的 1–13 条；变化在于**顺序**（新增"主端口安装"为第 ③ 步、放在上传之前，
+> 并把"补充打包"独立成第 ④ 步）、红线三条 → **四条**，以及本轮新增的**「预发布版（RC）专项」小节**、
+> 第 13 步的 **dist-tag 自动判定**、第 15 步的**双渠道同字节自动化**、第 16 步的**两段核对**。
 >
 > 发布说明模板：`docs/releases/<版本>.md`（历史样例：`0.9.0.md` 面向用户、`RELEASE_NOTES_0.8.x.md` 按模块分节）。
 > 版本历史汇总由 `node tools/dev/gen-changelog.mjs` 生成 `CHANGELOG.md`，**不要手改**。

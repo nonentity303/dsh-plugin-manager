@@ -6,8 +6,8 @@
 | [LAUNCHER.md](LAUNCHER.md) | **命令行口径**：三个 bin 的全部命令与退出码、`--uninstall` 卸载闭环、开机自启、`health.log` 留痕与轮转、端口表与冲突行为、写接口防护、故障排查，附「文档条目 → 代码位置」核对表 |
 | [RELEASING.md](RELEASING.md) | **发布流程**：版本号、构建、打包、`vendor` 刷新与断言、lockfile/包管理器约定、publish 与 2FA/OIDC、24 小时冷静期、引擎升级彩排、发布核对表 |
 | [README-full.md](README-full.md) | **v0.9.1 时代的完整全文**（能力对比 / 兼容矩阵 / 权限与数据范围 / 故障排查 / 救砖速查），已从仓库根移到 `docs/`；当前版本请看根 [README.md](../README.md) |
-| [发布清单-rc2.md](发布清单-rc2.md) | **1.0.0-rc.2 这一次的发布检查清单**（发 npm 前必跑项、dist-tag `next`、回滚方案、发布后验证 URL、当日实测快照、一致性扫描结果）；口径仍以 RELEASING.md 为准 |
-| [releases/](releases/) | 每个版本的发布说明（`0.9.1.md` 为当前已发布版本；历史 `RELEASE_NOTES_*.md` 原样归档；`0.9.0-verify.md` 是干净环境装机验收报告）。⚠️ `1.0.0-rc.1` / `1.0.0-rc.2` 的发布说明**尚未补**，发版前必须先写 `docs/releases/1.0.0-rc.2.md`（见 [RELEASING.md](RELEASING.md) §1） |
+| [发布清单-rc2.md](发布清单-rc2.md) | **1.0.0 发布检查清单**（发 npm 前必跑项、dist-tag、回滚方案、发布后验证 URL、当日实测快照、一致性扫描结果；以 1.0.0-rc.2 名义起草，正式发行为 1.0.0）；口径仍以 RELEASING.md 为准 |
+| [releases/](releases/) | 每个版本的发布说明（**`1.0.0.md` = 当前版本（npm `latest`）**；`0.9.1.md` = 上一正式版；`0.9.1-rc2.md` = 预发布存档（dist-tag `next` 时代）；历史 `RELEASE_NOTES_*.md` 原样归档；`0.9.0-verify.md` 是干净环境装机验收报告）。预发布版由 `gen-changelog.mjs` 一并收录，段头带「（预发布）」标注 |
 | [review/](review/) | 审计与评审期的分析材料（`BUG_ANALYSIS_*.md`、`OPTIMIZATION_PLAN.md`、`PROBLEMS_README.md`、`IMPROVEMENTS_VERIFIED.md`）——历史快照，**不代表当前实现状态** |
 | [images/](images/) | README 用的实拍图（三张 0.9 界面截图，`README.md` 以绝对 URL 引用；**不进 npm 包**——`files` 白名单不含 `docs/`） |
 

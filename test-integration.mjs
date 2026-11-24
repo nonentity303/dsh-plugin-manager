@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join, relative, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import * as nodeModuleNamespace from "node:module";
 import { PluginManagerPro, __internals } from "./lib/index.js";
 
 const failures = [];
@@ -588,6 +589,469 @@ ok(defaultSvc.ownPackageDirectory() === repoRoot, `L9: 默认按 lib/index.js �
 const shippedLauncher = readFileSync(join(repoRoot, "bin", "open-boot.mjs"), "utf8");
 ok(/--uninstall(?!-)/.test(shippedLauncher) && shippedLauncher.includes("args.uninstall"),
 	"L9: 包内启动器声明 --uninstall（能力探测通过 → 生产环境会真的调用；旧版本只认 --uninstall-autostart 会被跳过）");
+
+// ---- 16. G1：Node 18/20 的 findPackageJSON 兼容层（可证伪：注入「没有该导出」的模块命名空间）----
+//      背景：`findPackageJSON` 是 Node 22.14+ 才有的 `node:module` 导出；旧 Node 上「命名导入一个不存在的
+//      导出」会在**链接期**抛 SyntaxError、模块体一行都不执行 → 插件整体加载失败（0.9.1 已发布缺陷）。
+//      这里不靠「在 Node 24 上能跑」下结论，而是把旧 Node 的命名空间形状**注入**进回退路径实测。
+const repoBaseUrl = pathToFileURL(repoRoot + "/").href;
+const nodeModulesRel = (value) => String(value ?? "").split(/[\\/]node_modules[\\/]/).pop().replace(/\\/g, "/");
+
+// 16a 静态护栏：不再命名导入 + engines 与实现一致
+const repoIndexSource = readFileSync(join(repoRoot, "lib", "index.js"), "utf8");
+const repoManifest = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+const enginesFloor = String(repoManifest.engines?.node ?? "");
+const enginesMajor = Number.parseInt(enginesFloor.replace(/[^\d.]/g, "").split(".")[0] ?? "", 10);
+ok(!/import\s*\{[^}]*\bfindPackageJSON\b[^}]*\}\s*from\s*["']node:module["']/.test(repoIndexSource),
+	"G1: lib/index.js 不再命名导入 findPackageJSON（旧 Node 链接期 SyntaxError 的根因）");
+ok(/import \* as nodeModule from ["']node:module["']/.test(repoIndexSource),
+	"G1: 顶层改用命名空间导入（import * as nodeModule，旧 Node 上缺导出也不会崩）");
+ok(enginesMajor <= 22
+	? /typeof official === "function"/.test(repoIndexSource) && repoIndexSource.includes("findPackageJSONFallback")
+	: true,
+	`G1: engines.node=${enginesFloor} 与实现一致（声明支持 <22.14 就必须有运行时特性检测 + 回退实现）`);
+
+// 16b 行为不变：当前 Node（≥22.14）必须优先走官方实现（生产路径打桩计数）
+ok(__internals.packageJsonResolver.mode === "findPackageJSON",
+	`G1: 当前 Node 走官方 findPackageJSON（mode=${__internals.packageJsonResolver.mode}）`);
+const zodManifestPath = join(repoRoot, "node_modules", "zod", "package.json");
+const zodExpectedVersion = JSON.parse(readFileSync(zodManifestPath, "utf8")).version;
+const statsBefore = { ...__internals.packageJsonResolver.stats };
+__internals.resetPackageCache();
+const zodInfo = __internals.packageInfoOf("zod", repoBaseUrl);
+const statsAfter = { ...__internals.packageJsonResolver.stats };
+ok(statsAfter.official === statsBefore.official + 1 && statsAfter.fallback === statsBefore.fallback,
+	`G1: 生产路径确实走了官方实现（official ${statsBefore.official}→${statsAfter.official}；fallback 不变 ${statsAfter.fallback}）`);
+ok(zodInfo.isNpmPackage === true && zodInfo.installedVersion === zodExpectedVersion,
+	`G1: 官方路径解析出的包信息正确（zod ${zodInfo.installedVersion}）`);
+
+// 16c 可证伪：注入「没有 findPackageJSON」的命名空间（= Node 18/20 的形状）→ 回退实现必须可用
+const fallbackResolver = __internals.makePackageJsonResolver({});
+ok(fallbackResolver.mode === "fallback", "G1: 没有 findPackageJSON 的命名空间 → 走回退实现");
+ok(__internals.makePackageJsonResolver({ findPackageJSON: "not-a-function" }).mode === "fallback",
+	"G1: 存在同名但不是函数的导出 → 仍走回退（typeof 特性检测，防御性）");
+const spyCalls = [];
+const spyResolver = __internals.makePackageJsonResolver({ findPackageJSON: (spec, base) => { spyCalls.push([spec, base]); return `/spy/${spec}`; } });
+ok(spyResolver.resolve("zod", repoBaseUrl) === "/spy/zod" && spyCalls.length === 1
+	&& spyResolver.stats.official === 1 && spyResolver.stats.fallback === 0,
+	"G1: 官方实现可用时优先调用它（打桩计数：official=1 / fallback=0）");
+// 三个真实包：① zod（exports 放出 ./package.json）② entities（exports 屏蔽 ./package.json）③ 作用域 + 屏蔽（@standard-schema/spec）
+for (const spec of ["zod", "entities", "@standard-schema/spec"]) {
+	let resolvedPath;
+	let failure = null;
+	try {
+		resolvedPath = fallbackResolver.resolve(spec, repoBaseUrl);
+	} catch (error) {
+		failure = error;
+	}
+	const manifestName = resolvedPath === undefined ? null : JSON.parse(readFileSync(resolvedPath, "utf8")).name;
+	const relPath = nodeModulesRel(resolvedPath);
+	const officialRel = nodeModulesRel(__internals.findPackageJsonPath(spec, repoBaseUrl));
+	ok(failure === null && resolvedPath !== undefined && existsSync(resolvedPath) && manifestName === spec,
+		`G1 回退实测：${spec} → ${relPath}（manifest.name=${manifestName}，未抛异常=${failure === null}）`);
+	ok(relPath === `${spec}/package.json`,
+		`G1 回退路径：${spec} 命中 <node_modules>/${spec}/package.json`);
+	if (__internals.packageJsonResolver.mode === "findPackageJSON") {
+		ok(relPath === officialRel, `G1 语义对齐：${spec} 回退结果与官方 findPackageJSON 一致（${officialRel}）`);
+	} else {
+		console.log(`INFO: G1 语义对齐断言跳过（当前 Node 无官方 findPackageJSON，officialRel=${officialRel}）`);
+	}
+}
+let fallbackThrew = null;
+let fallbackMissing = "unset";
+try {
+	fallbackMissing = fallbackResolver.resolve("definitely-not-installed-xyz", repoBaseUrl);
+} catch (error) {
+	fallbackThrew = error instanceof Error ? `${error.code ?? ""} ${error.message}` : String(error);
+}
+ok(fallbackMissing === undefined && fallbackThrew === null,
+	`G1 回退实测：不存在的包 → ${String(fallbackMissing)}，未抛异常（threw=${String(fallbackThrew)}）`);
+ok(fallbackResolver.stats.fallback === 4,
+	`G1: 回退计数=4（3 命中 + 1 未命中；实测 ${fallbackResolver.stats.fallback}）`);
+// profile（pnpm/hoisted 布局）里也能解析 —— 用 L9 那个临时 profile 的实际依赖
+const profileBaseUrl = pathToFileURL(profileDir + "/").href;
+const profileResolved = fallbackResolver.resolve("dsh-p14-target", profileBaseUrl);
+ok(profileResolved !== undefined && JSON.parse(readFileSync(profileResolved, "utf8")).name === "dsh-p14-target"
+	&& nodeModulesRel(profileResolved) === "dsh-p14-target/package.json",
+	`G1 回退实测（profile 布局）：dsh-p14-target → ${nodeModulesRel(profileResolved)}`);
+
+// ---- 16d 真·Node 18/20 形状模拟：用 loader hook 把 `node:module` 换成「没有 findPackageJSON」的命名空间，
+//      然后**真的 import lib/index.js**（不是只调工厂函数）。旧的命名导入在这种环境下会在链接期抛 G1 的
+//      SyntaxError —— 本机没有旧版 Node 运行时（仅有 v24.20.0，且任务要求不下载），这是最接近真机的证伪手段。
+if (typeof nodeModuleNamespace.registerHooks !== "function") {
+	console.log("SKIP: G1 16d Node 18 形状模拟（当前 Node 无 module.registerHooks，需 ≥22.15；16c 注入断言仍已执行）");
+} else {
+	const simDir = mkdtempSync(join(tmpdir(), "pm-g1-sim-"));
+	const simShim = join(simDir, "node18-module-shim.mjs");
+	const simLoader = join(simDir, "node18-loader.mjs");
+	const simProbe = join(simDir, "named-import-probe.mjs");
+	const simChild = join(simDir, "child.mjs");
+	const simOut = join(simDir, "result.json");
+	// 模拟 Node 18/20 的 `node:module` 命名空间：有 createRequire，**没有** findPackageJSON
+	writeFileSync(simShim, [
+		'import * as real from "node:module";',
+		"export const createRequire = real.createRequire;",
+		"export const builtinModules = real.builtinModules;",
+		"export default { createRequire: real.createRequire };",
+		""
+	].join("\n"), "utf8");
+	// 把**除 shim 自己以外**的所有 `node:module` 导入都换成「没有 findPackageJSON 的命名空间」：
+	// lib/index.js 因此走回退；对照组（旧代码形状：命名导入）则真的在链接期报错 —— 模拟才可信。
+	writeFileSync(simLoader, [
+		'import { registerHooks } from "node:module";',
+		'import { pathToFileURL } from "node:url";',
+		"const shimUrl = pathToFileURL(process.env.G1_SHIM).href;",
+		"const shimName = process.env.G1_SHIM.replace(/\\\\/g, \"/\").split(\"/\").pop();",
+		"registerHooks({",
+		"	resolve(specifier, context, nextResolve) {",
+		'		const parent = String(context.parentURL ?? "");',
+		'		if (specifier === "node:module" && !parent.endsWith(shimName)) {',
+		"			return { url: shimUrl, shortCircuit: true };",
+		"		}",
+		"		return nextResolve(specifier, context);",
+		"	}",
+		"});",
+		""
+	].join("\n"), "utf8");
+	// 对照组：旧代码形状（命名导入一个不存在的导出）在该环境下必须抛 G1 的那个 SyntaxError
+	writeFileSync(simProbe, [
+		'import { findPackageJSON } from "node:module";',
+		"export const probe = typeof findPackageJSON;",
+		""
+	].join("\n"), "utf8");
+	writeFileSync(simChild, [
+		'import { writeFileSync } from "node:fs";',
+		"const result = { underNode18Shape: { loaded: false, mode: null, zodVersion: null, error: null }, namedImportControl: { loaded: false, error: null } };",
+		"try {",
+		"	const mod = await import(process.env.G1_LIB_URL);",
+		"	result.underNode18Shape.loaded = true;",
+		"	result.underNode18Shape.mode = mod.__internals.packageJsonResolver.mode;",
+		"	mod.__internals.resetPackageCache();",
+		"	result.underNode18Shape.zodVersion = mod.__internals.packageInfoOf(\"zod\", process.env.G1_BASE_URL).installedVersion;",
+		"} catch (error) {",
+		"	result.underNode18Shape.error = `${error?.name}: ${error?.message}`;",
+		"}",
+		"try {",
+		"	const probe = await import(process.env.G1_PROBE_URL);",
+		"	result.namedImportControl.loaded = true;",
+		"	result.namedImportControl.error = `unexpectedly loaded: ${probe.probe}`;",
+		"} catch (error) {",
+		"	result.namedImportControl.error = `${error?.name}: ${error?.message}`;",
+		"}",
+		"writeFileSync(process.env.G1_OUT, JSON.stringify(result, null, 2));",
+		""
+	].join("\n"), "utf8");
+	let simRunError = null;
+	try {
+		// 注意：Windows 上 `--import` 必须给 file:// URL（裸绝对路径会 ERR_UNSUPPORTED_ESM_URL_SCHEME）
+		runExternal(process.execPath, ["--import", pathToFileURL(simLoader).href, simChild], {
+			env: {
+				...process.env,
+				G1_SHIM: simShim,
+				G1_LIB_URL: pathToFileURL(join(repoRoot, "lib", "index.js")).href,
+				G1_BASE_URL: repoBaseUrl,
+				G1_PROBE_URL: pathToFileURL(simProbe).href,
+				G1_OUT: simOut
+			}
+		});
+	} catch (error) {
+		simRunError = error instanceof Error ? error.message : String(error);
+	}
+	const simResult = existsSync(simOut) ? JSON.parse(readFileSync(simOut, "utf8")) : null;
+	ok(simRunError === null && simResult !== null,
+		`G1 16d: Node 18 形状下子进程正常退出（runError=${String(simRunError)}）`);
+	ok(simResult?.underNode18Shape?.loaded === true,
+		`G1 16d: **真的** import lib/index.js 成功（无 findPackageJSON 的命名空间下不再链接期报错；error=${String(simResult?.underNode18Shape?.error)}）`);
+	ok(simResult?.underNode18Shape?.mode === "fallback",
+		`G1 16d: 自动选了回退实现（mode=${String(simResult?.underNode18Shape?.mode)}）`);
+	ok(simResult?.underNode18Shape?.zodVersion === zodExpectedVersion,
+		`G1 16d: 该环境下 packageInfoOf("zod") 仍解析出版本 ${String(simResult?.underNode18Shape?.zodVersion)}`);
+	ok(simResult?.namedImportControl?.loaded === false && /findPackageJSON/.test(String(simResult?.namedImportControl?.error)),
+		`G1 16d 对照组：旧代码形状（命名导入）在该环境下确实抛链接期错误 → 模拟可信（${String(simResult?.namedImportControl?.error).slice(0, 120)}）`);
+	rmSync(simDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+
+// ---- 17 弱网四连（C-02/03/04/09）实证：本地 HTTP 桩 + 注入式 fake fetch，**全程不碰真实外网** ----
+// 手法：① 本地 127.0.0.1 HTTP 桩提供 registry 响应（可切 hang/404/500），真实 socket + 真实 AbortSignal；
+//      ② 包装 globalThis.fetch 拦截 awesome-dsh-plugin.com / api.github.com / raw.githubusercontent.com
+//         （目录与 dshfind 的 URL 在宿主里是硬编码的），其余请求透传真实 fetch。
+import { createServer } from "node:http";
+
+const net = __internals.network;
+const netStats = { fetched: 0, registry: 0, catalog: 0, github: 0, aborted: 0, serverAborted: 0 };
+let stubMode = "hang";        // hang | 404 | 500 | ok
+let catalogMode = "ok";       // hang | error | ok
+let catalogDelayMs = 0;
+let catalogCalls = 0;
+let dshfindMode = "ok";       // hang | ok
+const STUB_CATALOG = {
+	updated: "2026-10-07",
+	categories: { other: { zh: "其它", en: "Other" } },
+	plugins: [
+		{ name: "stub-plugin-a", url: "https://github.com/stub-owner/stub-plugin-a", npm: "stub-plugin-a", category: "other", description: { zh: "桩条目 A", en: "stub A" }, stars: 3, added: "2026-10-01" },
+		{ name: "stub-plugin-b", url: "https://github.com/stub-owner/stub-plugin-b", category: "other", description: { en: "stub B" }, stars: 1, added: "2026-09-01" }
+	]
+};
+const abortError = () => Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+/** 弱网黑洞形状：永不响应，只在 signal abort 时 reject（= 吃满超时，最坏情况）。 */
+const hangUntilAbort = (signal) => new Promise((_, reject) => {
+	if (signal?.aborted === true) {
+		netStats.aborted += 1;
+		reject(abortError());
+		return;
+	}
+	signal?.addEventListener("abort", () => {
+		netStats.aborted += 1;
+		reject(abortError());
+	}, { once: true });
+});
+const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const stubServer = createServer((req, res) => {
+	netStats.registry += 1;
+	netStats.fetched += 1;
+	if (stubMode === "hang") {
+		// 客户端 abort → socket 关闭：服务端能观察到「宿主真的取消了在飞请求」
+		res.on("close", () => { netStats.serverAborted += 1; });
+		return;
+	}
+	if (stubMode === "404") {
+		res.writeHead(404, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: "Not found" }));
+		return;
+	}
+	if (stubMode === "500") {
+		res.writeHead(500, { "content-type": "text/plain" });
+		res.end("boom");
+		return;
+	}
+	res.writeHead(200, { "content-type": "application/json" });
+	res.end(JSON.stringify({ "dist-tags": { latest: "1.0.0", next: "2.0.0-next.1" } }));
+});
+await new Promise((resolve) => stubServer.listen(0, "127.0.0.1", resolve));
+const stubBase = `http://127.0.0.1:${stubServer.address().port}`;
+const realFetch = globalThis.fetch;
+globalThis.fetch = async (input, init) => {
+	const url = typeof input === "string" ? input : input?.url ?? String(input);
+	if (url.startsWith("https://awesome-dsh-plugin.com/")) {
+		netStats.fetched += 1;
+		netStats.catalog += 1;
+		catalogCalls += 1;
+		if (catalogMode === "hang") return await hangUntilAbort(init?.signal);
+		if (catalogMode === "error") throw new TypeError("fetch failed");
+		if (catalogDelayMs > 0) await sleep(catalogDelayMs);
+		return jsonResponse(STUB_CATALOG);
+	}
+	if (url.startsWith("https://api.github.com/") || url.startsWith("https://raw.githubusercontent.com/")) {
+		netStats.fetched += 1;
+		netStats.github += 1;
+		if (dshfindMode === "hang") return await hangUntilAbort(init?.signal);
+		if (url.includes("/search/repositories")) return jsonResponse({ items: [{ full_name: "stub-owner/stub-plugin-a" }] });
+		if (url.includes("raw.githubusercontent.com/")) return jsonResponse({ name: "stub-plugin-a", version: "3.1.4" });
+		if (url.includes("/releases/latest")) return jsonResponse({ tag_name: "v3.1.4" });
+		return jsonResponse({}, 404);
+	}
+	// 其余（含本地桩 registry）走真实 fetch：这里统计「被 abort 的在飞请求」——C-03「到点真的中止」的客户端侧证据
+	try {
+		return await realFetch(input, init);
+	} catch (error) {
+		if (error?.name === "AbortError" || error?.name === "TimeoutError") netStats.aborted += 1;
+		throw error;
+	}
+};
+// 独立的迷你 profile（24 个可解析的桩包 > 8 并发），专门用于验证「总预算到点中止后续批次」
+const netProfileDir = mkdtempSync(join(tmpdir(), "pm-weaknet-"));
+writeFileSync(join(netProfileDir, "package.json"), JSON.stringify({ name: "weaknet-profile", private: true, dependencies: {} }, null, 2) + "\n", "utf8");
+const NET_TARGETS = 24;
+for (let i = 0; i < NET_TARGETS; i += 1) {
+	const dir = join(netProfileDir, "node_modules", `stub-pkg-${i}`);
+	mkdirSync(dir, { recursive: true });
+	writePkg(dir, { name: `stub-pkg-${i}`, version: "1.0.0" });
+}
+const netEntries = Array.from({ length: NET_TARGETS }, (_, i) => ({ id: `w${i}`, options: { id: `w${i}`, name: `stub-pkg-${i}` }, fiber: undefined, _initTask: undefined }));
+const netCtx = {
+	loader: {
+		ctx: { baseUrl: pathToFileURL(netProfileDir + "/").href },
+		entries: () => netEntries,
+		resolve: (id) => netEntries.find((e) => e.id === id)
+	},
+	on: () => {},
+	inject: (servs, okCb, failCb) => { if (typeof failCb === "function") failCb(); },
+	logger: { info: () => {} },
+	reflect: { provide: () => {} }
+};
+const netSvc = new PluginManagerPro(netCtx, { protectedEntries: [], settleTimeoutMs: 200 });
+const stubSource = (url = `${stubBase}/registry`) => [{ name: "本地桩源", url, enabled: true, official: false, type: "registry" }];
+netSvc.sources = stubSource();
+/** 弱网调用一律给 500ms 单次预算，避免测试自己等满 8s 超时（同时也验证「预算折算进单请求超时」）。 */
+const hangOpts = () => ({ deadline: Date.now() + 500 });
+
+// C-02（核心可证伪断言）：网络失败不写「无更新」负缓存；换回可用源后立即重试能拿到真实结果
+net.resetNetworkState();
+stubMode = "hang";
+const c02t0 = Date.now();
+const c02Fail = await net.refreshLatest("stub-pkg-0", stubSource(), hangOpts());
+const c02FailMs = Date.now() - c02t0;
+ok(c02Fail.version === null && (c02Fail.reason === "timeout" || c02Fail.reason === "network"),
+	`C-02: 桩停摆（弱网黑洞形状）→ version=null reason=${c02Fail.reason}（${c02FailMs}ms，吃满单次预算）`);
+const c02Snap = net.cacheSnapshot();
+ok(c02Snap.version.length === 0,
+	`C-02: 网络失败**未**写入 VERSION_CACHE 负缓存（条目=${c02Snap.version.length}；30 分钟负缓存只允许记确定性结论）`);
+ok(c02Snap.failures.length === 1 && c02Snap.failures[0].reason === c02Fail.reason,
+	`C-02: 失败只进 ${net.NEGATIVE_TTL_MS / 1000}s 合流窗口（reason=${c02Snap.failures[0]?.reason}）—— 只合流连点，不冒充「无更新」`);
+const c02Before = netStats.fetched;
+const c02Again = await net.refreshLatest("stub-pkg-0", stubSource(), {});
+ok(netStats.fetched === c02Before && c02Again.version === null && c02Again.reason === c02Fail.reason,
+	`C-02: 合流窗口内不重复打网络（fetched ${c02Before} → ${netStats.fetched}）且原因如实返回（reason=${c02Again.reason}）`);
+stubMode = "ok";
+const c02Ok = await net.refreshLatest("stub-pkg-0", stubSource(), { force: true });
+ok(c02Ok.version === "2.0.0-next.1" && c02Ok.reason === "ok",
+	`C-02: **网络恢复后立即重试拿到真实版本 ${c02Ok.version}**（reason=${c02Ok.reason}，未被负缓存短路）`);
+net.resetNetworkState();
+stubMode = "hang";
+await net.refreshLatest("stub-pkg-1", stubSource(`${stubBase}/registry-bad`), hangOpts());
+stubMode = "ok";
+const c02Switch = await net.refreshLatest("stub-pkg-1", stubSource(), {});
+ok(c02Switch.version === "2.0.0-next.1",
+	`C-02: 换回可用源（不加 force）立即拿到 ${c02Switch.version} —— 失败源不污染其它源/其它包`);
+
+// C-02-d：dshfind（插件超市）源的 **1 小时**负缓存同样不被网络失败污染
+net.resetNetworkState();
+const dshfindSource = { name: "插件超市", url: "dshfind://gh", enabled: true, official: false, type: "dshfind" };
+dshfindMode = "hang";
+const dfFail = await net.fetchLatestDshfindVersion("stub-plugin-a", dshfindSource, hangOpts());
+ok(dfFail.version === null && (dfFail.reason === "timeout" || dfFail.reason === "network"),
+	`C-02: dshfind 弱网失败 reason=${dfFail.reason}（1 小时缓存的同类污染点）`);
+ok(net.cacheSnapshot().dshfindSearch.length === 0,
+	`C-02: dshfind **1 小时**负缓存未被网络失败污染（条目=${net.cacheSnapshot().dshfindSearch.length}）`);
+dshfindMode = "ok";
+const dfOk = await net.fetchLatestDshfindVersion("stub-plugin-a", dshfindSource, { force: true });
+ok(dfOk.version === "3.1.4" && dfOk.repo === "stub-owner/stub-plugin-a",
+	`C-02: dshfind 网络恢复后立即重试拿到真实版本 ${dfOk.version}（repo=${dfOk.repo}）`);
+
+// C-03：网络类失败按源指数退避；显式重试可穿透
+net.resetNetworkState();
+stubMode = "hang";
+await net.refreshLatest("stub-pkg-2", stubSource(), hangOpts());
+const backoffSnap = net.cacheSnapshot();
+const backoffLeft = (backoffSnap.backoff[0]?.until ?? 0) - Date.now();
+ok(backoffSnap.backoff.length === 1 && backoffLeft > 0 && backoffLeft <= net.BACKOFF_BASE_MS,
+	`C-03: 网络失败触发按源退避（第 ${backoffSnap.backoff[0]?.streak} 次，剩余 ${Math.round(backoffLeft / 1000)}s ≤ 基准 ${net.BACKOFF_BASE_MS / 1000}s，指数上限 10min）`);
+const backoffBefore = netStats.fetched;
+const c03Skipped = await net.refreshLatest("stub-pkg-3", stubSource(), {});
+ok(netStats.fetched === backoffBefore && c03Skipped.reason === "backoff",
+	`C-03: 退避期内不再发起请求（fetched ${backoffBefore} → ${netStats.fetched}，reason=${c03Skipped.reason}）—— 不再「反复全量重试、反复吃满超时」`);
+const c03Forced = await net.refreshLatest("stub-pkg-3", stubSource(), { force: true, ...hangOpts() });
+ok(netStats.fetched === backoffBefore + 1,
+	`C-03: 显式重试（force）穿透退避、真的再联网一次（fetched ${backoffBefore} → ${netStats.fetched}，reason=${c03Forced.reason}）`);
+
+// C-03：检查更新的**总预算**（大于一批 = 24 包 / 8 并发）到点真的中止，且在飞请求被取消
+net.resetNetworkState();
+net.setRefreshBudgetMs(700);
+stubMode = "hang";
+const regBefore = netStats.registry;
+const abortedBefore = netStats.aborted;
+const c03t0 = Date.now();
+const c03Snap = await netSvc.refresh();
+const c03Ms = Date.now() - c03t0;
+const c03Info = c03Snap.lastRefresh;
+ok(c03Ms < 700 + 1500, `C-03: 桩黑洞下 refresh 在预算内返回：实测 ${c03Ms}ms（预算 ${c03Info?.budgetMs}ms）`);
+ok(c03Info?.aborted === true && c03Info.checked < c03Info.total,
+	`C-03: 到点**真的中止**（aborted=${c03Info?.aborted}，只查了 ${c03Info?.checked}/${c03Info?.total} 个包，后续批次未发起）`);
+ok(netStats.registry - regBefore === 8,
+	`C-03: 预算内只发出 1 批（8 个）请求，未继续叠加（registry=${netStats.registry - regBefore}）`);
+ok(netStats.aborted - abortedBefore >= 8 && netStats.serverAborted > 0,
+	`C-03: 在飞请求被真的取消（客户端 AbortError=${netStats.aborted - abortedBefore}，桩服务端观察到连接关闭=${netStats.serverAborted}）`);
+const fetchedAtReturn = netStats.fetched;
+await sleep(600);
+ok(netStats.fetched === fetchedAtReturn,
+	`C-03: 返回后后台**不再继续打网络**（${fetchedAtReturn} → ${netStats.fetched}，对照旧行为：界面超时后还会再跑半小时）`);
+net.resetRefreshBudgetMs();
+ok(net.getRefreshBudgetMs() === net.REFRESH_BUDGET_DEFAULT_MS && net.REFRESH_BUDGET_DEFAULT_MS < 240000,
+	`C-03: 生产默认总预算 ${net.REFRESH_BUDGET_DEFAULT_MS / 1000}s 显著小于旧客户端 240s（客户端已同步到 120s）`);
+
+// 真实黑洞地址旁证（TEST-NET-1，不可路由；只做一次、2s 上限，行为不作为断言）
+let blackhole = "skipped";
+let bt0 = Date.now();
+try {
+	bt0 = Date.now();
+	await realFetch("http://192.0.2.1:9/", { signal: AbortSignal.timeout(2000) });
+	blackhole = `${Date.now() - bt0}ms OK(?)`;
+} catch (error) {
+	blackhole = `${Date.now() - bt0}ms ${error?.name}`;
+}
+console.log(`弱网旁证：黑洞 192.0.2.1:9（2s 上限）实测 ${blackhole} —— 本次宿主机直接不可达（快速失败）；「吃满超时」的最坏形状由上面的本地桩停摆确定性复现（单请求 500ms 预算实测吃满 512ms）。`);
+
+// C-04：市场目录不再进全局 FIFO 串行队列；并发 3 个请求按 key 去重、互不顶成超时
+net.resetNetworkState();
+catalogMode = "ok";
+catalogDelayMs = 250;
+catalogCalls = 0;
+// 注意：队列（mutationTail）是**实例级**的，必须占住 **netSvc 自己**的队头才等价于
+// 「用户正在跑更新/卸载，此时打开插件市场」——旧实现在这种情况下会排队到 20s 假超时。
+const queueHold = netSvc.serialize(async () => { await sleep(800); });
+const c04t0 = Date.now();
+const c04Results = await Promise.all([netSvc.marketCatalog(), netSvc.marketCatalog(), netSvc.marketCatalog()]);
+const c04Ms = Date.now() - c04t0;
+await queueHold;
+ok(catalogCalls === 1,
+	`C-04: 并发 3 次目录请求按 key 去重 → 只打一次网络（catalogCalls=${catalogCalls}）`);
+ok(c04Ms < 600,
+	`C-04: 3 个并发请求互不顶成超时：${c04Ms}ms 完成（队头长任务仍占着 800ms；旧实现要排在它后面 ≥800ms，客户端只有 20s）`);
+ok(c04Results.every((result) => result.source === "live" && result.items.length === 2),
+	`C-04: 三个调用都拿到同一份目录（source=${c04Results.map((r) => r.source).join("/")}，items=${c04Results[0].items.length}）`);
+const catalogCached = await netSvc.marketCatalog();
+ok(catalogCached.source === "cache" && catalogCalls === 1,
+	`C-04: 缓存命中在排队之前返回（source=${catalogCached.source}，catalogCalls 仍为 ${catalogCalls}）`);
+
+// C-09：registry 源区分「404 包不存在」与「网络异常」，文案分别为「没有此插件/无更新」与「网络不可达，可重试」
+// C-09：连接被拒（本地关掉的端口）= 明确的网络异常，快速失败且不得写负缓存
+const deadServer = createServer(() => {});
+await new Promise((resolve) => deadServer.listen(0, "127.0.0.1", resolve));
+const deadPort = deadServer.address().port;
+await new Promise((resolve) => deadServer.close(resolve));
+net.resetNetworkState();
+const c09Refused = await net.refreshLatest("stub-pkg-9", stubSource(`http://127.0.0.1:${deadPort}/registry`), {});
+ok(c09Refused.version === null && c09Refused.reason === "network",
+	`C-09: 连接被拒（端口 ${deadPort} 已关）→ reason=${c09Refused.reason}（网络类，可重试）`);
+ok(net.cacheSnapshot().version.length === 0,
+	`C-02/C-09: 连接被拒**未**写负缓存（entries=${net.cacheSnapshot().version.length}）`);
+net.resetNetworkState();
+stubMode = "404";
+const c09Missing = await net.refreshLatest("stub-pkg-0", stubSource(), { force: true });
+ok(c09Missing.version === null && c09Missing.reason === "not-found",
+	`C-09: 404 → reason=${c09Missing.reason}（确定性结论：可视为无更新并写负缓存）`);
+ok(net.cacheSnapshot().version.length === 1,
+	`C-09/C-02: 404 是确定性结论 → 允许进 30 分钟负缓存（条目=${net.cacheSnapshot().version.length}）`);
+net.resetNetworkState();
+stubMode = "500";
+const c09Network = await net.refreshLatest("stub-pkg-0", stubSource(), { force: true });
+ok(c09Network.version === null && c09Network.reason === "network",
+	`C-09: 5xx → reason=${c09Network.reason}（不确定：不得写负缓存）`);
+ok(net.cacheSnapshot().version.length === 0,
+	`C-09/C-02: 5xx 未写负缓存（entries=${net.cacheSnapshot().version.length}）`);
+// 文案走真实 update() 路径（fixture 的 dsh-v08-demo 是 file: 依赖，失败分支不会触发 pnpm）
+const savedSources = svc.sources;
+svc.sources = stubSource();
+net.resetNetworkState();
+stubMode = "500";
+const c09TextNet = await svc.update(["dsh-v08-demo"]);
+stubMode = "404";
+const c09TextMissing = await svc.update(["dsh-v08-demo"]);
+svc.sources = savedSources;
+const c09NetItem = c09TextNet.items[0];
+const c09MissingItem = c09TextMissing.items[0];
+ok(c09NetItem.status === "network-error" && /网络不可达，可重试/.test(c09NetItem.message ?? ""),
+	`C-09: 网络异常文案「${c09NetItem.message}」（status=${c09NetItem.status}，reason=${c09NetItem.reason}）`);
+ok(c09MissingItem.status === "not-found" && /没有此插件/.test(c09MissingItem.message ?? "") && /无更新/.test(c09MissingItem.message ?? ""),
+	`C-09: 包不存在文案「${c09MissingItem.message}」（status=${c09MissingItem.status}，reason=${c09MissingItem.reason}）`);
+
+console.log(`弱网四连实测汇总：C-02 网络失败写负缓存 0 条（VERSION_CACHE/dshfind 1h 均为 0），force 重试即拿真实版本；C-03 宿主总预算 ${net.REFRESH_BUDGET_DEFAULT_MS / 1000}s（实测预算 ${c03Info?.budgetMs}ms 内中止 ${c03Info?.checked}/${c03Info?.total}，AbortError ${netStats.aborted}）vs 客户端 withTimeout 120s（原 240s）；C-04 队头被占 800ms 时目录 ${c04Ms}ms 返回、只打 1 次网络；C-09 404=not-found / 5xx=network 文案分流。`);
+globalThis.fetch = realFetch;
+await new Promise((resolve) => stubServer.close(resolve));
+net.resetRefreshBudgetMs();
+net.resetNetworkState();
+rmSync(netProfileDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
 // 超时分支的子进程刚被 kill：等它真正退出，否则它仍以 profile 为 cwd（Windows 会锁住目录，rm 报 EPERM）
 await sleep(600);

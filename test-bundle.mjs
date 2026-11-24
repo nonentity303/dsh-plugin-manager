@@ -1,11 +1,25 @@
 // test-bundle.mjs — 模拟浏览器端 DSH 客户端模块加载器，验证 bundle 契约
 // 用法: node test-bundle.mjs [path-to-client.js]
+//
+// 参数处理（t13）：只认**位置参数** <path-to-client.js>。`-` 开头的开关一律忽略并提示一行 ——
+// 旧写法 `process.argv[2] ?? "lib/client.js"` 会把 `--strict`（test-launcher.mjs 的开关）当成文件路径，
+// 于是 `node test-bundle.mjs --strict` → ENOENT → exit 1，把下游（CI/人肉复核）带沟里。
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 
 const require = createRequire(import.meta.url);
-const file = process.argv[2] ?? "lib/client.js";
+const argv = process.argv.slice(2);
+const unknownFlags = argv.filter((a) => a.startsWith("-"));
+if (unknownFlags.includes("--help") || unknownFlags.includes("-h")) {
+	console.log("用法: node test-bundle.mjs [path-to-client.js]（默认 lib/client.js）");
+	process.exit(0);
+}
+if (unknownFlags.length > 0) {
+	console.warn(`提示：test-bundle 不认该参数（${unknownFlags.join(" ")}；\`--strict\` 是 test-launcher.mjs 的开关），已按默认模式运行。`);
+	console.warn("用法: node test-bundle.mjs [path-to-client.js]（默认 lib/client.js）");
+}
+const file = argv.find((a) => !a.startsWith("-")) ?? "lib/client.js";
 const code = readFileSync(file, "utf8");
 
 let handoff = null;
@@ -494,3 +508,147 @@ if (aggregateChecks.length > 0) {
 	process.exit(1);
 }
 console.log("AGGREGATE OK: highest version + tie distribution across sources");
+
+// ---- P-01：bundle 体积形态（可证伪：修复前 796,658 B / 18,529 行 / 未 minify；含 53 个 zod locale）
+// 基线（audit/verify-090/rc2-perf-audit.md §P-01 实测）：796,658 B、gzip 123,064 B、18,529 行、
+// zod 53 个 locale = 308,634 B；React 本就 external（勿回退）。
+// 注意：esbuild 产物里非 ASCII 一律转义成 \uXXXX（大写十六进制），所以检查前先解码。
+{
+	const { gzipSync } = await import("node:zlib");
+	const sizeChecks = [];
+	const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+	const bytes = Buffer.byteLength(code);
+	const gzip = gzipSync(Buffer.from(code)).length;
+	const lines = code.split("\n").length;
+	// 体积：minify 后实测 ~256 KB（修复前 796,658 B）；阈值留足余量但足以区分「有没有 minify」
+	if (bytes > 320000) sizeChecks.push(`client.js 仍偏大：${bytes} B（修复前 796,658 B；minify 后应 ≤ 320 KB）`);
+	// gzip：修复前 123,064 B → 现在 ~66 KB（含 locale 裁剪）
+	if (gzip > 80000) sizeChecks.push(`gzip 仍偏大：${gzip} B（修复前 123,064 B；应 ≤ 80 KB）`);
+	// 未 minify 的产物是 1.8 万行；minify 后个位数~几十行
+	if (lines > 400) sizeChecks.push(`client.js 未 minify：${lines} 行（minify 后应 ≤ 400）`);
+	// React 必须仍在外部模块表（审计 P-01 确认 external 生效；本地构建不得回退成内联）
+	if (/react-dom|react\.production|__SECRET_INTERNALS/.test(code)) sizeChecks.push("React 被打进 bundle（external 失效）");
+	if (!/require\("react"\)/.test(code)) sizeChecks.push('bundle 里没有 require("react")，external 契约疑似被破坏');
+	// 外部 sourcemap 仍生成（不进包，但调试需要）
+	if (!/\/\/# sourceMappingURL=client\.js\.map/.test(code)) sizeChecks.push("外部 sourcemap 引用丢失（build.mjs 的 sourcemap: true 被关掉？）");
+	// zod locale 裁剪：日文假名 / 希伯来文只可能来自被裁掉的 locale（保留的 en 是 ASCII、zh-CN 是汉字）
+	const kana = (decoded.match(/[\u3040-\u30ff]/g) ?? []).length;
+	const hebrew = (decoded.match(/[\u0590-\u05ff]/g) ?? []).length;
+	if (kana > 0) sizeChecks.push(`仍含日文假名 ${kana} 处（ja 等 locale 未裁掉）`);
+	if (hebrew > 0) sizeChecks.push(`仍含希伯来文 ${hebrew} 处（he locale 未裁掉）`);
+	// 保留的 zh 文案仍在（裁剪不能误伤 i18n：ctx.locale.register 用的 zh 表必须完整进包）
+	if (!decoded.includes("检查更新")) sizeChecks.push("中文 i18n 文案丢失（locale 裁剪误伤？）");
+	if (sizeChecks.length > 0) {
+		console.error("P-01 SIZE FAIL:\n - " + sizeChecks.join("\n - "));
+		process.exit(1);
+	}
+	console.log(`P-01 OK: ${bytes} B / gzip ${gzip} B / ${lines} 行（基线 796,658 B / 123,064 B / 18,529 行；React external 保持；zod locale 已裁至 en+zh-CN）`);
+}
+
+// ---- P-02：宿主 snapshot() 的文件探测负缓存（可证伪：修复前 hot 调用 812 existsSync + 204 statSync = 1,016 次）
+// 手法：给 node:fs 打计数补丁后调 `syncBuiltinESMExports()` —— lib/index.js 里**已经绑定**的具名导入
+// （existsSync/statSync）也会走补丁（实测：不 sync 则一次都统计不到）。夹具用本仓库自己的 node_modules
+// （真实包名 → 简介探测真的落盘），不需要网络也不需要临时 profile。
+{
+	const { syncBuiltinESMExports, createRequire: createRequireForCount } = await import("node:module");
+	const { pathToFileURL } = await import("node:url");
+	const { readdirSync } = await import("node:fs");
+	const { dirname, join } = await import("node:path");
+	const { fileURLToPath } = await import("node:url");
+	const HERE = dirname(fileURLToPath(import.meta.url));
+	const fsCount = createRequireForCount(import.meta.url)("node:fs");
+	const fsKeys = ["existsSync", "statSync", "readFileSync"];
+	const fsCounts = Object.fromEntries(fsKeys.map((k) => [k, 0]));
+	const fsOriginals = {};
+	for (const name of fsKeys) {
+		fsOriginals[name] = fsCount[name];
+		fsCount[name] = function (...args) {
+			fsCounts[name] += 1;
+			return fsOriginals[name].apply(this, args);
+		};
+	}
+	// 先打补丁再加载被测模块（双保险：即使某些绑定在 import 时快照，sync 之后也会刷新）
+	syncBuiltinESMExports();
+	const { PluginManagerPro, __internals } = await import("./lib/index.js");
+	const resetFsCounts = () => { for (const k of fsKeys) fsCounts[k] = 0; };
+
+	const perfNames = [];
+	for (const d of readdirSync(join(HERE, "node_modules"), { withFileTypes: true })) {
+		if (d.name.startsWith(".")) continue;
+		if (d.name.startsWith("@")) {
+			for (const s of readdirSync(join(HERE, "node_modules", d.name), { withFileTypes: true })) perfNames.push(`${d.name}/${s.name}`);
+		} else perfNames.push(d.name);
+	}
+	perfNames.sort();
+	const perfEntries = [];
+	for (let i = 0; i < 120; i += 1) {
+		perfEntries.push({ id: `perf-e${i}`, options: { id: `perf-cfg-${i}`, name: perfNames[i % perfNames.length] }, fiber: undefined, _initTask: undefined });
+	}
+	const perfCtx = {
+		loader: {
+			ctx: { baseUrl: pathToFileURL(join(HERE, "package.json")).href },
+			entries: () => perfEntries,
+			resolve: (id) => perfEntries.find((e) => e.id === id)
+		},
+		on: () => {}, inject: (s, okCb, failCb) => { if (typeof failCb === "function") failCb(); },
+		logger: { info: () => {}, warn: () => {}, error: () => {} },
+		reflect: { provide: () => {} }
+	};
+	const perfSvc = new PluginManagerPro(perfCtx, { protectedEntries: [], settleTimeoutMs: 200 });
+	__internals.resetReadmeIntroCache();
+
+	resetFsCounts();
+	const perfCold = perfSvc.snapshot();
+	const coldFs = { ...fsCounts };
+	const coldStats = __internals.readmeIntroStats();
+
+	resetFsCounts();
+	const perfHot = perfSvc.snapshot();
+	const hotFs = { ...fsCounts };
+	const hotStats = __internals.readmeIntroStats();
+
+	__internals.resetReadmeIntroCache();
+	resetFsCounts();
+	const perfAfterReset = perfSvc.snapshot();
+
+	for (const name of fsKeys) fsCount[name] = fsOriginals[name];
+	syncBuiltinESMExports();
+
+	const perfChecks = [];
+	if (perfCold.entries.length !== perfEntries.length) perfChecks.push(`夹具条目数异常：${perfCold.entries.length}`);
+	if (!(coldFs.existsSync > 0 && coldFs.statSync > 0)) perfChecks.push("冷快照没有探测磁盘（缓存误伤了首次探测？）");
+	if (hotFs.existsSync !== 0 || hotFs.statSync !== 0) perfChecks.push(`热快照仍在探测：existsSync ${hotFs.existsSync} + statSync ${hotFs.statSync}（应为 0）`);
+	if (!(hotStats.calls === coldStats.calls)) perfChecks.push(`热调用仍进了 readmeIntro：calls ${coldStats.calls} → ${hotStats.calls}`);
+	if (!(hotStats.hits > coldStats.hits)) perfChecks.push("热调用没有命中缓存");
+	if (!(coldStats.hits > 0)) perfChecks.push(`同一份快照内没有去重命中（${perfEntries.length} 条目 / ${perfNames.length} 包）`);
+	if (JSON.stringify(perfCold) !== JSON.stringify(perfHot)) perfChecks.push("冷/热快照内容不同 → 缓存改变了输出语义");
+	if (JSON.stringify(perfAfterReset) !== JSON.stringify(perfCold)) perfChecks.push("清空缓存后重算与冷快照不同 → 存在隐藏状态");
+	if (perfChecks.length > 0) {
+		console.error("P-02 FAIL:\n - " + perfChecks.join("\n - "));
+		process.exit(1);
+	}
+	console.log(`P-02 OK: 热 snapshot() 文件探测 ${hotFs.existsSync + hotFs.statSync} 次（修复前 812 existsSync + 204 statSync = 1,016 次）；冷快照 ${coldFs.existsSync} existsSync + ${coldFs.statSync} statSync，同快照内去重命中 ${coldStats.hits} 次；冷/热/清缓存后快照逐字段相同`);
+}
+
+// ---- P-05：搜索防抖（纯函数导出 + 产物形态；可证伪：修复前没有「输入值 ≠ 生效过滤值」这一概念，
+//      产物里也不存在 120ms 防抖常量，过滤在每次 onChange 同步重建全表）
+{
+	const debounceChecks = [];
+	const { shouldDebounceSearch, SEARCH_DEBOUNCE_MS } = exported ?? {};
+	if (typeof shouldDebounceSearch !== "function") debounceChecks.push("bundle 未导出 shouldDebounceSearch（P-05 纯函数）");
+	else {
+		if (shouldDebounceSearch("theme", "") !== true) debounceChecks.push("shouldDebounceSearch(输入≠过滤) 应为 true");
+		if (shouldDebounceSearch("theme", "theme") !== false) debounceChecks.push("shouldDebounceSearch(输入=过滤) 应为 false");
+		if (shouldDebounceSearch("", "theme") !== true) debounceChecks.push("shouldDebounceSearch(清空搜索) 应为 true");
+	}
+	if (SEARCH_DEBOUNCE_MS !== 120) debounceChecks.push(`SEARCH_DEBOUNCE_MS 应为 120（实测 ${SEARCH_DEBOUNCE_MS}）`);
+	// 形态：产物里必须有一个 120 的常量（minify 会把它提成变量并内联进 setTimeout 的延时位）
+	if (!/(?:var|let|const) [A-Za-z_$][\w$]*=120[,;]/.test(code)) {
+		debounceChecks.push("产物里找不到 =120 的防抖常量（SEARCH_DEBOUNCE_MS 未被编译进包？）");
+	}
+	if (debounceChecks.length > 0) {
+		console.error("P-05 FAIL:\n - " + debounceChecks.join("\n - "));
+		process.exit(1);
+	}
+	console.log(`P-05 OK: 搜索过滤防抖 ${SEARCH_DEBOUNCE_MS}ms（输入即时、列表重建延后；纯函数 + 产物常量双断言）`);
+}

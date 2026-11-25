@@ -53,6 +53,19 @@ const SERVER_LOG = "rescue-daemon-server.log";
  */
 const PORT_DEFAULT = rescuePortFromEnv();
 
+// ---------------------------------------------------------------- drydock 品牌内联素材
+// 素材源：docs/images/logo-mark.svg（主题自适应 mark）/ docs/images/logo.svg（徽章）。
+// 三个页面（启动页 / /plugins / /rescue）与 open-boot import 本文件时共用同一套内联 SVG 常量：
+// 鲸形与货箱全部 currentColor（内联进页面时跟随文字色，深浅主题自适应；眼睛是路径镂空）；
+// favicon 用徽章版（蓝底白鲸货箱）——currentColor 在 favicon 里会解析成黑色，不可用于 favicon。
+const DRYDOCK_LOGO_PATH = `M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45`;
+/** 主题自适应 mark（内联 SVG，全 currentColor，尺寸可指定，默认 20px）。 */
+const drydockLogoMarkSvg = (size = 20) => `<svg class="drydock-logo-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="${size}" height="${size}" fill="currentColor" role="img" aria-label="drydock logo" style="flex:none;vertical-align:-.15em"><g transform="translate(9.5,14) scale(1.85)"><path d="${DRYDOCK_LOGO_PATH}"/></g><g><rect x="19" y="16.5" width="6.2" height="5.5" rx="0.5"/><rect x="26.4" y="16.5" width="6.2" height="5.5" rx="0.5"/><rect x="19" y="9.8" width="6.2" height="5.5" rx="0.5"/></g></svg>`;
+/** 徽章版（#4D6BFE 圆角方底 + 白鲸货箱），专供 favicon：currentColor 在 favicon 里会解析成黑色。 */
+const DRYDOCK_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect x="1" y="1" width="62" height="62" rx="15" fill="#4D6BFE"/><g transform="translate(9.5,14) scale(1.85)" fill="#FFFFFF"><path d="${DRYDOCK_LOGO_PATH}"/></g><g fill="#FFFFFF"><rect x="19" y="16.5" width="6.2" height="5.5" rx="0.5"/><rect x="26.4" y="16.5" width="6.2" height="5.5" rx="0.5"/><rect x="19" y="9.8" width="6.2" height="5.5" rx="0.5"/></g></svg>`;
+/** data: URI favicon <link>，注入各页面 <head>。 */
+const DRYDOCK_FAVICON_LINK = `<link class="drydock-logo-favicon" rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(DRYDOCK_FAVICON_SVG)}">`;
+
 const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 
 用法：
@@ -216,7 +229,7 @@ async function handleApi(pathname, method, req, res, url, ctx = args) {
  */
 function rescuePageHtml({ apiPrefix = "", enginePort = ENGINE_PORT, entryUrl = entryUrlOf(launcherPortFromEnv()), token = "__DSH_PM_TOKEN__" } = {}) {
 	return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>DSH 独立救援中心</title>
+<html lang="zh"><head><meta charset="utf-8"><title>DSH 独立救援中心</title>${DRYDOCK_FAVICON_LINK}
 <meta name="dsh-pm-token" content="${token}">
 <style>
 body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:24px;display:flex;justify-content:center}
@@ -230,7 +243,7 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 .result{font-size:13px;white-space:pre-wrap}.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}
 a{color:#60a5fa}
 </style></head><body><div class="card">
-<h1>🛟 DSH 独立救援中心</h1>
+<h1>${drydockLogoMarkSvg(22)} 🛟 DSH 独立救援中心</h1>
 <div class="sub">独立于主引擎的救援入口 · 引擎挂了这里依然可用 · 停止引擎前会校验 pid 与端口归属 · 写操作需同源 + 一次性令牌</div>
 <div class="row">
 <button class="primary" onclick="startAndOpen()">启动引擎并打开主界面</button>
@@ -410,4 +423,4 @@ if (isDirectRun()) {
 	if (code !== null) process.exit(code);
 }
 
-export { HELP_TEXT, PORT_DEFAULT, handleApi, main, parseArgs, rescuePageHtml };
+export { HELP_TEXT, PORT_DEFAULT, DRYDOCK_FAVICON_LINK, drydockLogoMarkSvg, handleApi, main, parseArgs, rescuePageHtml };

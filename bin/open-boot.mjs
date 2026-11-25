@@ -64,7 +64,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
 import { removePatchEntriesFor } from "../lib/patch-clean.mjs";
-import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
+import { DRYDOCK_FAVICON_LINK, drydockLogoMarkSvg, handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
 import { entryUrlOf, launcherPortFromEnv, lockPortOf, rescuePortFromEnv } from "../lib/ports.mjs";
 import {
 	ENGINE_PORT, LAUNCHER_APP, bootWindowPlan, chdirStable, createSingleFlight, detectAvailableTerminals, engineHealth,
@@ -1508,7 +1508,7 @@ export async function uninstallLauncher(args, probes = {}) {
  */
 function bootPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, entryUrl = entryUrlOf(launcherPortFromEnv()) } = {}) {
 	return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>DSH 启动器</title>
+<html lang="zh"><head><meta charset="utf-8"><title>DSH 启动器</title>${DRYDOCK_FAVICON_LINK}
 <meta name="dsh-pm-token" content="${token}">
 <style>
 body{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;margin:0;padding:40px 24px;display:flex;justify-content:center}
@@ -1519,7 +1519,7 @@ h1{font-size:20px;color:#fff;margin:0 0 6px}.sub{color:#8b93a3;font-size:13px;ma
 pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;font-size:12px;text-align:left;white-space:pre-wrap;max-height:280px;overflow:auto}
 .ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}a{color:#60a5fa}
 </style></head><body><div class="card">
-<h1>🚀 DSH 启动器</h1>
+<h1>${drydockLogoMarkSvg(20)} 🚀 DSH 启动器</h1>
 <div class="sub">正在执行 自检 → 修复 → 启动，完成后自动打开主界面…</div>
 <div class="spinner" id="spin"></div>
 <pre id="out"></pre>
@@ -2195,7 +2195,7 @@ function engineThemePreference(profile) {
  */
 function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, launcherPort = launcherPortFromEnv(), engineTheme = "system" } = {}) {
 	return `<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>引擎与插件管理台</title>
+<html lang="zh"><head><meta charset="utf-8"><title>引擎与插件管理台</title>${DRYDOCK_FAVICON_LINK}
 <meta name="dsh-pm-token" content="${token}">
 <style>
 :root{--bg:#f6f7f9;--card:#ffffff;--border:#e3e6ec;--text:#1c2330;--dim:#6b7280;--accent:#3b6ef6;--accent-bg:#eef2ff;
@@ -2261,7 +2261,7 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 </style></head><body><div class="wrap">
 <header>
 	<div>
-		<h1>引擎与插件管理台</h1>
+		<h1>${drydockLogoMarkSvg(20)} 引擎与插件管理台</h1>
 		<div class="sub">插件管理（启动器内置兜底页 · 独立于引擎 UI） · <a href="/">启动页</a> · <a href="/rescue">救援中心</a> · <a href="http://127.0.0.1:${enginePort}/" id="mainLink">主界面</a></div>
 	</div>
 </header>

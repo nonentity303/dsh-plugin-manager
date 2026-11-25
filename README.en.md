@@ -8,13 +8,13 @@
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
 
-> Community plugin — not an official DSH package. npm: `dsh-plugin-manager-pro` · GitHub: [nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · Cross-platform (Windows / macOS / Linux).
+> Community plugin — not an official DSH package. npm: `dsh-plugin-manager-pro` · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
 >
 > **Published release 0.9.1** (npm `latest`); the repo's `package.json` `version` is now **`0.9.1-rc2`** — a **pre-release** shipped under the **`next`** dist-tag (`npm i dsh-plugin-manager-pro@next`) that does **not** move `latest`; the previous published release is 0.9.0 (npm + GitHub Releases, 2026-09-30).
-> Check what is published any time with `npm view dsh-plugin-manager-pro version`; tags: <https://github.com/nonentity303/dsh-plugin-manager/tags>.
+> Check what is published any time with `npm view dsh-plugin-manager-pro version`; tags: <https://github.com/nonentity303/dsh-drydock/tags>.
 > ⚠️ A brand-new release is blocked by pnpm's 24 h cool-down (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
 
-![Standalone plugin page: sidebar entry "Plugin manager" + five sections](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-090-official2.png)
+![Standalone plugin page: sidebar entry "Plugin manager" + five sections](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
 
 <sub>**Figure 1** · the 0.9 standalone plugin page (captured in an isolated rehearsal environment on DSH **0.1.7-rc.2**, 2026-09-28): the sidebar entry "Plugin manager" and the five section tabs — Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance. Source image: `docs/images/pm-090-official2.png`.</sub>
 
@@ -40,7 +40,7 @@ This manager is not "one more plugin list". It **takes over that page and adds w
 **Sources** (each one verifiable):
 
 1. Competitor README (announcement + feature list + known limitations + CLI): <https://raw.githubusercontent.com/LX2000WASD/dsh-web-plugin-manager/master/README.md> (mirror if raw is unreachable: <https://cdn.jsdelivr.net/gh/LX2000WASD/dsh-web-plugin-manager@master/README.md>) · repo <https://github.com/LX2000WASD/dsh-web-plugin-manager>. It contains `TypeError: duplicate loader entry id: plugin-manager` and "do not install on 0.1.6-alpha.2 or later".
-2. GitHub API, measured 2026-10-03: competitor `releases` → `[]` (<https://api.github.com/repos/LX2000WASD/dsh-web-plugin-manager/releases>); this repo → **11** releases, latest `v0.9.0` (2026-09-30) with asset `dsh-plugin-manager-pro-0.9.0.tgz` (<https://api.github.com/repos/nonentity303/dsh-plugin-manager/releases>).
+2. GitHub API, measured 2026-10-03: competitor `releases` → `[]` (<https://api.github.com/repos/LX2000WASD/dsh-web-plugin-manager/releases>); this repo → **11** releases, latest `v0.9.0` (2026-09-30) with asset `dsh-plugin-manager-pro-0.9.0.tgz` (<https://api.github.com/repos/nonentity303/dsh-drydock/releases>).
 3. Official page capability surface (0.1.7-rc.2) = the 12 remote methods of `@deepseek-ai/dsh-plugin-manager`: `listPlugins` / `listBundles` / `registries` / `inspect` / `setPluginEnabled` / `setBundleEnabled` / `installBundle` / `waitForInstall` / `cancelInstall` / `removeBundle` / `listVersionExemptions` / `setVersionExemption` (<https://www.npmjs.com/package/@deepseek-ai/dsh-plugin-manager>); the page itself is <https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-plugin-manager>. There are **no** impact preview, history/undo, scenarios or rescue methods.
 4. This repository: `cordis.patch.yml` (disable the built-in page, insert our own row id), `lib/index.js` (uninstall transaction, history, sidecar), `bin/rescue-daemon.mjs` · `bin/open-boot.mjs` · `bin/dsh-boot.mjs` (matching `package.json` `bin`); 0.1.7-rc.2 evidence in `docs/releases/RELEASE_NOTES_0.8.3-1.md` and `docs/releases/0.9.0.md`.
 5. `/rescue` is registered by **our host code** through the engine's `webServer` — hence it dies with the engine. That is exactly why the standalone services exist (`bin/rescue-daemon.mjs` header, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
@@ -67,7 +67,7 @@ Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plu
 
 > **Which version should I install?** DSH **0.1.6 or later → 0.9.1** (to try the pre-release: `npm i dsh-plugin-manager-pro@next` = **0.9.1-rc2**, shipped under the `next` dist-tag, does not move `latest`); **old engines (before 0.1.6) → 0.8.2**. Full matrix under "Requirements".
 
-![Impact preview of a transactional uninstall plus the rescue/diagnostics entries in the same card](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm4-uninstall-preview.png)
+![Impact preview of a transactional uninstall plus the rescue/diagnostics entries in the same card](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm4-uninstall-preview.png)
 
 <sub>**Figure 2** · the **impact preview** of a transactional uninstall (rehearsal environment, 2026-09-28): what will be removed and what is affected, before `package.json` is touched; the same "diagnostics" card also carries the rescue entries (`Repair engine` / `Restart engine` / `Pre-boot self-check` / `auto-quarantine failing plugins`). Source image: `docs/images/pm4-uninstall-preview.png`.</sub>
 
@@ -141,7 +141,7 @@ Five sections, switching keeps your scroll position:
 - **Pre-boot self-check**: `verifyProfile` / `fixProfile` — broken bundles can take the engine down at boot; one-click check and quarantine repair.
 - **Runtime quarantine**: when a plugin is incompatible with the engine, the loader can take the whole tree down (a static check cannot see it) — open-boot / rescue-daemon / dsh-boot parse the boot log, quarantine the failing entry and retry; quarantine rows are backed up and reversible.
 
-![Maintenance → rescue: the diagnostics card](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-maintenance-rescue.png)
+![Maintenance → rescue: the diagnostics card](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-maintenance-rescue.png)
 
 <sub>**Figure 3** · the rescue side (same rehearsal environment, 2026-09-28): the "diagnostics" card in Maintenance with `Repair engine`, `Restart engine`, `Pre-boot self-check`, `auto-quarantine failing plugins`, and the list of uninstallable profile dependencies. Source image: `docs/images/pm-maintenance-rescue.png`.</sub>
 

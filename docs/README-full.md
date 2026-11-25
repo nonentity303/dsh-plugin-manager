@@ -8,13 +8,13 @@
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
 
-> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · 跨平台（Windows / macOS / Linux）
+> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
 > **当前版本 0.9.1**（口径：仓库 `package.json` 的 `version`；上一个发布版是 0.9.0 —— 2026-09-30 上了 npm 与 GitHub Release）。
-> 发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-plugin-manager/tags>。
+> 发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文"安装"）。
 
-![独立插件页：侧边栏一级入口「插件管理」+ 五个分区](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-090-official2.png)
+![独立插件页：侧边栏一级入口「插件管理」+ 五个分区](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
 
 <sub>**图 1** · 0.9 独立插件页实拍（DSH **0.1.7-rc.2** 彩排环境，2026-09-28）：侧边栏一级入口「插件管理」，标签栏就是五个分区——官方内置（可选）· 全部插件 · 插件市场 · 操作与场景 · 维护。源图：`docs/images/pm-090-official2.png`。</sub>
 
@@ -40,7 +40,7 @@
 **出处**（每条都能点开核对）：
 
 1. 竞品 README（首屏公告 + 功能表 + 已知限制 + CLI）：<https://raw.githubusercontent.com/LX2000WASD/dsh-web-plugin-manager/master/README.md>（raw.githubusercontent 不通时用镜像 <https://cdn.jsdelivr.net/gh/LX2000WASD/dsh-web-plugin-manager@master/README.md>）· 仓库 <https://github.com/LX2000WASD/dsh-web-plugin-manager>。公告原文包含 `TypeError: duplicate loader entry id: plugin-manager`、"本仓库的 0.6.x 仍可用于 DSH <= 0.1.5-rc.2；**在 0.1.6-alpha.2 及以上请勿安装**"；已知限制原文包含"删除 bundle 插件的实时卸载失败/超时不再静默：输出会提示「live unmount 未完成，请重启后完全生效」……需手动拉起"与"禁用被依赖的条目可能导致 profile 启动失败……恢复：手动删除该 profile `cordis.patch.yml` 里的 managed 块"。
-2. GitHub API 实测（2026-10-03）：竞品 `releases` 返回空数组 `[]` → <https://api.github.com/repos/LX2000WASD/dsh-web-plugin-manager/releases>；本仓库 `releases` 共 **11** 条，最新 `v0.9.0`（2026-09-30）带资产 `dsh-plugin-manager-pro-0.9.0.tgz` → <https://api.github.com/repos/nonentity303/dsh-plugin-manager/releases>。
+2. GitHub API 实测（2026-10-03）：竞品 `releases` 返回空数组 `[]` → <https://api.github.com/repos/LX2000WASD/dsh-web-plugin-manager/releases>；本仓库 `releases` 共 **11** 条，最新 `v0.9.0`（2026-09-30）带资产 `dsh-plugin-manager-pro-0.9.0.tgz` → <https://api.github.com/repos/nonentity303/dsh-drydock/releases>。
 3. 官方内置页的能力面（0.1.7-rc.2）= 宿主服务 `@deepseek-ai/dsh-plugin-manager` 暴露的 12 个 remote 方法：`listPlugins` / `listBundles` / `registries` / `inspect` / `setPluginEnabled` / `setBundleEnabled` / `installBundle` / `waitForInstall` / `cancelInstall` / `removeBundle` / `listVersionExemptions` / `setVersionExemption`（npm：<https://www.npmjs.com/package/@deepseek-ai/dsh-plugin-manager>）；页面本体是 <https://www.npmjs.com/package/@deepseek-ai/dsh-client-ui-plugin-manager>。**没有**影响预览、操作历史/撤销、场景方案、救砖自检这些方法。
 4. 本仓库实现与验证：`cordis.patch.yml`（停用内置页 + 用自己的行 id 接管）、`lib/index.js`（卸载事务与回滚、操作历史 20 条、侧车持久化）、`bin/rescue-daemon.mjs` · `bin/open-boot.mjs` · `bin/dsh-boot.mjs`（与 `package.json` 的 `bin` 一致）；0.1.7-rc.2 的彩排结论见 `docs/releases/RELEASE_NOTES_0.8.3-1.md`（"引擎 0.1.7-rc.2（隔离彩排环境 `upgrade-rehearsal/`）：**零条目失败**"）与 `docs/releases/0.9.0.md`。
 5. 救援页由**主引擎的 webServer** 注册，所以主引擎起不来时它也不可用——这正是独立守护的设计前提（本仓库 `bin/rescue-daemon.mjs` 文件头注释、`docs/releases/0.9.0.md` ⑥）；官方包不提供任何独立守护/启动器入口（两个官方包的 `package.json` 都没有 `bin` 字段）。
@@ -67,7 +67,7 @@ TypeError: duplicate loader entry id: plugin-manager
 
 > **我该装哪一版？** DSH **0.1.6 及以后 → 0.9.1**；**0.1.5 及更早的老引擎 → 0.8.2**。完整矩阵见下文「环境要求 → 引擎兼容性矩阵」。
 
-![事务化卸载的影响预览 + 同一张卡片里的救援与诊断入口](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm4-uninstall-preview.png)
+![事务化卸载的影响预览 + 同一张卡片里的救援与诊断入口](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm4-uninstall-preview.png)
 
 <sub>**图 2** · 事务化卸载的**影响预览**（彩排环境实拍，2026-09-28）：卸载前先列出将移除的条目与受影响的范围，确认后才动 `package.json`；同一张「诊断中心」卡片的下半部分是救砖入口——`一键修复引擎` / `重启引擎` / `启动前自检` / `失败插件自动隔离`。源图：`docs/images/pm4-uninstall-preview.png`。</sub>
 
@@ -143,7 +143,7 @@ TypeError: duplicate loader entry id: plugin-manager
 - **启动前自检**：`verifyProfile` / `fixProfile`——坏 bundle 会在启动阶段拖垮引擎，管理器提供一键检查与隔离修复
 - **运行期失败条目自动隔离**：插件与引擎不兼容时 loader 会拖垮整棵树启动（静态自检查不出来）——open-boot / rescue-daemon / dsh-boot 启动失败后自动**解析启动日志 → 隔离失败条目 → 重试**，隔离行带备份可逆
 
-![维护 → 救砖：诊断中心（一键修复引擎 / 重启引擎 / 启动前自检 / 失败插件自动隔离）](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-maintenance-rescue.png)
+![维护 → 救砖：诊断中心（一键修复引擎 / 重启引擎 / 启动前自检 / 失败插件自动隔离）](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-maintenance-rescue.png)
 
 <sub>**图 3** · 救砖面实拍（同一台彩排环境，2026-09-28）：维护分区的「诊断中心」——`一键修复引擎`、`重启引擎`、`启动前自检`、`失败插件自动隔离`，以及底部「可卸载的 profile 依赖」清单；页面右上角提示独立救援页 `http://127.0.0.1:3080/rescue`（设置页不可用时走右下角 🛟，引擎起不来则走 `http://127.0.0.1:3081/`）。源图：`docs/images/pm-maintenance-rescue.png`。</sub>
 

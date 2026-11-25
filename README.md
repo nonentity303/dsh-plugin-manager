@@ -1,17 +1,31 @@
-# 引擎与插件管理台（dsh-plugin-manager-pro）
+# DSH 引擎船坞（dsh-drydock，原名 dsh-plugin-manager-pro）
 
-> 本地插件管理器 —— 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**独立插件管理页**（可视化插件管理）+ **3081 兜底页** + **独立救援工具链**。
+> **当引擎起不来的时候，它还在。** 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**启动期可靠性工具链**：独立进程、独立端口的启动前自检、坏插件隔离、引擎拉起与救援（3081 / 3082），外加一个顺手的插件管理台。日常的逛与装请用官方插件页或插件市场——我们不重复做。
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
 
-> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-plugin-manager](https://github.com/nonentity303/dsh-plugin-manager) · 跨平台（Windows / macOS / Linux）
+> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro`（更名过渡期）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **正式发布版 1.0.0**（npm `latest`）。发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-plugin-manager/tags>。
+> **正式发布版 1.0.0**（npm `latest`，2026-11-25 发布）。核对：`npm view dsh-plugin-manager-pro version`——若显示 0.9.1 说明镜像/发布窗口尚未同步；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
+> ⚠️ **正在更名为 `dsh-drydock`（引擎船坞）**：GitHub 仓库已改名（旧链接自动跳转）；npm 包名将在下个版本迁移，旧名届时加弃用标记（不删包）。安装方式见下文[安装](#安装--更新--卸载)。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文[安装](#安装--更新--卸载)）。
 
 **本管理器接管引擎内置的插件管理页，并补上官方不做的部分**：装卸的完整闭环（影响预览 → 事务化卸载 → 失败回滚 → 一键撤销）、操作历史与场景方案、引擎不可用时依然可用的兜底管理页，以及**主引擎起不来时的独立救援工具链**。任一载体失效时，其余载体仍可完成启停、卸载与恢复操作。
 
-![独立插件页：侧边栏一级入口「插件管理」+ 五个页签](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-090-official2.png)
+### 定位：装完之后的事，交给引擎船坞
+
+| 场景 | 谁来管 |
+| --- | --- |
+| 找插件、逛市场、一键装 | 官方插件页 / 插件市场（dshmarket 等）——这条赛道已封顶；本工具**不自建目录**，市场页签只是借 dshfind 目录的顺手入口 |
+| 装坏了怎么办 | **本工具**：事务化卸载（影响预览 → 体检 → 备份 → 删除 → 验证 → 失败自动回滚）+ 一键撤销（最近 20 次操作留痕） |
+| 装多了怎么管 | **本工具**：来源三分区 + 场景方案（启停组合一键切换）+ 操作历史 |
+| 引擎起不来怎么办 | **本工具**：独立进程 3081 的 `verify / fix / start / stop / status`，不依赖 Cordis 运行时；带明确退出码，可被脚本/外部调用 |
+
+> **一句对外口径**：官方与插件市场负责「装进来」；我们负责「装完之后」——装坏了能撤、引擎崩了能救。**它修这次启动，我们修下一次为什么还会坏。**
+>
+> **不做清单**（请直接使用对应工具，不必在本工具里找）：备份恢复 / WebDAV · 主题切换 · 安全静态扫描 · 评论区与截图分享——这些 dshmarket 已成熟；本工具只专注运维与救援，不做它们的替代品。
+
+![独立插件页：侧边栏一级入口「插件管理」+ 五个页签](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
 
 <sub>**图 1** · 独立插件页实拍：侧边栏一级入口「插件管理」，页签为 官方内置（可选）· 全部插件 · 插件市场 · 操作与场景 · 维护。**1.0 起列表内部改为来源三分区**（见下文），页签结构不变。源图：`docs/images/pm-090-official2.png`。</sub>
 
@@ -118,13 +132,13 @@
 - **启动前自检**：`verifyProfile` / `fixProfile`——坏 bundle 会在启动阶段拖垮引擎，一键检查与隔离修复
 - **运行期失败条目自动隔离**：启动失败后自动**解析启动日志 → 隔离失败条目 → 重试**，隔离行带备份可逆（3081 的「重启引擎」也会执行一次）
 
-![维护 → 救砖：诊断中心](https://raw.githubusercontent.com/nonentity303/dsh-plugin-manager/master/docs/images/pm-maintenance-rescue.png)
+![维护 → 救砖：诊断中心](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-maintenance-rescue.png)
 
 <sub>**图 2** · 维护页签的「诊断中心」实拍：一键修复引擎 / 重启引擎 / 启动前自检 / 失败插件自动隔离。源图：`docs/images/pm-maintenance-rescue.png`。</sub>
 
 ## 🧰 独立救援工具链（核心亮点）
 
-> 传统救砖页由主引擎注册——**主引擎挂了，救砖页也跟着瘫**。v0.7 起救砖能力独立于主进程运行，主引擎宕机依然可用。零新依赖（纯 Node + 项目已有 yaml）。
+> 引擎不可用时，宿主编排的恢复界面（含插件市场内建的恢复面板）能力受限。本工具的差异是**进程级**：救援链跑在独立进程、独立端口（3081），`verify / fix / start / stop / status` 带明确退出码（0 就绪 / 1 启动失败 / 2 修复未完成），可被外部脚本调用，不依赖主引擎是否活着。零新依赖（纯 Node + 项目已有 yaml）。
 
 | 工具 | 用途 | 用法 |
 |---|---|---|

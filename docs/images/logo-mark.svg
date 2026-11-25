@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="drydock mark">
+  <!-- 主题自适应 mark：鲸鱼与尾鳍用 currentColor（内联进页面时跟随文字/主题色），插件箱与坞墩保留品牌橙。
+       作为独立文件用 <img> 引用时 currentColor 解析为黑色；深色背景请改用 logo.svg 或内联本文件。 -->
+  <path d="M14 39 C12.5 36 10.5 33.5 7.5 32 C10.5 32.2 12.8 33.2 14.6 34.6 C15 32.2 14.6 30 13.6 27.8 C16.4 29.6 17.4 32.2 17.6 34.8 C18.4 33 19.6 31.6 21.2 30.6 C20.6 33 20.4 35.2 21 37.4 C19 38.4 16.8 39 14 39 Z" fill="currentColor"/>
+  <path d="M15 39.5 C15.5 33.5 21 30 27.5 30 C33 30 36 27.8 42 27.8 C48.5 27.8 53.5 31.4 53.5 36 C53.5 40.6 49 43.8 43 43.8 L20.5 43.8 C16.8 43.8 15.4 42.4 15 39.5 Z" fill="currentColor"/>
+  <rect x="28" y="21.6" width="9" height="8.6" rx="1.6" fill="#FFB020"/>
+  <rect x="38.5" y="22.6" width="7.5" height="7.4" rx="1.4" fill="#FFB020"/>
+  <rect x="17" y="44.2" width="10" height="6.4" rx="2" fill="#FFB020"/>
+  <rect x="37" y="44.2" width="10" height="6.4" rx="2" fill="#FFB020"/>
+</svg>

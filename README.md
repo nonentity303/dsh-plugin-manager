@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/logo.svg" width="88" height="88" alt="DSH 引擎船坞 drydock"></p>
+
 # DSH 引擎船坞（dsh-drydock，原名 dsh-plugin-manager-pro）
 
 > **当引擎起不来的时候，它还在。** 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**启动期可靠性工具链**：独立进程、独立端口的启动前自检、坏插件隔离、引擎拉起与救援（3081 / 3082），外加一个顺手的插件管理台。日常的逛与装请用官方插件页或插件市场——我们不重复做。

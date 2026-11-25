@@ -1011,10 +1011,19 @@ function RescuePanel({ diagnose, quarantine, repairHarness, restartHarness, unin
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	// mod 体检入口：体检数据来自启动器（3081）的 /plugins/api/health —— 与兜底页共用同一份只读体检 API；
-	// 3081 里的体检面板渲染结果（跨源 CORS 不放行 3080 直读，因此这里以入口方式跳转兜底页查看）。
-	const openLauncherHealth = () => {
-		window.open("http://127.0.0.1:3081/plugins#health", "_blank");
+	// mod 体检入口：体检数据来自启动器的 /plugins/api/health —— 与兜底页共用同一份只读体检 API；
+	// 启动器端口可能被 --port / DSH_LAUNCHER_PORT 改到任意端口，因此先向引擎侧
+	// GET /plugins-launcher 取当前启动器入口（读 .open-boot.pid / 环境变量），不写死 3081。
+	const openLauncherHealth = async () => {
+		let url = "http://127.0.0.1:3081/plugins#health";
+		try {
+			const res = await fetch("/plugins-launcher", { headers: { accept: "application/json" } });
+			const info = res.ok ? await res.json() : null;
+			if (info && typeof info.url === "string" && /^http:\/\//.test(info.url)) {
+				url = info.url.replace(/\/+$/, "") + "/plugins#health";
+			}
+		} catch { /* 引擎侧路由不可用（旧版/headless）：回退默认启动器端口 */ }
+		window.open(url, "_blank");
 	};
 
 	const runDiagnose = async () => {
@@ -2549,10 +2558,10 @@ const zh = {
 	archived: "架构保留",
 	rescue: "救援",
 	rescueTitle: "救援中心",
-	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 http://127.0.0.1:3080/rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
+	rescueHint: "诊断加载失败的插件并隔离/卸载；一键修复会重置开关、隔离问题插件、清空缓存。独立救援页 /rescue 在设置页不可用时仍可访问（右下角 🛟 按钮）。",
 	rescueDiagnose: "运行诊断",
 	rescueModHealth: "🩺 mod 体检",
-	rescueModHealthHint: "mod 体检（preflight 只读校验 + 引擎日志错误聚合）由启动器兜底页提供，点击「mod 体检」在 3081 兜底页查看；救援诊断与本面板共用救援球入口。",
+	rescueModHealthHint: "mod 体检（preflight 只读校验 + 引擎日志错误聚合）由启动器兜底页提供，点击「mod 体检」在启动器兜底页查看；救援诊断与本面板共用救援球入口。",
 	rescueClean: "✓ 未发现加载失败或运行期错误。",
 	rescueDisable: "禁用此插件",
 	rescueUninstall: "卸载",
@@ -2790,10 +2799,10 @@ const en = {
 	archived: "archived",
 	rescue: "Rescue",
 	rescueTitle: "Rescue center",
-	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page http://127.0.0.1:3080/rescue works even when the settings page is broken (🛟 button, bottom right).",
+	rescueHint: "Diagnose failing plugins and quarantine/uninstall them; one-click repair resets toggles, quarantines failing plugins and clears caches. The standalone rescue page /rescue works even when the settings page is broken (🛟 button, bottom right).",
 	rescueDiagnose: "Diagnose",
 	rescueModHealth: "Mod health check",
-	rescueModHealthHint: "Mod health (preflight read-only check + engine log error aggregation) is served by the launcher fallback page; open it on 127.0.0.1:3081/plugins.",
+	rescueModHealthHint: "Mod health (preflight read-only check + engine log error aggregation) is served by the launcher fallback page; open it from the launcher page.",
 	rescueClean: "✓ No failing plugins found.",
 	rescueDisable: "Disable",
 	rescueUninstall: "Uninstall",

@@ -78,6 +78,23 @@ const RUN_KEY = REAL_REG_TESTS ? REAL_RUN_KEY : TEST_RUN_KEY;
 /** 子进程（bin/open-boot.mjs）走同一个注入点 —— 见 bin/open-boot.mjs 的 RUN_KEY 注释。 */
 if (!REAL_REG_TESTS && WIN) process.env.DSH_PM_RUN_KEY = TEST_RUN_KEY;
 else delete process.env.DSH_PM_RUN_KEY;
+/**
+ * 端口补完（测试隔离红线）：启动器每次起来都会重写 `<DSH_HOME>/scripts/dsh-launcher.cmd`。
+ * 旧版测试只把 **profile** 指到临时目录，却仍用真实 `~/.dsh` 当 DSH_HOME → 每跑一次
+ * `npm test` 就会改写用户真实的 `~/.dsh/scripts/dsh-launcher.cmd`（历史污染点）。
+ * 现在把 DSH_HOME 与脚本目录一起指到临时目录，并断言真实脚本跑前跑后不变（见 §11.6）。
+ */
+const TEST_DSH_HOME = mkdtempSync(join(tmpdir(), "pm-launcher-dsh-home-"));
+process.env.DSH_HOME = TEST_DSH_HOME;
+process.env.DSH_PM_SCRIPTS_DIR = join(TEST_DSH_HOME, "scripts");
+mkdirSync(process.env.DSH_PM_SCRIPTS_DIR, { recursive: true });
+/** 真实脚本跑前快照（跑后必须逐字节不变；见收尾断言）。 */
+const REAL_SCRIPTS_SNAPSHOT = ["dsh-launcher.cmd", "dsh-launcher-start.ps1"].map((name) => {
+	const path = join(homedir(), ".dsh", "scripts", name);
+	let text = null;
+	try { text = readFileSync(path, "utf8"); } catch { /* 不存在 */ }
+	return { path, text };
+});
 console.log(REAL_REG_TESTS
 	? `NOTE 注册表模式：**真机端到端模式**（DSH_PM_REAL_REGISTRY_TESTS=1，作用域 = ${REAL_RUN_KEY}）；跑前会 reg export 备份，跑后断言无残留。`
 	: `NOTE 本套件不写真实注册表（作用域 = 测试专用键 ${TEST_RUN_KEY}）；如需端到端真机验证请设 DSH_PM_REAL_REGISTRY_TESTS=1`);
@@ -266,6 +283,7 @@ const skipOk = (name, cond, detail = "", kind = "沙箱边界（管道 stdio EPE
 
 // ---------------------------------------------------------------- 基础设施
 const tempDirs = [];
+tempDirs.push(TEST_DSH_HOME);
 function tempDir(prefix) {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
 	tempDirs.push(dir);
@@ -3029,6 +3047,17 @@ console.log("== 17. 跨平台与工具类修复（t4：C-05 弹窗假成功 / C-
 }
 
 // ---------------------------------------------------------------- 收尾
+// 端口补完：启动器生成物必须只落临时 DSH_HOME —— 真实 ~/.dsh/scripts 跑前跑后逐字节一致。
+{
+	const changed = REAL_SCRIPTS_SNAPSHOT.filter((snap) => {
+		let now = null;
+		try { now = readFileSync(snap.path, "utf8"); } catch { /* 不存在 */ }
+		return now !== snap.text;
+	});
+	ok("端口补完: 真实 ~/.dsh/scripts/dsh-launcher*.{cmd,ps1} 未被本套件改写（生成物只落临时 DSH_HOME）",
+		changed.length === 0,
+		changed.map((snap) => snap.path).join(", "));
+}
 for (const dir of tempDirs) {
 	try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }

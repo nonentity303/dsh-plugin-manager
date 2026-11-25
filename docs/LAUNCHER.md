@@ -31,12 +31,45 @@ node "<包目录>/bin/open-boot.mjs" --status
 
 | 端口 | 归属 | 提供什么 |
 |---|---|---|
-| `3080` | dsh 引擎 | 主界面；本包 host 注册的 `/rescue`；健康 = HTTP 握手 + 身份指纹。`DSH_ENGINE_PORT` 可覆盖（默认 3080 不变，仅测试/多实例） |
-| `3081` | **open-boot ＝ 唯一网页入口** | `GET /` 启动页（打开即自检启动）· `GET /plugins` 插件管理兜底页（rc.1 起）· `GET /rescue` 救援页 · `GET/POST /api/boot` · `GET /api/status` · `/plugins/api/*` · `/rescue/api/*` |
-| `3081+1000 = 4081` | open-boot 守护锁 | `--supervise` 单实例锁（`--port N` → 锁端口 **N+1000**） |
-| `3082` | rescue-daemon | **独立备份救援入口**：`GET /`、`/api/verify`、`/api/status`、`POST /api/fix\|start\|stop` |
+| `3080` | dsh 引擎 | 主界面；本包 host 注册的 `/rescue`；健康 = HTTP 握手 + 身份指纹。`DSH_ENGINE_PORT` 可覆盖（默认 3080；**拉起引擎时会把该端口作为 `dsh web --port` 传入**，健康检查/停止/页面跳转全部跟随） |
+| `3081` | **open-boot ＝ 唯一网页入口** | `GET /` 启动页（打开即自检启动）· `GET /plugins` 插件管理兜底页（rc.1 起）· `GET /rescue` 救援页 · `GET/POST /api/boot` · `GET /api/status` · `/plugins/api/*` · `/rescue/api/*`。`DSH_LAUNCHER_PORT` / `--port` 可覆盖 |
+| `3081+1000 = 4081` | open-boot 守护锁 | `--supervise` 单实例锁（`--port N` → 锁端口 **N+1000**；N 最大 64535，否则明确报错不静默夹取） |
+| `3082` | rescue-daemon | **独立备份救援入口**：`GET /`、`/api/verify`、`/api/status`、`POST /api/fix\|start\|stop`。`DSH_RESCUE_PORT` / `--port` 可覆盖 |
 
 冲突行为：**端口被非本工具进程占用 → 明确报错、exit 1、绝不静默漂移**（`open-boot` 与 `rescue-daemon` 都是这个行为）。
+
+### 2.1 端口覆盖（自定义端口全链路）
+
+用户有改端口 / 端口冲突的特殊需求时，**不要改代码**，用环境变量或 `--port`：
+
+| 开关 | 环境变量 | 默认 | 消费者 |
+|---|---|---|---|
+| `--port` ／ `DSH_LAUNCHER_PORT` | `DSH_LAUNCHER_PORT` | `3081` | `bin/open-boot.mjs`（`parseArgs`；`--port` 优先） |
+| `DSH_ENGINE_PORT` | `DSH_ENGINE_PORT` | `3080` | `lib/ports.mjs` → `lib/enginectl.mjs` 的 `ENGINE_PORT`；拉起引擎时作为 `dsh web --port <引擎端口>` 传入 |
+| `--port` ／ `DSH_RESCUE_PORT` | `DSH_RESCUE_PORT` | `3082` | `bin/rescue-daemon.mjs`（`--port` 优先） |
+| 守护锁端口 | 由启动器端口推导 | `启动器端口 + 1000` | `lockPortOf()`（`lib/ports.mjs`）；超过 65535 → 明确报错 |
+
+推导的**唯一事实来源**是 [`lib/ports.mjs`](../lib/ports.mjs)：`normalizePort` / `enginePortFromEnv` / `launcherPortFromEnv` / `rescuePortFromEnv` / `lockPortOf` / `entryUrlOf`。各 bin 不再各自写死 3080/3081/3082/4081。
+
+改端口后**全链路一致性**（都有自动断言，见 §11）：
+
+- `/api/status` 返回真实 `port` / `enginePort`，页面与 CLI 都读它；
+- `/` 启动页与 `/plugins` 兜底页里的主界面链接、`/rescue` 救援页的「唯一网页入口」都跟随自定义端口；
+- 生成的 `dsh-launcher.cmd` / `dsh-launcher-start.ps1` 内嵌自定义启动器端口；开机自启 vbs 里的 `--supervise --port <n>` 与 `http://127.0.0.1:<n>/` 同步；
+- `--supervise` 单实例锁 = 启动器端口 + 1000（默认 3081→4081，测试端口 3181→4181）；
+- `--status` / `--uninstall` / `collectOwnedDaemons` 用同一套锁端口推导；
+- `dsh-boot` 的救援提示 URL 跟随 `DSH_LAUNCHER_PORT`（`dsh-boot.cmd` 同样读该环境变量）；
+- 引擎侧 `lib/index.js` 新增只读路由 `GET /plugins-launcher`：客户端「mod 体检」按 `<profile>/.open-boot.pid` → `DSH_LAUNCHER_PORT` → 3081 的顺序解析启动器入口，不再写死 3081。
+
+示例（启动器 3181 / 引擎 3180 / 救援 3182）：
+
+```powershell
+$env:DSH_LAUNCHER_PORT="3181"; $env:DSH_ENGINE_PORT="3180"; $env:DSH_RESCUE_PORT="3182"
+node "<包目录>/bin/open-boot.mjs" --supervise --profile "$env:USERPROFILE\.dsh\profiles\web"
+# 浏览器主页改成 http://127.0.0.1:3181/
+```
+
+**测试隔离红线**：启动器每次启动都会重写生成物。生产默认写 `<DSH_HOME>/scripts`；测试/多实例请额外设 `DSH_PM_SCRIPTS_DIR=<临时目录>`（或 `DSH_PM_NO_SCRIPTS=1` 完全跳过生成），否则会改写用户真实的 `~/.dsh/scripts/dsh-launcher.cmd`。`test-launcher.mjs` 已把 `DSH_HOME` 与脚本目录都指向临时目录，并断言真实脚本跑前跑后逐字节不变。
 
 ## 3. 命令与退出码
 
@@ -219,9 +252,9 @@ npx dsh-pm-launcher --status             # 引擎 / 启动器 / 守护的真实�
 | 文档条目 | 代码位置（v0.9.1 工作树） |
 |---|---|
 | `dsh-pm-launcher` → `bin/open-boot.mjs`；`dsh-pm-boot` → `bin/dsh-boot.mjs`；`dsh-pm-rescue` → `bin/rescue-daemon.mjs` | `package.json` 的 `bin` 字段 |
-| 3081 = open-boot 唯一网页入口；3082 = rescue-daemon | `bin/open-boot.mjs` 的 `RESCUE_DAEMON_PORT`（约 79）与 `HELP_TEXT` 端口分工段（约 151）；`bin/rescue-daemon.mjs` 的 `PORT_DEFAULT = 3082` |
-| `DSH_ENGINE_PORT` 覆盖引擎端口（默认 3080） | `lib/enginectl.mjs` 的 `ENGINE_PORT`（约 38–45） |
-| 锁端口 = `port + 1000` | `bin/open-boot.mjs` 的 `acquireLock` 调用点（约 515）与 `--status`（约 562/578）、`--autostart-status`（约 748）、`collectOwnedDaemons`（约 823） |
+| 3081 = open-boot 唯一网页入口；3082 = rescue-daemon | `lib/ports.mjs`（`DEFAULT_LAUNCHER_PORT` / `DEFAULT_RESCUE_PORT` / `launcherPortFromEnv` / `rescuePortFromEnv`）；`bin/open-boot.mjs` 的 `RESCUE_DAEMON_PORT` + `HELP_TEXT` 端口分工段；`bin/rescue-daemon.mjs` 的 `PORT_DEFAULT` |
+| `DSH_ENGINE_PORT` 覆盖引擎端口（默认 3080） | `lib/ports.mjs` 的 `enginePortFromEnv` → `lib/enginectl.mjs` 的 `ENGINE_PORT`；`startEngine` 以 `["web","--port",String(port),"--no-open"]` 拉起 |
+| 锁端口 = `port + 1000` | `lib/ports.mjs` 的 `lockPortOf`（越界返回 null → 明确报错）；`bin/open-boot.mjs` 的 `acquireLock` 调用点、`--status`、`--autostart-status`、`collectOwnedDaemons`、`--uninstall` 输出 |
 | `--ensure` / `--supervise` / `--status` / `--install-autostart` / `--uninstall-autostart` / `--autostart-status` / `--uninstall` / `--help` / `--no-window` / `--quiet` / `--interval` / `--heartbeat-min` / `--cwd` / `--dsh` / `--profile` / `--port` / `--wait-ms` | `bin/open-boot.mjs` 的 `parseArgs`（约 100–120）+ `HELP_TEXT`（约 125–152） |
 | `--uninstall` 四步（停守护 → 删 `DSHWeb*` → 删 shim → 清 pid）+ **三档退出码 0/1/2** | `bin/open-boot.mjs` 的 `uninstallLauncher`（约 917；`result.exitCode` 约 1016：1=出错 > 2=归属未确认 > 0=完成）、`collectOwnedDaemons`（约 822，三重校验 + `verified/unverified` 标记）、`removeDsWebRunValues`（约 704）、`HELP_TEXT` 的 `--uninstall 语义（冻结契约）`（约 142–152，含三档退出码）、`main()` 的 `r.exitCode ?? (r.ok ? 0 : 1)`（约 1218） |
 | `--install-autostart` 写 `HKCU\...\Run\DSHWebFront` + 两个 `.vbs` | `bin/open-boot.mjs` 的 `RUN_KEY`/`AUTOSTART_NAME`（约 69–71）、`reg add`（约 774）、shim 生成（`autostartShimPath`/`uiShimPath`） |
@@ -236,4 +269,40 @@ npx dsh-pm-launcher --status             # 引擎 / 启动器 / 守护的真实�
 | 退出码落点（§3 的每一格） | `bin/open-boot.mjs`：前台端口占用分支（约 1116–1129，自己的实例 → `exit(0)`、别人的进程 → `exit(1)`）、未捕获异常（约 286，`exit(1)`）、`--uninstall` 的三档（约 1016，1 > 2 > 0）、入口 `process.exit(code)`（约 1200 前后）。`bin/dsh-boot.mjs`：`return 2`（约 100，repair-only 未修复）、`return 1`（约 122/143）、`process.exit(code)`（约 180）。`bin/rescue-daemon.mjs`：端口被占与服务启动失败 `process.exit(1)`（约 315/348/352）、入口 `process.exit(code)`（约 390） |
 | 自启删除范围 / 恢复形态 / 缺包时的行为（§6.1） | `bin/open-boot.mjs` 的 `AUTOSTART_NAME = "DSHWebFront"`（约 68）、`RUN_VALUE_PREFIX = /^DSHWeb/i`（约 71）、`removeDsWebRunValues`（约 704：删**所有**匹配值；非 Windows 记 skipped；注册表读不到时明告"未确认"）、`uninstallAutostart`（约 790：删给定 profile 的两个 shim + 注册表值）、`uninstallLauncher`（约 885：第 2 步删注册表、第 3 步删本 profile 的 shim、第 4 步清 pid；第 1 步只停本 profile 的守护）、`installAutostart`（约 759：重建两个 shim + `reg add`，失败返回 ok=false）、`buildShimLines`（约 624：`WScript.ScriptFullName` → `base\node_modules\dsh-plugin-manager-pro\bin\open-boot.mjs`；文件不存在时写 `open-boot-autostart.error.log` 并 `WScript.Quit 3`）、`writeShim`（约 663：字节数 + 每条命令行回读校验）、`autostartStatus`（约 733：注册表值 / shim 是否存在 / 锁端口归属 / 启动器身份 / 最近心跳；非 Windows `ok=false` → exit 1） |
 
-> 测试与验收：`node test-launcher.mjs --strict`（启动器/守护/自启/卸载闭环/写接口防护/健康留痕的端到端断言，含真实端口与临时 profile）；`npm test` 串起四套测试。归档见 `audit/verify-090/logs/`（团队任务 t1）。
+## 11. 非默认端口隔离测试引擎（`tools/dev/test-extra-ports.mjs`）
+
+验收「改端口」能力的端到端引擎：在**临时 DSH_HOME + 临时 profile + 非默认端口**上跑完整链路，不碰真机。
+
+```powershell
+cd <包目录>
+node tools/dev/test-extra-ports.mjs          # 退出码 0=全绿 / 1=有断言失败 / 2=前置端口被占（未做任何改动）
+node tools/dev/test-extra-ports.mjs --keep   # 失败时保留临时目录便于取证
+```
+
+固定端口：**engine 3180 / launcher 3181 / rescue 3182 / 守护锁 4181**（3183–3185 供 dsh-boot 占用/启动用例）。开始前若这些端口被占 → exit 2，**不结束任何进程**。
+
+覆盖（69 条断言，含 `lib/ports.mjs` 纯函数自检）：
+
+1. `--ensure` 在 3181 拉起启动器；`/api/status` 身份 / `port` / `enginePort` / `profile` 正确；
+2. `/`、`/plugins`、`/rescue` 可达，页面里启动器/引擎链接全部指向 3180/3181，无 3080/3081 残留；
+3. `/rescue/api/verify|fix|start|stop` 往返（start/stop 用测试自带的假引擎，只在 3180 上跑）；
+4. `--supervise` 持有锁 4181，第二个守护因锁被占 exit 0；`--status` 的退出码与端口展示；
+5. `rescue-daemon` 不传 `--port` 时读取 `DSH_RESCUE_PORT=3182`，页面入口 URL 跟随 3181；
+6. `dsh-boot` 退出码语义：健康 profile → 0、`package.json` 不可解析 → 2、端口被非 dsh 进程占用 → 1、正常拉起假引擎 → 0；
+7. `--install-autostart` 只写测试专用注册表键（`HKCU\Software\DSHPluginManagerTest\Run-<pid>`，跑完删除）+ 临时 profile 的 vbs 内嵌 3181；`--autostart-status` 展示锁端口 4181。
+
+隔离与清理（红线）：
+
+- 临时根目录 = `%TEMP%\pm-extra-ports-*`（`mkdtemp`），`DSH_HOME` / `DSH_PM_SCRIPTS_DIR` / profile 全在其中；**真实 `~/.dsh/scripts/dsh-launcher*.{cmd,ps1}` 跑前跑后逐字节断言不变**；
+- 真实 3080/3081 只读快照 pid，跑完断言占用者未变；绝不写真实 HKCU Run 键；
+- 只结束本测试启动的进程：pid 文件 + `app`/`profile`/`port` 身份字段 + 命令行含临时目录三重校验，逐个 `taskkill /PID`（不带 `/T`）；
+- 结束时断言 3180/3181/3182/4181/3183–3185 无监听；成功即删临时目录（`--keep` 可保留）。
+
+两遍连跑（可重复性验收）：
+
+```powershell
+node tools/dev/test-extra-ports.mjs; node tools/dev/test-extra-ports.mjs
+# 每遍末行： [result] PASS
+```
+
+> 测试与验收：`node test-launcher.mjs --strict`（启动器/守护/自启/卸载闭环/写接口防护/健康留痕的端到端断言，含真实端口与临时 profile）；`node tools/dev/test-extra-ports.mjs`（非默认端口全链路 + 隔离红线，见 §11）；`npm test` 串起四套测试。归档见 `audit/verify-090/logs/`（团队任务 t1）。

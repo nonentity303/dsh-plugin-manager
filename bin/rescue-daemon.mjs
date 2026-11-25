@@ -38,16 +38,20 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
+import { entryUrlOf, launcherPortFromEnv, rescuePortFromEnv } from "../lib/ports.mjs";
 import {
 	ENGINE_PORT, RESCUE_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
-	launcherHealth, newApiToken, portOwner, probe, readPidInfo, startEngineWithQuarantine, stopEngine
+	launcherHealth, newApiToken, portOwner, probe, readPidInfo, startEngineWithQuarantine, stopEngine, validatePortValue
 } from "../lib/enginectl.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SERVER_LOG = "rescue-daemon-server.log";
-/** v0.9.1：3081 归 open-boot（唯一网页入口），本守护退到 3082。 */
-const PORT_DEFAULT = 3082;
+/**
+ * v0.9.1：3081 归 open-boot（唯一网页入口），本守护退到 3082。
+ * 端口可用 `DSH_RESCUE_PORT` 覆盖（默认 3082）；`--port` 优先。
+ */
+const PORT_DEFAULT = rescuePortFromEnv();
 
 const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 
@@ -57,6 +61,7 @@ const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 选项：
   --profile <dir>   profile 目录（默认 ~/.dsh/profiles/web）
   --port <n>        监听端口（默认 3082；被其他进程占用时直接报错退出，不漂移）
+                    也可用环境变量 DSH_RESCUE_PORT 覆盖（--port 优先）
   --dsh <cmd>       启动引擎的命令（默认 dsh；含空格的路径也可用）
   --cwd <dir>       引擎/守护工作目录（默认用户主目录）
   --help            显示本帮助
@@ -64,6 +69,7 @@ const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 端口分工（v0.9.1 起）：
   3080 = dsh 引擎；3081 = open-boot（唯一网页入口，已含 /rescue 页面 + /rescue/api/* 完整救援能力）；
   3082 = 本守护（独立备份入口）。浏览器主页/桌面快捷方式请指向 3081。
+  以上端口均可覆盖：DSH_ENGINE_PORT / DSH_LAUNCHER_PORT / DSH_RESCUE_PORT。
 
 页面按钮：启动引擎并打开主界面 / 运行检查 / 修复引擎配置 / 状态 / 停止引擎（带校验，可强制）
 
@@ -72,10 +78,16 @@ const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 `;
 
 function parseArgs(argv) {
-	const args = { profile: PROFILE_DEFAULT, port: PORT_DEFAULT, dsh: "dsh", cwd: null, help: false, unknown: [] };
+	const args = { profile: PROFILE_DEFAULT, port: rescuePortFromEnv(), dsh: "dsh", cwd: null, help: false, unknown: [], usageError: null };
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === "--profile" && argv[i + 1]) { args.profile = resolve(argv[++i]); }
-		else if (argv[i] === "--port" && argv[i + 1]) { args.port = Number(argv[++i]) || PORT_DEFAULT; }
+		else if (argv[i] === "--port" || argv[i].startsWith("--port=")) {
+			const raw = argv[i].startsWith("--port=") ? argv[i].slice("--port=".length) : argv[i + 1];
+			const error = validatePortValue(raw);
+			if (error) { args.usageError = error; return args; }
+			args.port = Number(String(raw).trim());
+			if (!argv[i].startsWith("--port=")) i++;
+		}
 		else if (argv[i] === "--dsh" && argv[i + 1]) { args.dsh = argv[++i]; }
 		else if (argv[i] === "--cwd" && argv[i + 1]) { args.cwd = resolve(argv[++i]); }
 		else if (argv[i] === "--help" || argv[i] === "-h") { args.help = true; }
@@ -120,7 +132,9 @@ async function handleApi(pathname, method, req, res, url, ctx = args) {
 	if (pathname === "/api/verify" && method === "GET") {
 		try {
 			const result = verifyProfile(ctx.profile);
-			json(200, { ok: true, ...result });
+			// API 语义：ok 表示"检查请求完成"；profile 是否健康看 healthy（避免救援页把"不健康"
+			// 误读成"检查失败：未知错误"，那样坏 bundle 列表反而显示不出来）。
+			json(200, { ok: true, healthy: result.ok, issues: result.issues });
 		} catch (error) {
 			json(500, { ok: false, error: error instanceof Error ? error.message : String(error) });
 		}
@@ -196,11 +210,11 @@ async function handleApi(pathname, method, req, res, url, ctx = args) {
  * @param {object} opts
  *   - apiPrefix：API 前缀（rescue-daemon 自身为 ""；open-boot 挂载时为 "/rescue"）
  *   - enginePort：引擎端口（页面跳转目标）
- *   - entryUrl：唯一网页入口地址（3081，仅作提示）
+ *   - entryUrl：启动器入口地址（来自 DSH_LAUNCHER_PORT，默认 http://127.0.0.1:3081/，仅作提示）
  *   - token：一次性令牌，注入 `<meta name="dsh-pm-token">`（**只进页面与请求头，不落盘、不落日志**）
  * 导出给 open-boot 复用（审计③ R7：3081 一个入口提供完整救援能力）。
  */
-function rescuePageHtml({ apiPrefix = "", enginePort = ENGINE_PORT, entryUrl = "http://127.0.0.1:3081/", token = "__DSH_PM_TOKEN__" } = {}) {
+function rescuePageHtml({ apiPrefix = "", enginePort = ENGINE_PORT, entryUrl = entryUrlOf(launcherPortFromEnv()), token = "__DSH_PM_TOKEN__" } = {}) {
 	return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>DSH 独立救援中心</title>
 <meta name="dsh-pm-token" content="${token}">
@@ -299,6 +313,11 @@ function main() {
 		console.log(HELP_TEXT);
 		return 0;
 	}
+	if (args.usageError) {
+		console.error(`[rescue-daemon] ✘ 用法错误：${args.usageError}`);
+		console.error(HELP_TEXT);
+		return 1;
+	}
 	if (args.unknown.length > 0) console.error(`[rescue-daemon] ⚠ 无法识别的参数（已忽略）：${args.unknown.join(" ")}`);
 	mkdirSync(args.profile, { recursive: true });
 	chdirStable(args.cwd); // 审计③ L2：不要把 profile/包目录当 cwd
@@ -307,7 +326,8 @@ function main() {
 	const token = newApiToken();
 	const flight = createSingleFlight("rescue-write");
 	const ctx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
-	const pageHtml = rescuePageHtml({ apiPrefix: "", enginePort: ENGINE_PORT, entryUrl: "http://127.0.0.1:3081/", token });
+	const entryUrl = entryUrlOf(launcherPortFromEnv()) || "http://127.0.0.1:3081/";
+	const pageHtml = rescuePageHtml({ apiPrefix: "", enginePort: ENGINE_PORT, entryUrl, token });
 
 	process.on("uncaughtException", (error) => {
 		serverLog(`✗ 未捕获异常：${error && error.stack ? error.stack : String(error)}`);
@@ -356,9 +376,9 @@ function main() {
 		console.log(`[rescue-daemon] 独立救援服务就绪：http://127.0.0.1:${args.port}/`);
 		console.log(`[rescue-daemon] profile: ${args.profile}；cwd: ${process.cwd()}`);
 		console.log(`[rescue-daemon] 引擎端口: ${ENGINE_PORT}（/api/start 会拉起 \`${args.dsh} web\`）`);
-		console.log(`[rescue-daemon] 端口分工（v0.9.1）：3081 = open-boot 唯一网页入口（已含 /rescue + /rescue/api/* 完整救援能力）；` +
-			`本守护默认端口已从 3081 迁移到 ${PORT_DEFAULT}，仅作独立备份入口。浏览器主页请指向 http://127.0.0.1:3081/`);
-		serverLog(`服务就绪：http://127.0.0.1:${args.port}/（profile ${args.profile}，cwd ${process.cwd()}；3081 归 open-boot）`);
+		console.log(`[rescue-daemon] 端口分工：启动器网页入口 = ${entryUrl}（已含 /rescue + /rescue/api/* 完整救援能力）；` +
+			`本守护端口 ${args.port}（可用 --port / DSH_RESCUE_PORT 覆盖），仅作独立备份入口。浏览器主页请指向 ${entryUrl}`);
+		serverLog(`服务就绪：http://127.0.0.1:${args.port}/（profile ${args.profile}，cwd ${process.cwd()}；启动器入口 ${entryUrl}）`);
 	});
 
 	// 心跳：让"守护是否还活着"有据可查（审计③ L3 同类问题）

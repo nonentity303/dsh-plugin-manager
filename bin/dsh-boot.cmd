@@ -14,6 +14,8 @@ rem  quoted arguments (paths with spaces) pass through unchanged.
 rem  ASCII ONLY on purpose: cmd.exe reads this file as ANSI/CP936, so non-ASCII
 rem  comments can corrupt the line and be executed as a stray command.
 setlocal
+rem Launcher port shown in the rescue hint follows DSH_LAUNCHER_PORT (default 3081).
+if not defined DSH_LAUNCHER_PORT set "DSH_LAUNCHER_PORT=3081"
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -30,7 +32,7 @@ if "%EXITCODE%"=="0" (
   echo            engine ready, or profile healthy for --repair-only.
 ) else if "%EXITCODE%"=="1" (
   echo [dsh-boot] FAILED - boot did not finish.
-  echo            Rescue center: http://127.0.0.1:3081/   Details: dsh-boot.cmd --repair-only
+  echo            Rescue center: http://127.0.0.1:%DSH_LAUNCHER_PORT%/   Details: dsh-boot.cmd --repair-only
 ) else if "%EXITCODE%"=="2" (
   echo [dsh-boot] REPAIR INCOMPLETE - run: dsh-boot.cmd --repair-only
   echo            and fix the listed issues manually.

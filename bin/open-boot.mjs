@@ -65,6 +65,7 @@ import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
 import { removePatchEntriesFor } from "../lib/patch-clean.mjs";
 import { handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
+import { entryUrlOf, launcherPortFromEnv, lockPortOf, rescuePortFromEnv } from "../lib/ports.mjs";
 import {
 	ENGINE_PORT, LAUNCHER_APP, bootWindowPlan, chdirStable, createSingleFlight, detectAvailableTerminals, engineHealth,
 	guardWriteRequest, isAlive, killTreeForce, launchViaCandidates, launcherHealth, looksLikeProfileDir, newApiToken, portOwner,
@@ -97,9 +98,8 @@ const SUP_LOG = "open-boot-supervisor.log";
 const HEALTH_LOG = "health.log";
 const HEALTH_MAX_LINES = 1000;
 const HEALTH_MAX_AGE_DAYS = 7;
-/** R7 端口分工：3081 = 本启动器（唯一网页入口），3082 = rescue-daemon（独立备份入口）。 */
-const ENTRY_URL = "http://127.0.0.1:3081/";
-const RESCUE_DAEMON_PORT = 3082;
+/** R7 端口分工：本启动器 = 唯一网页入口（默认 3081），rescue-daemon = 独立备份入口（默认 3082）。 */
+const RESCUE_DAEMON_PORT = rescuePortFromEnv();
 
 function readVersion() {
 	try { return JSON.parse(readFileSync(join(dirname(SELF), "..", "package.json"), "utf8")).version || null; }
@@ -258,11 +258,8 @@ export function unknownTokenPolicy(args) {
  */
 function parseArgs(argv) {
 	// 1.0.0-rc.1 可迁移性：启动器端口可用 DSH_LAUNCHER_PORT 覆盖（默认仍 3081），
-	// 整机迁移/多实例时不再依赖写死端口；CLI --port 仍然优先。
-	const defaultLauncherPort = (() => {
-		const n = Number(process.env.DSH_LAUNCHER_PORT);
-		return Number.isInteger(n) && n > 0 && n < 65536 ? n : 3081;
-	})();
+	// 整机迁移/多实例时不再依赖写死端口；CLI --port 仍然优先。推导见 lib/ports.mjs。
+	const defaultLauncherPort = launcherPortFromEnv();
 	const args = {
 		profile: PROFILE_DEFAULT, port: defaultLauncherPort, dsh: "dsh", cwd: null,
 		supervise: false, ensure: false, status: false, help: false,
@@ -345,6 +342,14 @@ const HELP_TEXT = `浏览器启动器 / 3081 常驻入口（dsh-plugin-manager-p
   --interval <秒>        守护检查间隔（默认 60，最小 5）
   --heartbeat-min <分>   守护心跳日志间隔（默认 10 分钟）
   --quiet                不往控制台打印（日志仍写 profile/open-boot-supervisor.log）
+
+环境变量（端口覆盖，与 --port 同时存在时 --port 优先）：
+  DSH_LAUNCHER_PORT      启动器端口（默认 3081）
+  DSH_ENGINE_PORT        引擎端口（默认 3080；测试/多实例逃生门）
+  DSH_RESCUE_PORT        rescue-daemon 备份入口端口（默认 3082）
+  DSH_PM_SCRIPTS_DIR     生成的启动脚本目录（默认 <DSH_HOME>/scripts；测试隔离用）
+  DSH_PM_NO_SCRIPTS=1    跳过 dsh-launcher.cmd 生成（只读/受限环境）
+守护单实例锁端口 = 启动器端口 + 1000（默认 3081 → 4081；--supervise 用它保证单实例）。
 
 --uninstall 语义（冻结契约，供管理器卸载钩子调用）：
   1) 只停**本 profile 的**守护：依据 .open-boot.pid + 锁端口（--port+1000）+ 进程镜像三重校验；
@@ -825,7 +830,11 @@ function previousRunWasUnclean(args) {
 }
 
 async function supervise(args) {
-	const lockPort = args.port + 1000;
+	const lockPort = lockPortOf(args.port);
+	if (lockPort === null) {
+		supLog(args, `✘ 无法推导守护锁端口：启动器端口 ${args.port} + 1000 超过 65535。请改用 1..64535 的端口（默认 3081）。`);
+		return 1;
+	}
 	const lock = await acquireLock(lockPort);
 	if (!lock || lock.error) {
 		supLog(args, `已有守护占用锁端口 ${lockPort}（${lock?.error?.code || "EADDRINUSE"}），本进程退出`);
@@ -845,7 +854,7 @@ async function supervise(args) {
 			const stateKey = `${result.state}:${result.identity || ""}`;
 			if (stateKey !== lastState) {
 				const detail = result.state === "up"
-					? `3081 正常（${result.identity}${result.pid ? ` pid ${result.pid}` : ""}）`
+					? `${args.port} 正常（${result.identity}${result.pid ? ` pid ${result.pid}` : ""}）`
 					: result.state === "foreign" ? `⚠ ${result.message}`
 						: result.state === "spawned" ? "已拉起启动器"
 							: result.state === "timeout" ? `⚠ 启动器未就绪：${result.message || ""}`
@@ -855,7 +864,7 @@ async function supervise(args) {
 				lastHeartbeatAt = Date.now();
 			} else if (Date.now() - lastHeartbeatAt >= heartbeatMs) {
 				const engine = await engineHealth(ENGINE_PORT);
-				supLog(args, `心跳：3081 ${result.ok ? "正常" : "异常"}（${result.identity || result.state}）；引擎 ${ENGINE_PORT} ${engine.ok ? "正常" : "未就绪"}；pid ${process.pid}`);
+				supLog(args, `心跳：${args.port} ${result.ok ? "正常" : "异常"}（${result.identity || result.state}）；引擎 ${ENGINE_PORT} ${engine.ok ? "正常" : "未就绪"}；pid ${process.pid}`);
 				lastHeartbeatAt = Date.now();
 			}
 		} catch (error) {
@@ -872,7 +881,7 @@ async function supervise(args) {
  * 退出码：0 = 本启动器健康；1 = 启动器未就绪（被占用/未运行）。
  */
 async function reportStatus(args) {
-	const lockPort = args.port + 1000;
+	const lockPort = lockPortOf(args.port);
 	const lines = [];
 	const launcher = await launcherHealthWithRetry(args.port);
 	const tcp = await probe(args.port);
@@ -888,8 +897,10 @@ async function reportStatus(args) {
 		lines.push(`启动器（${args.port}）：✘ 没有监听者（未运行）`);
 	}
 
-	const lockOwner = portOwner(lockPort);
-	lines.push(`守护：${lockOwner ? `pid ${lockOwner} 持有锁端口 ${lockPort}（守护在跑）` : `无进程持有锁端口 ${lockPort}（守护未运行，或被外部结束过；见下方日志）`}`);
+	const lockOwner = lockPort === null ? null : portOwner(lockPort);
+	lines.push(lockPort === null
+		? `守护：✘ 无法推导锁端口（启动器端口 ${args.port} + 1000 超过 65535）`
+		: `守护：${lockOwner ? `pid ${lockOwner} 持有锁端口 ${lockPort}（守护在跑）` : `无进程持有锁端口 ${lockPort}（守护未运行，或被外部结束过；见下方日志）`}`);
 
 	const engine = await engineHealth(ENGINE_PORT);
 	const engineTcp = engine.ok ? true : await probe(ENGINE_PORT);
@@ -1182,9 +1193,10 @@ async function autostartStatus(args) {
 		lines.push(`  命令：${query.value}`);
 		lines.push(`  包装脚本：${shimPath} ${shimExists ? `✔ 存在（${statSync(shimPath).size} 字节）` : "✘ 不存在（自启会失败，请重新 --install-autostart）"}${shimFromReg ? "" : "（注册表未指向本工具的 vbs）"}`);
 	}
-	const lockPort = args.port + 1000;
-	const lockOwner = portOwner(lockPort);
-	lines.push(`  守护进程：${lockOwner ? `✔ pid ${lockOwner} 持有锁端口 ${lockPort}` : `✘ 无进程持有锁端口 ${lockPort}（守护未运行；下次登录会由自启拉起）`}`);
+	const lockPort = lockPortOf(args.port);
+	const lockOwner = lockPort === null ? null : portOwner(lockPort);
+	lines.push(`  守护进程：${lockPort === null ? `✘ 无法推导锁端口（启动器端口 ${args.port} + 1000 超过 65535）`
+		: lockOwner ? `✔ pid ${lockOwner} 持有锁端口 ${lockPort}` : `✘ 无进程持有锁端口 ${lockPort}（守护未运行；下次登录会由自启拉起）`}`);
 	const launcher = await launcherHealthWithRetry(args.port);
 	if (launcher.ok) lines.push(`  启动器（${args.port}）：✔ 在跑（${launcher.identity}）`);
 	else if (await probe(args.port)) lines.push(`  启动器（${args.port}）：✘ 端口被 pid ${portOwner(args.port) ?? "未知"} 占用，不是本启动器`);
@@ -1223,7 +1235,7 @@ function installAutostart(args) {
 		message: `开机自启已安装：${AUTOSTART_NAME} → ${shim}\n` +
 			`  包装脚本：${shimInfo.encoding} ${shimInfo.bytes} 字节（回读校验 ✔；路径在运行时自解析，中文用户名不会乱码）\n` +
 			`  常驻守护（登录时静默启动）：node bin/open-boot.mjs --supervise\n` +
-			`  桌面快捷方式可指向：wscript //nologo "${uiShim}"（确保 3081 后打开浏览器）\n` +
+			`  桌面快捷方式可指向：wscript //nologo "${uiShim}"（确保 ${args.port} 后打开浏览器）\n` +
 			`  当前会话立即可用：node bin/open-boot.mjs --supervise\n` +
 			`  安装后建议核对：node bin/open-boot.mjs --autostart-status`
 	};
@@ -1275,7 +1287,7 @@ function uninstallAutostart(args) {
  * @param {object} probes 可注入探针（测试/受限环境模拟）：{ portOwner, processImage, isAlive }
  */
 export function collectOwnedDaemons(args, probes = {}) {
-	const lockPort = Number(args.port) + 1000;
+	const lockPort = lockPortOf(args.port);
 	const ownerOf = probes.portOwner ?? portOwnerProbe;
 	const imageOf = probes.processImage ?? processImageProbe;
 	const aliveOf = probes.isAlive ?? isAlive;
@@ -1287,7 +1299,7 @@ export function collectOwnedDaemons(args, probes = {}) {
 		return {
 			info: null, lockPort, candidates, blocked, owned: [], unverified: [],
 			note: `没有 ${pidPathOf(args)}：无可定位的守护（跳过停止步骤，不会结束任何进程）`,
-			lockPortOwner: portOwner(lockPort)
+			lockPortOwner: lockPort === null ? null : portOwner(lockPort)
 		};
 	}
 	if (info.app !== LAUNCHER_APP) blocked.push(`.open-boot.pid 缺少本工具身份标记（app=${info.app ?? "无"}）`);
@@ -1311,7 +1323,9 @@ export function collectOwnedDaemons(args, probes = {}) {
 		const imageProbe = imageOf(item.pid);
 		// rc.2 P2-6：探测不可用（ok:false）必须被尊重——不再把"探测失败"兜底成"无监听者"（ok:true,pid:null）。
 		// ok:false 会进入 failures → verified=false → owned=false → 该 pid 不会被列入可结束名单。
-		const lockProbe = ownerOf(lockPort) ?? { ok: false, pid: null, reason: "探测函数无返回" };
+		const lockProbe = lockPort === null
+			? { ok: false, pid: null, reason: `无法推导锁端口（启动器端口 ${args.port} + 1000 超过 65535）` }
+			: (ownerOf(lockPort) ?? { ok: false, pid: null, reason: "探测函数无返回" });
 		const portProbe = ownerOf(infoPort) ?? { ok: false, pid: null, reason: "探测函数无返回" };
 		const holdsLock = lockProbe.pid === item.pid;
 		const holdsPort = portProbe.pid === item.pid;
@@ -1360,7 +1374,7 @@ export async function uninstallLauncher(args, probes = {}) {
 	const aliveOf = probes.isAlive ?? isAlive;
 	const lines = [];
 	const result = { ok: true, exitCode: 0, stopped: [], blocked: [], skipped: [], unverified: [], removedValues: [], deletedShims: [], pidCleared: false };
-	lines.push(`卸载启动器：profile ${args.profile}；启动器端口 ${args.port}；锁端口 ${args.port + 1000}`);
+	lines.push(`卸载启动器：profile ${args.profile}；启动器端口 ${args.port}；锁端口 ${lockPortOf(args.port) ?? "无法推导（端口 + 1000 超过 65535）"}`);
 	lines.push(`端口分工：${args.port} = 本启动器（唯一网页入口）；${RESCUE_DAEMON_PORT} = rescue-daemon 备份入口；${ENGINE_PORT} = 引擎（**不动**）`);
 
 	// 0) 目标合法性闸门（t14-F1）：全局性动作（删 HKCU 下的 DSHWeb*）之前必须先确认目标像样的 profile。
@@ -1492,7 +1506,7 @@ export async function uninstallLauncher(args, probes = {}) {
  * L11：一次性令牌通过 `<meta name="dsh-pm-token">` 注入页面，页面对 `/api/boot` 的写请求
  * 必须带 `X-DSH-PM-Token`；令牌只存在于页面与请求头，**不写日志、不落 profile 文件**。
  */
-function bootPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, entryUrl = ENTRY_URL } = {}) {
+function bootPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, entryUrl = entryUrlOf(launcherPortFromEnv()) } = {}) {
 	return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>DSH 启动器</title>
 <meta name="dsh-pm-token" content="${token}">
@@ -1608,7 +1622,7 @@ function setBundleEnabled(profile, name, enabled) {
 	if (typeof name !== "string" || !name.trim()) return { ok: false, error: "bundle 名缺失" };
 	name = name.trim();
 	if (!enabled && CORE_BUNDLES.includes(name)) {
-		return { ok: false, error: `${name} 是引擎必需的核心组件，不允许从这里禁用（否则 3080 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
+		return { ok: false, error: `${name} 是引擎必需的核心组件，不允许从这里禁用（否则引擎 ${ENGINE_PORT} 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
 	}
 	const manifest = readProfileManifest(profile);
 	if (!manifest) return { ok: false, error: `无法读取 profile 清单：${join(profile, "package.json")}` };
@@ -1813,7 +1827,7 @@ async function uninstallPackageTransactional(args, pkgName) {
 	}
 	if (pkgName === MANAGER_SELF_NAME) {
 		step("self-warning", "warn",
-			"这是管理器自身：卸载会移除 3080 内的插件管理界面；3081 兜底页存活到本次进程结束。", null);
+			"这是管理器自身：卸载会移除引擎（" + ENGINE_PORT + "）内的插件管理界面；启动器（" + args.port + "）兜底页存活到本次进程结束。", null);
 		// rc.2 P1-5：自卸载先进程内清开机自启 + 删 shim，再 pnpm remove（不再要求用户之后手动 --uninstall）。
 		const auto = uninstallAutostart(args);
 		step("autostart-cleanup", auto.ok ? "ok" : "warn",
@@ -1892,7 +1906,7 @@ async function uninstallPackageTransactional(args, pkgName) {
 	return {
 		ok: true, self: isSelf,
 		message: isSelf
-			? `${pkgName} 已卸载（开机自启已自动清理）。本启动器（3081 兜底页）存活到本次进程结束；3080 内的插件管理界面随本次引擎重启消失。`
+			? `${pkgName} 已卸载（开机自启已自动清理）。本启动器（${args.port} 兜底页）存活到本次进程结束；${ENGINE_PORT} 内的插件管理界面随本次引擎重启消失。`
 			: `${pkgName} 已卸载（备份 → 移除 → 摘 bundles → 清 patch → 验证，全程有回滚记录）。`,
 		steps
 	};
@@ -2051,7 +2065,11 @@ const escPs = (value) => value.replace(/'/g, "''");
 function ensureLauncherCmd(args) {
 	try {
 		const dshHome = process.env.DSH_HOME || join(homedir(), ".dsh");
-		const scriptsDir = join(dshHome, "scripts");
+		// 隔离红线：脚本目录默认 <DSH_HOME>/scripts，但允许 DSH_PM_SCRIPTS_DIR 覆盖 ——
+		// 测试/多实例必须能把生成物锁在临时目录，绝不改写用户真实的 ~/.dsh/scripts（历史污染点）。
+		// DSH_PM_NO_SCRIPTS=1 则完全跳过生成（只读/受限环境）。
+		if (process.env.DSH_PM_NO_SCRIPTS === "1") return null;
+		const scriptsDir = resolve(process.env.DSH_PM_SCRIPTS_DIR || join(dshHome, "scripts"));
 		const logDir = join(dshHome, "logs");
 		mkdirSync(scriptsDir, { recursive: true });
 		mkdirSync(logDir, { recursive: true });
@@ -2175,7 +2193,7 @@ function engineThemePreference(profile) {
  * 主题三态（自动=引擎外观 preference > 系统偏好；手动覆盖 localStorage；长按复位）；标题「引擎与插件管理台」。
  * 功能：搜索过滤 / 启停 / 更新检查与更新 / 事务性卸载（步骤日志）/ mod 体检 / 市场辅助 / 重启引擎 / 停止启动器。
  */
-function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, engineTheme = "system" } = {}) {
+function pluginsPageHtml({ token = "__DSH_PM_TOKEN__", enginePort = ENGINE_PORT, launcherPort = launcherPortFromEnv(), engineTheme = "system" } = {}) {
 	return `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>引擎与插件管理台</title>
 <meta name="dsh-pm-token" content="${token}">
@@ -2292,7 +2310,7 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 	<div class="rows" id="stepRows"></div>
 </div>
 
-<div class="hint" style="margin-top:16px">管理器不能在自身管理界面（3080）中停用自己；如需禁用或卸载，请前往启动器兜底页（本页 3081 /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。<b>可事务性自卸载</b>（含开机自启清理指引）。卸载/更新前若引擎正占用目标包，会引导你先禁用并重启引擎，而不是硬删。</div>
+<div class="hint" style="margin-top:16px">管理器不能在自身管理界面（引擎 ${enginePort}）中停用自己；如需禁用或卸载，请前往启动器兜底页（本页 ${launcherPort} /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。<b>可事务性自卸载</b>（含开机自启清理指引）。卸载/更新前若引擎正占用目标包，会引导你先禁用并重启引擎，而不是硬删。</div>
 </div>
 
 <div id="toasts"></div>
@@ -2409,7 +2427,7 @@ function el(tag, cls, text){
 function toggleHtml(b){
 	var label = document.createElement("label");
 	label.className = "toggle";
-	label.title = b.core ? "核心组件：不允许从这里禁用（否则 3080 无法打开页面）" : (b.name + (b.enabled ? "：点击禁用" : "：点击启用"));
+	label.title = b.core ? "核心组件：不允许从这里禁用（否则引擎 " + ENGINE_PORT + " 无法打开页面）" : (b.name + (b.enabled ? "：点击禁用" : "：点击启用"));
 	var input = document.createElement("input");
 	input.type = "checkbox"; input.checked = b.enabled; input.disabled = Boolean(b.core);
 	input.setAttribute("aria-label", b.name + (b.enabled ? " 禁用" : " 启用"));
@@ -2435,10 +2453,10 @@ function renderRows(){
 		var nameLine = el("div", "name");
 		nameLine.textContent = b.name;
 		if (b.core) nameLine.appendChild(el("span", "badge b-core", " 核心"));
-		if (b.self) nameLine.appendChild(el("span", "badge b-self", " 管理器·本页可禁用/可卸载（3080 界面内不可自禁）"));
+		if (b.self) nameLine.appendChild(el("span", "badge b-self", " 管理器·本页可禁用/可卸载（引擎 ${enginePort} 界面内不可自禁）"));
 		if (updMap[b.name] && updMap[b.name].needsUpdate) nameLine.appendChild(el("span", "badge b-upd", " 有新版 " + updMap[b.name].latest));
 		meta.appendChild(nameLine);
-		var desc = b.description || (b.core ? "引擎必需的核心组件" : (b.self ? "本管理台对应的插件包（禁用后 3080 的插件页消失，3081 本页不受影响）" : ""));
+		var desc = b.description || (b.core ? "引擎必需的核心组件" : (b.self ? "本管理台对应的插件包（禁用后引擎 ${enginePort} 的插件页消失，启动器 ${launcherPort} 本页不受影响）" : ""));
 		if (updMap[b.name] && updMap[b.name].current) desc = (desc ? desc + " · " : "") + "当前 " + updMap[b.name].current;
 		if (desc) meta.appendChild(el("div", "desc", desc));
 		row.appendChild(meta);
@@ -2519,7 +2537,7 @@ async function doUninstall(b, btn){
 	btn.disabled = true;
 	await guard(async function(){
 		var warnText = b.self
-			? "这是管理器自身：卸载后 3080 内的插件管理界面消失；3081 本兜底页存活到启动器进程结束；之后请运行 node bin/open-boot.mjs --uninstall 清理开机自启。确定继续？"
+			? "这是管理器自身：卸载后引擎 ${enginePort} 内的插件管理界面消失；启动器 ${launcherPort} 本兜底页存活到启动器进程结束；之后请运行 node bin/open-boot.mjs --uninstall 清理开机自启。确定继续？"
 			: "将执行事务性卸载：备份清单与 cordis.patch.yml → pnpm remove → 清理补丁行 → 验证；每一步都会留下回滚记录。确定继续？";
 		var okGo = await confirmBox("卸载 " + b.name, warnText, "卸载");
 		if (!okGo) return;
@@ -2602,7 +2620,7 @@ document.getElementById("healthBtn").addEventListener("click", runHealth);
 document.getElementById("restartBtn").addEventListener("click", async function(){
 	this.disabled = true;
 	await guard(async function(){
-		var okGo = await confirmBox("重启引擎", "停旧引擎 → 拉起新引擎（失败条目自动隔离一次）→ 等握手。期间 3080 会短暂不可用。", "重启");
+		var okGo = await confirmBox("重启引擎", "停旧引擎 → 拉起新引擎（失败条目自动隔离一次）→ 等握手。期间引擎 ${enginePort} 会短暂不可用。", "重启");
 		if (!okGo) { document.getElementById("restartBtn").disabled = false; return; }
 		toast("重启引擎中…", "warn");
 		var r = await api("/plugins/api/engine/restart", {});
@@ -2617,7 +2635,7 @@ document.getElementById("restartBtn").addEventListener("click", async function()
 document.getElementById("stopBtn").addEventListener("click", async function(){
 	this.disabled = true;
 	await guard(async function(){
-		var okGo = await confirmBox("停止本启动器", "启动器进程将优雅退出并清理 pid 文件；引擎与本页面不受影响，重新打开 3081 会重新拉起启动器。", "停止");
+		var okGo = await confirmBox("停止本启动器", "启动器进程将优雅退出并清理 pid 文件；引擎与本页面不受影响，重新打开 ${launcherPort} 会重新拉起启动器。", "停止");
 		if (!okGo) { document.getElementById("stopBtn").disabled = false; return; }
 		var r = await api("/api/launcher/stop", {});
 		toast(r.message || "启动器即将退出。", "warn");
@@ -2736,7 +2754,7 @@ function startServer(args) {
 		// 1.0.0-rc.1：启动器内置插件管理页 —— mod 全被禁用、引擎 UI 没有插件页可用时，
 		// 这里是重新打开它们的唯一入口（写 profile 的 dsh.profile.bundles，与引擎同一开关）。
 		if (pathname === "/plugins" || pathname === "/plugins/") {
-			sendHtml(res, pluginsPageHtml({ token, enginePort: ENGINE_PORT, engineTheme: engineThemePreference(args.profile) }));
+			sendHtml(res, pluginsPageHtml({ token, enginePort: ENGINE_PORT, launcherPort: args.port, engineTheme: engineThemePreference(args.profile) }));
 			return;
 		}
 		if (pathname === "/plugins/api/bundles" && req.method === "GET") {
@@ -2827,7 +2845,7 @@ function startServer(args) {
 		if (pathname === "/api/launcher/stop" && req.method === "POST") {
 			// 1.0.0-rc.1 用户可控启停：优雅退出本启动器并清理 pid 文件（引擎不受影响）。
 			if (rejectWrite(req, res)) return;
-			sendJson(res, 200, { ok: true, pid: process.pid, message: `启动器（pid ${process.pid}）将在 1s 内退出；pid 文件已清理。引擎与浏览器本页不受影响，重新打开 3081 会重新拉起启动器。` });
+			sendJson(res, 200, { ok: true, pid: process.pid, message: `启动器（pid ${process.pid}）将在 1s 内退出；pid 文件已清理。引擎与浏览器本页不受影响，重新打开 ${args.port} 会重新拉起启动器。` });
 			setTimeout(() => {
 				// pid 文件可能已被新实例覆写：只有内容仍是本进程时才清理，避免误删别人的归属记录
 				try {

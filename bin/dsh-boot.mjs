@@ -30,6 +30,7 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
 import { ENGINE_PORT, chdirStable, engineHealth, portOwner, probe, startEngineWithQuarantine } from "../lib/enginectl.mjs";
+import { entryUrlOf, launcherPortFromEnv } from "../lib/ports.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
@@ -118,7 +119,7 @@ async function main() {
 	if (await probe(ENGINE_PORT)) {
 		const owner = portOwner(ENGINE_PORT);
 		log(`✗ 端口 ${ENGINE_PORT} 被${owner ? ` pid ${owner}` : "其他进程"}占用，但它不是 dsh 引擎（HTTP 握手失败）。`);
-		log(`  拒绝把它当成"引擎已就绪"；请先结束该进程（任务管理器 / 3081 救援页），或确认 profile/端口是否用错。`);
+		log(`  拒绝把它当成"引擎已就绪"；请先结束该进程（任务管理器 / 启动器救援页 ${entryUrlOf(launcherPortFromEnv())} ），或确认 profile/端口是否用错。`);
 		return 1;
 	}
 	log(`③ 启动引擎（${args.dsh} web，等待最长 ${Math.round(args.waitMs / 1000)}s）…`);
@@ -139,7 +140,7 @@ async function main() {
 	log(`✗ ${result.message}`);
 	if (result.quarantineMessage) log(`  隔离尝试：${result.quarantineMessage}`);
 	if (result.failedEarly) log(`  （引擎进程立刻退出：已提前判定失败，未空等超时）`);
-	log(`  可打开 http://127.0.0.1:3081/ 使用独立救援中心，或运行 --repair-only 排查`);
+	log(`  可打开 ${entryUrlOf(launcherPortFromEnv())} 使用独立救援中心，或运行 --repair-only 排查`);
 	return 1;
 }
 

@@ -12,6 +12,25 @@
 
 > 尚未发布的改动不在本文件；开发中的版本号见 `package.json` 的 `version`（发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)）。
 
+## [1.0.1] - 2026-11-25
+
+> 一句话：项目更名为 dsh-drydock（DSH 引擎船坞）——新 npm 包名 + 新 loader id，彻底摆脱与官方插件管理器的 id 冲突；同时完成端口覆盖补完（全链路支持非默认端口）与品牌视觉落地（DeepSeek 官方鲸形 + Docker 式货箱 logo 接入全部自有页面）。
+
+### Added · 新增
+
+- 在非默认端口下完整使用 — 端口全链路可覆盖：`DSH_LAUNCHER_PORT`（默认 3081）、`DSH_ENGINE_PORT`（默认 3080）、rescue-daemon `--port`（默认 3082）、守护锁端口自动推导（launcher+1000）——健康检查、身份指纹、页面跳转、锁端口、自动拉起、API 路径随端口一致联动；端口推导收敛到 `lib/ports.mjs` 单一事实源
+- 用隔离模式做测试与二改 — 新增 `DSH_PM_SCRIPTS_DIR` / `DSH_PM_NO_SCRIPTS=1` 隔离开关，测试不再触碰真实 `~/.dsh/scripts`；交付 `tools/dev/test-extra-ports.mjs` 隔离测试引擎（69 项断言，临时 DSH_HOME + 自选端口可重复运行）
+- 在自有页面看到品牌标识 — 管理台（3080）、启动页 / 兜底页 / 救援页（3081）、救援守护页（3082）四类页面头部加入 logo mark（主题自适应 currentColor，深浅主题均适配），并为各页补内联 SVG favicon（蓝底白鲸货箱，16px 可辨），消除 favicon 404
+
+### Fixed · 修复
+
+- **更名 dsh-drydock** — npm 包名 `dsh-plugin-manager-pro` → `dsh-drydock`；loader entry id → `drydock`（官方 DSH 0.1.6+ 已占用 `plugin-manager` id，旧 id 与官方插件管理器同装会冲突）；typert RPC 前缀、cordis patch 显示名、bin 自引用、README/文档同步
+- 管理台与兜底页视觉更新 — 标题区 logo + 新双色规范（DeepSeek 品牌蓝 #4D6BFE + 白）；测试断言的文案与结构不变
+- 有意保留旧标识 — sidecar 文件名 `plugin-manager.json`、备份目录 `<profile>/.plugin-manager`、bin 命令名（`dsh-pm-launcher` / `dsh-pm-boot` / `dsh-pm-rescue`）、`DSH_PM_*` 环境变量前缀等**存量用户数据面标识保持不变**，改名不影响既有数据与脚本
+- 历史文档 — CHANGELOG 历史条目与 `docs/releases/` 旧版说明按发布时口径保留（旧名），不做追溯改写
+
+> 完整发布说明：[`docs/releases/1.0.1.md`](docs/releases/1.0.1.md)
+
 ## [1.0.0] - 2026-11-24
 
 > 一句话：插件管理的三个入口（3080 管理台 / 3081 兜底页 / 救援中心）全部重做定型——列表按来源三分区、管理器自身的禁用与卸载口径统一、卸载/更新/体检全链路事务化，并完整吸收 0.9.1-rc2 预发布的兼容性与性能加固（Node 18/20 修复、弱网韧性、bundle −67.9%）。

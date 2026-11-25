@@ -1,24 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="DSH 引擎船坞 drydock：鲸鱼驮着插件箱，停在坞墩上">
-  <defs>
-    <linearGradient id="drydock-logo-grad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#4D6BFE"/>
-      <stop offset="1" stop-color="#24338F"/>
-    </linearGradient>
-  </defs>
-  <!-- 徽章底 -->
-  <rect x="1" y="1" width="62" height="62" rx="15" fill="url(#drydock-logo-grad)"/>
-  <!-- 坞底基线 -->
-  <rect x="15" y="53" width="34" height="1.6" rx="0.8" fill="#FFFFFF" opacity="0.55"/>
-  <!-- 鲸鱼：尾鳍 -->
-  <path d="M14 39 C12.5 36 10.5 33.5 7.5 32 C10.5 32.2 12.8 33.2 14.6 34.6 C15 32.2 14.6 30 13.6 27.8 C16.4 29.6 17.4 32.2 17.6 34.8 C18.4 33 19.6 31.6 21.2 30.6 C20.6 33 20.4 35.2 21 37.4 C19 38.4 16.8 39 14 39 Z" fill="#FFFFFF"/>
-  <!-- 鲸鱼：身体 -->
-  <path d="M15 39.5 C15.5 33.5 21 30 27.5 30 C33 30 36 27.8 42 27.8 C48.5 27.8 53.5 31.4 53.5 36 C53.5 40.6 49 43.8 43 43.8 L20.5 43.8 C16.8 43.8 15.4 42.4 15 39.5 Z" fill="#FFFFFF"/>
-  <!-- 眼 -->
-  <circle cx="46" cy="34.6" r="2" fill="#24338F"/>
-  <!-- 背上的插件箱 ×2 -->
-  <rect x="28" y="21.6" width="9" height="8.6" rx="1.6" fill="#FFB020"/>
-  <rect x="38.5" y="22.6" width="7.5" height="7.4" rx="1.4" fill="#FFB020"/>
-  <!-- 坞墩贴腹托举 ×2 -->
-  <rect x="17" y="44.2" width="10" height="6.4" rx="2" fill="#FFB020"/>
-  <rect x="37" y="44.2" width="10" height="6.4" rx="2" fill="#FFB020"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="DSH 引擎船坞 drydock：白鲸喷着水花游向右方">
+  <!-- 双色规范：仅 #3D5AFE（DSH 蓝）与 #FFFFFF（白），眼与嘴线用蓝底镂空 -->
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="#3D5AFE"/>
+  <!-- 喷水 -->
+  <circle cx="42" cy="17.5" r="1.7" fill="#FFFFFF"/>
+  <circle cx="37.5" cy="14.8" r="1.2" fill="#FFFFFF"/>
+  <circle cx="46.5" cy="14.8" r="1.2" fill="#FFFFFF"/>
+  <!-- 双叶尾鳍（凹腰 fluke） -->
+  <path d="M14.5 35 L6.5 27 C8.8 30.6 9.7 32.9 9.7 35 C9.7 37.1 8.8 39.4 6.5 43 Z" fill="#FFFFFF"/>
+  <!-- 鲸鱼身体 -->
+  <path d="M11 35 C11.5 30.5 16 27 22.5 26.6 C27 26.3 30.5 25 36 24.6 C44 24 51 26.5 54 31 C55.5 33.5 55.5 36.5 54 39 C51.5 42.8 47 44.5 41.5 44.5 L21 44.5 C15 44.5 11.5 40.5 11 35 Z" fill="#FFFFFF"/>
+  <!-- 眼（蓝底镂空） -->
+  <circle cx="47.5" cy="32.5" r="2" fill="#3D5AFE"/>
+  <!-- 嘴线（蓝底镂空） -->
+  <path d="M54.5 36.6 C50.5 39.6 46 40.8 41 40.8" fill="none" stroke="#3D5AFE" stroke-width="1.6" stroke-linecap="round"/>
 </svg>

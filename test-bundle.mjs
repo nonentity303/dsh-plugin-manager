@@ -50,8 +50,8 @@ if (!handoff) {
 	console.error("FAIL: bundle did not call window.__ModuleLoader__.load");
 	process.exit(1);
 }
-if (handoff.id !== "dsh-plugin-manager-pro") {
-	console.error(`FAIL: registered id ${handoff.id}, expected dsh-plugin-manager-pro`);
+if (handoff.id !== "dsh-drydock") {
+	console.error(`FAIL: registered id ${handoff.id}, expected dsh-drydock`);
 	process.exit(1);
 }
 if (typeof handoff.factory !== "function") {
@@ -218,7 +218,7 @@ if (!uninstallDesc) {
 		{ status: "failed", exitCode: 1, message: "清理未成功（exit 1，不影响卸载）", command: "node open-boot.mjs --uninstall" },
 		{ status: "timeout", exitCode: null, message: "超过 20000ms 未返回，已终止", command: "node open-boot.mjs --uninstall" }
 	]) {
-		const selfItem = { ...itemFixture, packageName: "dsh-plugin-manager-pro", isSelf: true, autostartCleanup: cleanup };
+		const selfItem = { ...itemFixture, packageName: "dsh-drydock", isSelf: true, autostartCleanup: cleanup };
 		try {
 			uninstallDesc.result.schema.parse({ items: [selfItem], snapshot: v08Snapshot });
 		} catch (error) {

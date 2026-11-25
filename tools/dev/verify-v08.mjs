@@ -27,8 +27,9 @@ const ok = (cond, label) => { if (cond) console.log("OK:", label); else { failur
 const list = await post("pluginManagerPro/list", {});
 ok(list.result?.ok === true, "list ok");
 const entries = list.result?.value?.entries ?? [];
-const pm = entries.find((e) => e.configId === "plugin-manager-pro");
-ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "plugin-manager-pro active origin=user");
+// 改名兼容：新包 configId=drydock（旧包 plugin-manager-pro），两代都认
+const pm = entries.find((e) => e.configId === "drydock" || e.configId === "plugin-manager-pro");
+ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "manager (drydock/plugin-manager-pro) active origin=user");
 ok(entries.every((e) => ["builtin", "local", "github", "npm"].includes(e.source)), "all entries carry source");
 // demo 为 package-only fixture：无 loader 条目（条目级断言由进程内集成测试覆盖）
 ok(entries.every((e) => e.packageName !== "dsh-v08-demo"), "demo pkg has no loader entries (package-only fixture)");

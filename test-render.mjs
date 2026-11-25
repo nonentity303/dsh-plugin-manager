@@ -700,7 +700,7 @@ try {
 
 	// —— 12c. 管理器自身：isSelf 提示 + 自启清理结果 + 自我卸载说明 ——
 	previewFor = makePreview({
-		packageName: "dsh-plugin-manager-pro",
+		packageName: "dsh-drydock",
 		isSelf: true,
 		dependents: [],
 		checks: [{ id: "self-uninstall", severity: "warning", title: "将被卸载的是管理器自身", detail: "卸载前会先调用包内 bin/open-boot.mjs --uninstall 清理开机自启。" }],
@@ -716,8 +716,8 @@ try {
 	const root10Instance = createRoot(root10);
 	// 管理器自身的行：origin=user（profile 依赖）+ protected（3080 界面内不可自禁，统一口径），但可以卸载（L9）
 	const selfEntries = [...entries, {
-		entryId: "e7", configId: "plugin-manager-pro", moduleName: "dsh-plugin-manager-pro", packageName: "dsh-plugin-manager-pro",
-		description: "插件管理器", necessity: "optional", enabled: true, phase: "active", error: null,
+		entryId: "e7", configId: "drydock", moduleName: "dsh-drydock", packageName: "dsh-drydock",
+		description: "引擎船坞（插件管理器）", necessity: "optional", enabled: true, phase: "active", error: null,
 		protected: true, protectionReason: "管理器不能在自身管理界面（3080）中停用自己；如需禁用或卸载，请前往启动器兜底页（3081 /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。", archived: false, origin: "user",
 		installedVersion: "0.9.1", latestVersion: null, updateSource: null, needsUpdate: null, managed: false
 	}];
@@ -726,7 +726,7 @@ try {
 		root10Instance.render(React.createElement(PluginManagerTab, { ...selfApi, t }));
 	});
 	await expandUserSection(root10);
-	await openUninstallFlow(root10, "dsh-plugin-manager-pro");
+	await openUninstallFlow(root10, "dsh-drydock");
 	const selfVerdict = root10.querySelector("[data-check-verdict]");
 	if (selfVerdict === null || selfVerdict.getAttribute("data-check-verdict") !== "caution") throw new Error(`self verdict wrong: ${selfVerdict?.getAttribute("data-check-verdict")}`);
 	const selfHint = root10.querySelector("[data-self-hint]");

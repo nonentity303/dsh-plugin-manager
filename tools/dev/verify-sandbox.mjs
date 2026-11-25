@@ -24,8 +24,9 @@ if (list.ok) {
   const missing = entries.filter((e) => e.origin !== "builtin" && e.origin !== "user").length;
   ok(missing === 0, `all entries carry origin (missing=${missing})`);
   ok(builtin > 50 && user >= 1, `origin split builtin=${builtin} user=${user}`);
-  const pm = entries.find((e) => e.configId === "plugin-manager-pro");
-  ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "plugin-manager-pro active + origin=user");
+  // 改名兼容：新包 configId=drydock（旧包 plugin-manager-pro），两代都认
+  const pm = entries.find((e) => e.configId === "drydock" || e.configId === "plugin-manager-pro");
+  ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "manager (drydock/plugin-manager-pro) active + origin=user");
 }
 const catalog = await post("pluginManagerPro/marketCatalog", {});
 ok(catalog.ok && ["live", "cache"].includes(catalog.value.source) && catalog.value.count > 500, `marketCatalog ${catalog.ok ? catalog.value.source : "?"} count=${catalog.ok ? catalog.value.count : "?"}`);
@@ -70,7 +71,7 @@ if (list.ok) {
 const { readFileSync, writeFileSync } = await import("node:fs");
 let patchText = "";
 try { patchText = readFileSync(SANDBOX_PATCH, "utf8"); } catch {}
-ok(/Managed by dsh-plugin-manager-pro/.test(patchText), "patch file written by manager");
+ok(/Managed by dsh-(drydock|plugin-manager-pro)/.test(patchText), "patch file written by manager");
 writeFileSync(process.env.SANDBOX_VERIFY_OUT || joinPath(tmpdir(), ".sandbox-verify.json"), JSON.stringify({
   port: PORT,
   list: list.ok ? { entries: list.value.entries.length, builtin: list.value.entries.filter((e) => e.origin === "builtin").length, user: list.value.entries.filter((e) => e.origin === "user").length } : null,

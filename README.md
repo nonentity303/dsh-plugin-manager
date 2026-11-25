@@ -4,11 +4,11 @@
 
 > **当引擎起不来的时候，它还在。** 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**启动期可靠性工具链**：独立进程、独立端口的启动前自检、坏插件隔离、引擎拉起与救援（3081 / 3082），外加一个顺手的插件管理台。日常的逛与装请用官方插件页或插件市场——我们不重复做。
 
-![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
+![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
-> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro`（更名过渡期）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
+> 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包将加弃用标记、不删包）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **正式发布版 1.0.0**（npm `latest`，2026-11-25 发布）。核对：`npm view dsh-plugin-manager-pro version`——若显示 0.9.1 说明镜像/发布窗口尚未同步；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
+> **正式发布版 1.0.0**（npm `latest`，2026-11-25 发布）。核对：`npm view dsh-drydock version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
 > ⚠️ **正在更名为 `dsh-drydock`（引擎船坞）**：GitHub 仓库已改名（旧链接自动跳转）；npm 包名将在下个版本迁移，旧名届时加弃用标记（不删包）。安装方式见下文[安装](#安装--更新--卸载)。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文[安装](#安装--更新--卸载)）。
 
@@ -207,15 +207,16 @@
 
 ```sh
 # 方式一（推荐）：npm
-dsh plugin --profile web add dsh-plugin-manager-pro
+dsh plugin --profile web add dsh-drydock
 
 # 方式二：刚发版时（或在 24 小时冷静期内）——显式写版本号，最可靠
-dsh plugin --profile web add dsh-plugin-manager-pro@1.0.0
+dsh plugin --profile web add dsh-drydock@1.0.0
 
 # 方式三：离线 tgz（GitHub Release 页下载，或 npm pack 自建）
-dsh plugin --profile web add ./dsh-plugin-manager-pro-1.0.0.tgz
+dsh plugin --profile web add ./dsh-drydock-1.0.0.tgz
 
 # 老引擎（0.1.0-rc.6 ~ 0.1.5）或 0.9.x 装上去不生效时，回退到旧 UI 版
+# （0.8.2 只存在于旧包名 dsh-plugin-manager-pro 下，回退命令保留旧名）
 dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
 
 # 重启 web 生效（客户端 bundle 在引擎启动时加载，装完必须重启）
@@ -223,16 +224,16 @@ dsh web
 ```
 
 > **装不到 / 装完还是旧版？** ① 客户端 bundle 只在引擎**启动时**加载——装完必须重启 `dsh web`；
-> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），当天刚发布的版本不带版本号会解析到旧版——用"方式二"的显式版本号即可（也可把 `dsh-plugin-manager-pro@1.0.0` 加入 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
+> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），当天刚发布的版本不带版本号会解析到旧版——用"方式二"的显式版本号即可（也可把 `dsh-drydock@1.0.0` 加入 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
 
 装好后两个入口：3080 侧边栏**「插件管理」**（内置插件页已接管）；3081 `http://127.0.0.1:3081/plugins`（引擎不可用时仍可用）。浏览器主页设为 `http://127.0.0.1:3081/` = 打开即自检启动引擎。
 
 ```sh
 # 更新：3081 兜底页「检查更新」→「更新」，或
-pnpm update dsh-plugin-manager-pro --latest --dir <profile>
+pnpm update dsh-drydock --latest --dir <profile>
 
 # 卸载：3081 兜底页「卸载」（带备份、验证与失败回滚），或
-dsh plugin --profile web remove dsh-plugin-manager-pro   # 卸载前自动清理自启/守护/shim
+dsh plugin --profile web remove dsh-drydock   # 卸载前自动清理自启/守护/shim
 npx dsh-pm-launcher --uninstall-autostart                # Windows：清理开机自启（幂等）
 npx dsh-pm-launcher --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
 ```
@@ -275,7 +276,7 @@ npx dsh-pm-launcher --uninstall                          # 需要时：彻底清
 - **宿主端**（`lib/index.js`）：读取 Cordis Loader 实时状态（启用/运行期阶段/错误），经 Typert 网关暴露远程方法（list/setEnabled/update/verifyProfile/fixProfile/marketCatalog/…）。收敛判定基于引擎真实字段，**不收敛时如实提示需要重启，不谎报**
 - **来源三分区判定**（v1.0）：核心组件 = 包名白名单；内置/用户 = 引擎 origin 字段（origin=builtin / origin=user），与引擎实际状态一一对应
 - **运行期错误**：从 cordis 的 `fiber._error` 取真实错误文本（诊断与救援页能看到失败原因）
-- **插件页接管**（`src/client.jsx` + `cordis.patch.yml`）：客户端注册进 `main`（key=`plugins`）与 `sidebar.panellist`（id=`plugins`），patch 停用内置 `ui-plugin-manager`；用自己的行 id `plugin-manager-pro` 不与官方同名；注册内置页原有的 `plugins.*` 子槽位，第三方配置卡片有真实渲染出口
+- **插件页接管**（`src/client.jsx` + `cordis.patch.yml`）：客户端注册进 `main`（key=`plugins`）与 `sidebar.panellist`（id=`plugins`），patch 停用内置 `ui-plugin-manager`；用自己的行 id `drydock` 不与官方同名；注册内置页原有的 `plugins.*` 子槽位，第三方配置卡片有真实渲染出口
 - **开关持久化**：写入 profile 的 `cordis.patch.yml`（带归属注释行，不触碰用户自有补丁）
 - **更新源聚合**（`lib/aggregate.js` + `compare-versions.js`）：多源并行 → 最高版本 → 并列随机；源级熔断；完整支持预发布段
 - **下载器**（`lib/downloader.js`）：HTTP 直链流式；magnet/.torrent 优先外部下载器 → 内置 webtorrent → 提示手动导入
@@ -332,4 +333,4 @@ An English README lives at [README.en.md](README.en.md). Quick version:
 
 A local plugin manager for DeepSeek Harness. It takes over the engine's built-in plugin page as a **standalone page** (sidebar entry "Plugin manager"): since **1.0.0** the list is grouped **by origin** — **Core components (locked) · Engine built-ins · User plugins** — with "Recommended" demoted to an inline row tag. Sections: Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance. It also ships a **standalone rescue toolchain**: `open-boot` (the single web entry on **3081**: boot page `/` + fallback manager page `/plugins` + rescue page `/rescue`), `rescue-daemon` (independent backup rescue service on **3082**), and `dsh-boot` (Steam-style boot sequence with exit codes). Transactional uninstall with impact preview, pre-uninstall health check, operation history (undo) and named scenarios included. Cross-platform, zero new runtime dependencies.
 
-Install: `dsh plugin --profile web add dsh-plugin-manager-pro` (pin `@1.0.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).
+Install: `dsh plugin --profile web add dsh-drydock` (pin `@1.0.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).

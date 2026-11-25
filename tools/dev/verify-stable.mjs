@@ -25,11 +25,14 @@ if (list.ok) {
   const builtin = entries.filter((e) => e.origin === "builtin").length;
   const user = entries.filter((e) => e.origin === "user").length;
   ok(builtin > 100 && user >= 5, `origin split builtin=${builtin} user=${user}`);
-  const expectActive = ["plugin-manager-pro", "dsh-market", "better-sidebar", "office", "dsh-doc-reader", "dsh-better-sidebar-plugin-office"];
+  // 改名兼容：新包 configId=drydock（旧包 plugin-manager-pro），任一 active 即可
+  const expectActive = ["dsh-market", "better-sidebar", "office", "dsh-doc-reader", "dsh-better-sidebar-plugin-office"];
   for (const id of expectActive) {
     const e = entries.find((x) => x.configId === id);
     ok(e !== undefined && e.phase === "active", `entry ${id} active (phase=${e && e.phase})`);
   }
+  const managerActive = entries.some((x) => (x.configId === "drydock" || x.configId === "plugin-manager-pro") && x.phase === "active");
+  ok(managerActive, "manager (drydock/plugin-manager-pro) active");
   // README 简介提取：用户 mod 不应再是"（无简介）"
   for (const id of ["dsh-market", "better-sidebar", "office", "dsh-doc-reader"]) {
     const e = entries.find((x) => x.configId === id);

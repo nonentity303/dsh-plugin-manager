@@ -18,7 +18,7 @@
  *
  * 用法：node tools/test-host-fixes.mjs
  * 环境变量：DSH_HOME（默认 ~/.dsh）、HOST_FIX_SCRATCH（默认 <os.tmpdir()>/dsh-pm-host-fix-scratch）、
- *           HOST_FIX_BASELINE（默认 <DSH_HOME>/profiles/web/node_modules/dsh-plugin-manager-pro/lib/index.js）
+ *           HOST_FIX_BASELINE（默认 <DSH_HOME>/profiles/web/node_modules/dsh-drydock/lib/index.js）
  * 写操作只发生在 scratch 目录（默认在系统临时目录，可被 env 覆盖）；不触碰真实 profile / 3080 / 3081。
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -281,7 +281,16 @@ if (engineModules === undefined) {
 
 // ---------- D. 修复前后对比 ----------
 console.log("\n=== D. 修复前后对比（同一「已收敛」场景） ===");
-const baselinePath = process.env.HOST_FIX_BASELINE ?? join(dshHome, "profiles", "web", "node_modules", "dsh-plugin-manager-pro", "lib", "index.js");
+// 改名兼容：基线优先取新包路径，回退旧包路径（存量 profile 未迁移时）
+function resolveBaseline() {
+	if (process.env.HOST_FIX_BASELINE) return process.env.HOST_FIX_BASELINE;
+	for (const name of ["dsh-drydock", "dsh-plugin-manager-pro"]) {
+		const p = join(dshHome, "profiles", "web", "node_modules", name, "lib", "index.js");
+		if (existsSync(p)) return p;
+	}
+	return join(dshHome, "profiles", "web", "node_modules", "dsh-drydock", "lib", "index.js");
+}
+const baselinePath = resolveBaseline();
 const repoIndex = join(repoRoot, "lib", "index.js");
 const sameFile = existsSync(baselinePath) && readFileSync(baselinePath, "utf8") === readFileSync(repoIndex, "utf8");
 if (!existsSync(baselinePath) || sameFile) {

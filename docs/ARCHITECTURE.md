@@ -1,4 +1,4 @@
-# 架构（dsh-plugin-manager-pro）
+# 架构（dsh-drydock，原名 dsh-plugin-manager-pro）
 
 > 面向读者：想知道「它由哪些进程、文件、槽位组成，边界在哪」的人。
 > 命令与退出码见 [LAUNCHER.md](LAUNCHER.md)；发布与打包见 [RELEASING.md](RELEASING.md)；使用说明见仓库根 [README.md](../README.md)；版本变更见 [CHANGELOG.md](../CHANGELOG.md)。
@@ -55,7 +55,7 @@
 | 动作 | 内容 | 原因 |
 |---|---|---|
 | 停用内置页 | `- id: ui-plugin-manager` / `disabled: true` | 内置页与自研页都声明 `plugins.*` 子槽位 → 不关掉会冲突 |
-| 插入自己的行 | `- insert: [{ id: plugin-manager-pro, name: 'dsh-plugin-manager-pro' }]` | **不与官方 `plugin-manager` 行 id 同名**（同名会让 profile 直接崩：`TypeError: duplicate loader entry id`） |
+| 插入自己的行 | `- insert: [{ id: drydock, name: 'dsh-drydock' }]` | **不与官方 `plugin-manager` 行 id 同名**（同名会让 profile 直接崩：`TypeError: duplicate loader entry id`）；旧包用行 id `plugin-manager-pro`，两代并存时各自只动自己的行 |
 
 > 设置页那个只读清单 tab（`ui-settings-plugin-inventory`）**不再停用**：自研 tab 的 id 已从 `all` 改成 `pluginManagerPro`，不再冲突。
 
@@ -102,7 +102,7 @@
 
 ### 4.1 开关（`<profile>/cordis.patch.yml`）
 
-- `writeDesiredState()`（`lib/index.js`）**只改自己写的行**：新增行带 `commentBefore = "Managed by dsh-plugin-manager-pro. Remove this row to return control to higher-level configuration."`，已有行按 id+name 精确匹配后才改 `disabled` —— **用户自有的补丁行不会被碰**。
+- `writeDesiredState()`（`lib/index.js`）**只改自己写的行**：新增行带 `commentBefore = "Managed by dsh-drydock. Remove this row to return control to higher-level configuration."`（改名前的旧行带 `Managed by dsh-plugin-manager-pro` 标记，仍被识别为自有行），已有行按 id+name 精确匹配后才改 `disabled` —— **用户自有的补丁行不会被碰**。
 - 救援/隔离写的是 `{ id, name, disabled: true }`（同样带归属标记），可逆；改前一定留 `.rescue-bak-<时间戳>` 备份。
 - 写盘走「临时文件 + `rename`」的原子写（`atomicWrite`），避免半截 YAML。
 

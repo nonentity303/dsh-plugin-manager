@@ -25,10 +25,15 @@ const ok = (cond, label) => { if (cond) console.log("OK:", label); else { failur
 const list = await post("pluginManagerPro/list", {});
 ok(list.result?.ok === true, "list ok");
 const entries = list.result?.value?.entries ?? [];
-const pm = entries.find((e) => e.configId === "plugin-manager-pro");
-ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "plugin-manager-pro active origin=user");
+// 改名兼容：新包 configId=drydock（旧包 plugin-manager-pro），两代都认
+const pm = entries.find((e) => e.configId === "drydock" || e.configId === "plugin-manager-pro");
+ok(pm !== undefined && pm.phase === "active" && pm.origin === "user", "manager (drydock/plugin-manager-pro) active origin=user");
 ok(entries.every((e) => ["builtin", "local", "github", "npm"].includes(e.source)), "all entries carry source");
-const installedPkg = JSON.parse(readFileSync(join(PROFILE_DIR, "node_modules", "dsh-plugin-manager-pro", "package.json"), "utf8"));
+function readInstalledPkg(name) {
+	try { return JSON.parse(readFileSync(join(PROFILE_DIR, "node_modules", name, "package.json"), "utf8")); } catch { return null; }
+}
+const installedPkg = readInstalledPkg("dsh-drydock") ?? readInstalledPkg("dsh-plugin-manager-pro");
+if (installedPkg === null) throw new Error("installed manager package.json not found (dsh-drydock / dsh-plugin-manager-pro)");
 ok(/^0\.8\.\d+$/.test(installedPkg.version), "installed manager version 0.8.x (got " + installedPkg.version + ")");
 
 const vp = await post("pluginManagerPro/verifyProfile", {});

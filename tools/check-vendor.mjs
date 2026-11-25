@@ -6,7 +6,7 @@
 // bin 还缺 isDirectRun 守卫"的包。因此本脚本在版本断言之外增加**内容级 sha256 断言**。
 //
 // 断言清单：
-//   1. manifest.json 的 _meta["dsh-plugin-manager-pro"] 必须存在（pack 时写入的期望版本）
+//   1. manifest.json 的 _meta["dsh-drydock"] 必须存在（pack 时写入的期望版本）
 //   2. vendored tgz 内 package/package.json 的 version 必须等于该期望版本
 //   3. 期望版本必须等于仓库 package.json 的 version
 //   4. 内容级（F5）：白名单里工作树的每个文件都必须在 tgz 内出现且 sha256 一致（缺文件/改了没重打包 → 失败）
@@ -27,7 +27,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_PACKAGE = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const REPO_VERSION = REPO_PACKAGE.version;
 const VENDOR = process.env.VENDOR_DIR ?? join(ROOT, "..", "migration", "pkg", "main", "vendor");
-const DEP = "dsh-plugin-manager-pro";
+const DEP = "dsh-drydock";
 
 const problems = [];
 const okNotes = [];

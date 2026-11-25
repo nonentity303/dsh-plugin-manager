@@ -25,11 +25,14 @@ if (list.ok) {
   const missing = entries.filter((e) => e.origin !== "builtin" && e.origin !== "user").length;
   ok(missing === 0, `all entries carry origin (missing=${missing})`);
   ok(builtin > 100 && user >= 6, `origin split builtin=${builtin} user=${user}`);
-  const expectActive = ["plugin-manager-pro", "dsh-market"];
+  // 改名兼容：新包 configId=drydock（旧包 plugin-manager-pro），任一 active 即可
+  const expectActive = ["dsh-market"];
   for (const id of expectActive) {
     const e = entries.find((x) => x.configId === id);
     ok(e !== undefined && e.phase === "active", `entry ${id} active (phase=${e && e.phase})`);
   }
+  const managerActive = entries.some((x) => (x.configId === "drydock" || x.configId === "plugin-manager-pro") && x.phase === "active");
+  ok(managerActive, "manager (drydock/plugin-manager-pro) active");
   for (const e of entries.filter((x) => x.origin === "user")) {
     console.log(`  user: ${e.configId} | pkg=${e.packageName} | phase=${e.phase}`);
   }

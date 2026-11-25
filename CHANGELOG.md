@@ -6,7 +6,7 @@
 > 数据来源：`docs/releases/*.md`（每个版本倒序排列，完整说明见对应文件）；生成规则见 [`tools/dev/gen-changelog.mjs`](tools/dev/gen-changelog.mjs)。
 > 日期口径：发布说明里的内联日期，或脚本内 `RELEASE_DATES` 表（来源逐条列在脚本注释里）；**找不到出处就不写日期**
 > （新版本发布后把发布日期回填进发布说明再重跑本脚本即可 —— 见 `docs/RELEASING.md` §10 第 13 步）。
-> GitHub Releases 另见 <https://github.com/nonentity303/dsh-plugin-manager/releases>。
+> GitHub Releases 另见 <https://github.com/nonentity303/dsh-drydock/releases>。
 
 ## [Unreleased]
 

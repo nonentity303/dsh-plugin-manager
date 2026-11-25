@@ -1,4 +1,8 @@
-# dsh-plugin-manager-pro
+# dsh-drydock
+
+> **档案说明（2026-11-25）**：本文是 **v0.9.1 时代的完整中文正文存档**，不是当前版本手册——
+> 文中"当前版本 0.9.1 / npm 最新"等表述指写作时点。1.0.0 起包名已改为 **`dsh-drydock`**（旧包 `dsh-plugin-manager-pro` 将加弃用标记、不删包）；
+> 当前中文手册见根目录 [README.md](../README.md)，英文存档见 [README.en.md](README.en.md)，发布流程见 [RELEASING.md](RELEASING.md)。
 
 > **归档提示（2026-11-24）**：本文是 **v0.9.1 时代的完整全文**，不是当前版本的说明书——文中"当前版本 0.9.1""npm 最新"等表述都是写作当时的事实。
 > 当前工作副本 **1.0.0-rc.2**（未发布）的口径见仓库根 [README.md](../README.md)；发版流程见 [RELEASING.md](RELEASING.md)。
@@ -6,12 +10,12 @@
 
 > 本地插件管理器 —— 为 [DeepSeek Harness（DSH）](https://github.com/deepseek-ai/deepseek-harness) 提供**独立插件页**（可视化插件管理）+ **独立救砖工具链**。
 
-![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
+![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
-> 社区/本地插件，非 DSH 官方包。npm：`dsh-plugin-manager-pro` · GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
+> 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（1.0.0 起用名；原名 `dsh-plugin-manager-pro` 将加弃用标记、不删包） · GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
 > **当前版本 0.9.1**（口径：仓库 `package.json` 的 `version`；上一个发布版是 0.9.0 —— 2026-09-30 上了 npm 与 GitHub Release）。
-> 发布状态随时可核对：`npm view dsh-plugin-manager-pro version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
+> 发布状态随时可核对：`npm view dsh-drydock version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文"安装"）。
 
 ![独立插件页：侧边栏一级入口「插件管理」+ 五个分区](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
@@ -365,4 +369,4 @@ An English README lives at [README.en.md](README.en.md) (功能清单与命令�
 
 A local plugin manager for DeepSeek Harness. Since **0.9.0** the manager is a **standalone page** (sidebar entry "Plugin manager") instead of a tab inside Settings: five sections — **Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance**. It also ships a **standalone brick-rescue toolchain**: `open-boot` (the single web entry on **3081**, boot page `/` + rescue page `/rescue`), `rescue-daemon` (independent backup rescue service on **3082**), and `dsh-boot` (Steam-style boot sequence with exit codes). Cross-platform, zero new runtime dependencies.
 
-Install: `dsh plugin --profile web add dsh-plugin-manager-pro` (pin `@0.9.1` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).
+Install: `dsh plugin --profile web add dsh-drydock` (pin `@1.0.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).

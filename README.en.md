@@ -1,17 +1,17 @@
-# dsh-plugin-manager-pro
+# dsh-drydock (formerly dsh-plugin-manager-pro)
 
 > **Archival note (2026-11-24)**: this is the **full English text of the v0.9.1 era**, not the manual for the current version —
 > statements such as "current version 0.9.1" / "latest on npm" describe the time of writing.
-> The working copy is **1.0.0-rc.2** (unreleased); the current Chinese README is [README.md](README.md), the full v0.9.1-era Chinese text is [docs/README-full.md](docs/README-full.md), and the release process is [docs/RELEASING.md](docs/RELEASING.md).
+> The working copy is **1.0.0** (npm package renamed to **`dsh-drydock`**; the old name `dsh-plugin-manager-pro` will get a deprecation notice but will not be deleted); the current Chinese README is [README.md](README.md), the full v0.9.1-era Chinese text is [docs/README-full.md](docs/README-full.md), and the release process is [docs/RELEASING.md](docs/RELEASING.md).
 
 > A local plugin manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness): a **standalone plugin page** (visual plugin management) plus a **standalone brick-rescue toolchain**.
 
-![badge](https://img.shields.io/badge/dsh-0.1.7-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-plugin-manager-pro?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-plugin-manager-pro)
+![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
-> Community plugin — not an official DSH package. npm: `dsh-plugin-manager-pro` · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
+> Community plugin — not an official DSH package. npm: `dsh-drydock` (formerly `dsh-plugin-manager-pro`, which will be marked deprecated but not deleted) · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
 >
-> **Published release 0.9.1** (npm `latest`); the repo's `package.json` `version` is now **`0.9.1-rc2`** — a **pre-release** shipped under the **`next`** dist-tag (`npm i dsh-plugin-manager-pro@next`) that does **not** move `latest`; the previous published release is 0.9.0 (npm + GitHub Releases, 2026-09-30).
-> Check what is published any time with `npm view dsh-plugin-manager-pro version`; tags: <https://github.com/nonentity303/dsh-drydock/tags>.
+> **Published release 1.0.0** (npm `latest`, under the new package name `dsh-drydock`).
+> Check what is published any time with `npm view dsh-drydock version`; tags: <https://github.com/nonentity303/dsh-drydock/tags>.
 > ⚠️ A brand-new release is blocked by pnpm's 24 h cool-down (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
 
 ![Standalone plugin page: sidebar entry "Plugin manager" + five sections](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
@@ -60,7 +60,7 @@ The leading competitor [LX2000WASD/dsh-web-plugin-manager](https://github.com/LX
 | What it does | Where |
 |---|---|
 | ① Disable the built-in page row: `- id: ui-plugin-manager` / `disabled: true` | `cordis.patch.yml` (in the package) |
-| ② Insert its own row with its own id `plugin-manager-pro` — **never the official `plugin-manager`** | `cordis.patch.yml` |
+| ② Insert its own row with its own id `drydock` — **never the official `plugin-manager`** | `cordis.patch.yml` |
 | ③ Register into `main` (key=`plugins`) and `sidebar.panellist` (id=`plugins`) and declare the 7 `plugins.*` child slots the built-in page used to own (so third-party config cards have a real home) | `src/client.jsx` |
 
 Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plugin manager" and all five sections — that is Figure 1.
@@ -170,7 +170,7 @@ Five sections, switching keeps your scroll position:
 After installation the three commands come from the `bin` field of `package.json` (`dsh-pm-launcher` / `dsh-pm-boot` / `dsh-pm-rescue`). `npx` works without installing, and you can always run the file inside the package (path is independent of cwd):
 
 ```sh
-node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.mjs" --status
+node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --status
 ```
 
 - **Shared modules**: `lib/preflight.mjs` (standalone self-check/repair, same logic as the host's `verifyProfile`/`fixProfile`), `lib/enginectl.mjs` (engine probing/start/stop/pid management + the write-endpoint guards).
@@ -198,7 +198,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 | **0.1.6 and later** (incl. 0.1.6-alpha.2) | **0.9.1** (recommended) / **0.9.1-rc2** (pre-release) | ✅ recommended (takes over the built-in page) | 0.1.7-rc.2 verified; **0.1.6-alpha.x not tested individually** | The official page became part of the engine in 0.1.6; the `ui-plugin-manager` row our `cordis.patch.yml` disables is exactly that page (`@deepseek-ai/dsh-client-ui-plugin-manager`) |
 | **0.1.0-rc.6 ~ 0.1.5** (engines before 0.1.6) | **0.8.2** | ✅ works (legacy "Settings → Plugins" tab) | 0.8.2 released 2026-09-04; the pre-upgrade baseline on this machine was engine 0.1.1-rc.2 + 0.8.x | 0.8.x and 0.9 are two different clients (`docs/releases/0.9.0.md` ⑤); **the 0.1.5 line was not tested individually** |
 | **0.1.7-rc.2** | **0.8.2 / early 0.8.3 builds** | ❌ plugin never activates | measured in the 2026-09-28 rehearsal | Two independent causes: ① since 0.1.7 the typert strict codec must provide a `create()` factory; ② `dsh.client.inject` referenced `@deepseek-ai/dsh-client-runtime`, removed in 0.1.7. Fixed in 0.8.3-1 and 0.9.x |
-| **0.1.6 and later** | **any third-party manager that declares the same loader entry id** (e.g. LX2000WASD 0.6.x) | ❌ profile will not start | competitor announcement, 2026-09 | `TypeError: duplicate loader entry id: plugin-manager` (the official `dsh-base` row id is `plugin-manager`); this manager uses its own id `plugin-manager-pro` |
+| **0.1.6 and later** | **any third-party manager that declares the same loader entry id** (e.g. LX2000WASD 0.6.x) | ❌ profile will not start | competitor announcement, 2026-09 | `TypeError: duplicate loader entry id: plugin-manager` (the official `dsh-base` row id is `plugin-manager`); this manager uses its own id `drydock` |
 | Already on 0.9.x with an engine before 0.1.6 | rollback: `dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2` | ⚠️ recovery path | — | see the rollback command under "Install" |
 
 > **One line**: **newer engines want 0.9.1; only very old engines (before 0.1.6) need 0.8.2.** The 0.1.6 boundary is the only certain one; the transitional 0.1.6-alpha.x versions were not tested individually.
@@ -212,7 +212,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 | Data | Purpose | Leaves the machine? |
 |---|---|---|
 | `~/.dsh/profiles/<name>/package.json` | read the installed plugin list (`dependencies` / `dsh.bundle` / `dsh.client`); written back by install/uninstall/scenario operations (backed up first) | No |
-| `~/.dsh/profiles/<name>/cordis.patch.yml` | read/write enable-state and quarantine rows (only rows carrying the `Managed by dsh-plugin-manager-pro` marker; backed up first) | No |
+| `~/.dsh/profiles/<name>/cordis.patch.yml` | read/write enable-state and quarantine rows (only rows carrying the `Managed by dsh-drydock` marker; pre-rename rows carry the old `dsh-plugin-manager-pro` marker and are still recognized; backed up first) | No |
 | `~/.dsh/profiles/<name>/plugin-manager.json` (sidecar) | operation history (last 20), scenarios, manual origin overrides, pending removals, update-source config | No |
 | `~/.dsh/profiles/<name>/node_modules/**` | read the dependency graph and package summaries; uninstall/quarantine deletes package directories via `pnpm` (Windows file locks are queued for the next start) | No (pnpm talks to the registry during install/uninstall) |
 | `~/.dsh/profiles/<name>/vendor/downloads/*.tgz` | archive staging for browser downloads; archives still referenced by dependencies are never deleted | No |
@@ -232,20 +232,17 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 > **Install from npm** (`dsh plugin … add` is pnpm underneath and reuses the engine-provided `@deepseek-ai/*`).
 
 ```sh
-# 1) recommended (engine >= 0.1.6)
-dsh plugin --profile web add dsh-plugin-manager-pro
+# 1) recommended (engine >= 0.1.6) — new package name since the 1.0.0 rename
+dsh plugin --profile web add dsh-drydock
 
 # 2) right after a release (or during the 24 h cool-down) — pin the version, always reliable
-dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1
-
-# 2b) pre-release: try 0.9.1-rc2 (shipped under the `next` dist-tag, does not move `latest`; use this on Node 18/20)
-dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1-rc2
-# equivalent npm form: npm i dsh-plugin-manager-pro@next
+dsh plugin --profile web add dsh-drydock@1.0.0
 
 # 3) offline tarball (downloaded from the GitHub Release page, or built with npm pack)
-dsh plugin --profile web add ./dsh-plugin-manager-pro-0.9.1.tgz
+dsh plugin --profile web add ./dsh-drydock-1.0.0.tgz
 
 # old engines (0.1.0-rc.6 ~ 0.1.5), or when 0.9.x does not take effect: roll back to the legacy UI
+# (0.8.2 only ever existed under the old package name — the rollback command keeps the old name)
 dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
 
 # restart the web engine to load the client bundle
@@ -292,7 +289,7 @@ npx dsh-pm-launcher --uninstall                          # optional: remove ever
 
 - **Host** (`lib/index.js`): reads live Cordis loader state (enabled / runtime phase / error) and exposes remote methods through the Typert gateway (list / setEnabled / update / verifyProfile / fixProfile / marketCatalog / …). Convergence is judged from real engine fields (`Entry.disabled` / `_initTask` / `fiber.state`) and honestly reports "restart required" instead of pretending.
 - **Plugin page takeover** (`src/client.jsx` + `cordis.patch.yml`): registers into `main` (key=`plugins`) and `sidebar.panellist` (id=`plugins`), disables the built-in `ui-plugin-manager` row and declares the 7 `plugins.*` child slots; the three that third-party plugins really use (`plugins.row.config` / `plugins.bundle.config` / `plugins.item`) have real render exits — **an unregistered key never produces an empty button**.
-- **Toggle persistence**: rows written into the profile's `cordis.patch.yml`, always carrying the `Managed by dsh-plugin-manager-pro` marker so user-owned patch rows are never touched.
+- **Toggle persistence**: rows written into the profile's `cordis.patch.yml`, always carrying the `Managed by dsh-drydock` marker (legacy `dsh-plugin-manager-pro` markers are still read) so user-owned patch rows are never touched.
 - **Update aggregation** (`lib/aggregate.js` + `compare-versions.js`): parallel sources → highest version → random tie-break; 10-minute circuit breaking on 403/429; full pre-release support.
 - **Downloader** (`lib/downloader.js`): streaming HTTP; magnet/.torrent prefer an external downloader (cross-platform where/which) → built-in webtorrent → manual import.
 - **Cross-platform** (`lib/platform.js`): npm global root via `%APPDATA%\npm` on Windows, `npm root -g` plus common paths and nvm directories elsewhere (10-minute cache).

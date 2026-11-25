@@ -345,7 +345,7 @@ ok(demoManaged !== undefined && demoManaged.managed === true, "file: demo packag
 const readOnlyBefore = dirSnapshot(profileDir);
 const previewP14 = await svc.uninstallPreview(["dsh-p14-target"]);
 const previewP14Safe = await svc.uninstallPreview(["dsh-p14-consumer"]);
-const previewP14Self = await svc.uninstallPreview(["dsh-plugin-manager-pro"]);
+const previewP14Self = await svc.uninstallPreview(["dsh-drydock"]);
 const readOnlyAfter = dirSnapshot(profileDir);
 const p14 = previewP14.packages[0];
 const checkOf = (list, id) => (list ?? []).find((check) => check.id === id);
@@ -477,7 +477,7 @@ ok(hostSidecar.failureStreak?.["free-search"] >= 2, "H3: 连续失败计数已�
 //      真实 open-boot --uninstall 会删本机 HKCU Run 的 DSHWeb* 自启值，测试里绝不能真跑。
 const selfProfile = mkdtempSync(join(tmpdir(), "pm-l9-self-"));
 const selfVendor = join(selfProfile, "vendor");
-const managerPkg = join(selfVendor, "dsh-plugin-manager-pro");
+const managerPkg = join(selfVendor, "dsh-drydock");
 const rivalPkg = join(selfVendor, "l9-rival");
 const stubPath = join(managerPkg, "bin", "open-boot.mjs");
 mkdirSync(join(managerPkg, "bin"), { recursive: true });
@@ -492,7 +492,7 @@ const writeStub = (body) => writeFileSync(stubPath, [
 	""
 ].join("\n"), "utf8");
 writePkg(managerPkg, {
-	name: "dsh-plugin-manager-pro", version: "0.9.1",
+	name: "dsh-drydock", version: "0.9.1",
 	dsh: { bundle: { patch: "./cordis.patch.yml" } },
 	dependencies: { "l9-rival": "file:../l9-rival" }
 });
@@ -503,12 +503,12 @@ writeStub("process.exit(1);");
 writeFileSync(join(selfProfile, "pnpm-workspace.yaml"), ["packages:", "  - .", "virtualStoreDir: node_modules/.pnpm", ""].join("\n"), "utf8");
 writeFileSync(join(selfProfile, "cordis.patch.yml"), "# l9\n[]\n", "utf8");
 const selfDeps = {
-	"dsh-plugin-manager-pro": `file:${selfVendor.replace(/\\/g, "/")}/dsh-plugin-manager-pro`,
+	"dsh-drydock": `file:${selfVendor.replace(/\\/g, "/")}/dsh-drydock`,
 	"l9-rival": `file:${selfVendor.replace(/\\/g, "/")}/l9-rival`
 };
 writeFileSync(join(selfProfile, "package.json"), JSON.stringify({
 	name: "dsh-profile-l9-self", private: true,
-	dsh: { profile: { bundles: ["dsh-plugin-manager-pro", "l9-rival"] } },
+	dsh: { profile: { bundles: ["dsh-drydock", "l9-rival"] } },
 	dependencies: { ...selfDeps }
 }, null, 2) + "\n", "utf8");
 runExternal(pnpmCmd[0], [...pnpmCmd.slice(1), "install", "--force"], { cwd: selfProfile, env: pnpmInstallEnv });
@@ -532,11 +532,11 @@ process.env.DSH_PM_L9_PROBE = probeFile;
 const cascadeSelf = await selfSvc.uninstallPackages(["l9-rival"], { cascade: true });
 const cascadeItem = cascadeSelf.items[0];
 ok(cascadeItem.status === "removed", `L9: 级联卸载自身成功（清理失败不阻断；status=${cascadeItem.status}：${cascadeItem.message}）`);
-ok(cascadeItem.isSelf === true && cascadeItem.dependentPackages.includes("dsh-plugin-manager-pro"),
+ok(cascadeItem.isSelf === true && cascadeItem.dependentPackages.includes("dsh-drydock"),
 	`L9: 级联把管理器自身算进移除集（dependentPackages=${JSON.stringify(cascadeItem.dependentPackages)}）`);
 ok(cascadeItem.autostartCleanup?.status === "failed" && cascadeItem.autostartCleanup.exitCode === 1,
 	`L9 分支②失败不阻断：autostartCleanup=${JSON.stringify(cascadeItem.autostartCleanup)}`);
-ok(!existsSync(join(selfProfile, "node_modules", "dsh-plugin-manager-pro")), "L9: 包目录已删除（说明清理发生在 pnpm remove 之前的真实调用）");
+ok(!existsSync(join(selfProfile, "node_modules", "dsh-drydock")), "L9: 包目录已删除（说明清理发生在 pnpm remove 之前的真实调用）");
 const probeLines = existsSync(probeFile) ? readFileSync(probeFile, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 const stripSep = (value) => String(value ?? "").replace(/[\\/]+$/, "");
 ok(probeLines.length >= 1 && probeLines[0].argv[0] === "--uninstall" && probeLines[0].argv[1] === "--profile" && stripSep(probeLines[0].argv[2]) === stripSep(selfProfile),
@@ -548,11 +548,11 @@ ok(typeof l9History?.detail === "string" && l9History.detail.includes("开机自
 
 // 15b：直接卸载自身 + 分支①成功（exit 0）
 writeStub("process.exit(0);");
-runExternal(pnpmCmd[0], [...pnpmCmd.slice(1), "add", `dsh-plugin-manager-pro@${selfDeps["dsh-plugin-manager-pro"]}`], { cwd: selfProfile, env: pnpmInstallEnv });
+runExternal(pnpmCmd[0], [...pnpmCmd.slice(1), "add", `dsh-drydock@${selfDeps["dsh-drydock"]}`], { cwd: selfProfile, env: pnpmInstallEnv });
 writeFileSync(probeFile, "", "utf8");
 __internals.resetDependencyCache();
 selfSvc.profileDeps = JSON.parse(readFileSync(join(selfProfile, "package.json"), "utf8")).dependencies ?? {};
-const directSelf = await selfSvc.uninstallPackages(["dsh-plugin-manager-pro"], { cascade: false });
+const directSelf = await selfSvc.uninstallPackages(["dsh-drydock"], { cascade: false });
 const directItem = directSelf.items[0];
 ok(directItem.status === "removed" && directItem.isSelf === true, `L9: 直接卸载自身成功（status=${directItem.status}）`);
 ok(directItem.autostartCleanup?.status === "cleaned" && directItem.autostartCleanup.exitCode === 0,

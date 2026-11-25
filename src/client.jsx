@@ -44,7 +44,8 @@ const NECESSITY_ORDER = ["core", "builtin", "user"];
 // 「推荐」不再是分区，降级为行内小标签（RECOMMENDED_PACKAGE_NAMES 里的第三方推荐件，如 browser-control）。
 const CORE_PACKAGE_NAMES = new Set(["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]);
 const RECOMMENDED_PACKAGE_NAMES = new Set(["@caob23/dsh-browser-control"]);
-const MANAGER_PACKAGE_NAME = "dsh-plugin-manager-pro";
+const MANAGER_PACKAGE_NAME = "dsh-drydock";
+const MANAGER_CONFIG_ID = "drydock";
 
 /** 条目归属哪个分区（纯函数，可单测）：核心组件 → 用户插件 → 引擎内置组件。
  * 只看包名与来源：核心区按包名白名单，其余按 entry.origin（引擎侧 necessity 字段不采纳——
@@ -704,7 +705,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 										const entrySection = sectionKeyOfEntry(entry);
 										const isManager = entry.packageName === MANAGER_PACKAGE_NAME
 											|| entry.moduleName === MANAGER_PACKAGE_NAME
-											|| entry.configId === MANAGER_PACKAGE_NAME;
+											|| entry.configId === MANAGER_CONFIG_ID;
 										const running = busy === `entry:${entry.entryId}` || busy === `update:${entry.packageName}`;
 										const updating = busy === `update:${entry.packageName}` || busy === "update:all";
 										const canUpdate = entry.needsUpdate === true && entry.managed && !updating;
@@ -2374,7 +2375,7 @@ function PluginManagerProPage(props) {
 		// 关键：main 面板不会替本页滚动，页面自己必须是滚动容器
 		// （内置页同款 height:100% + overflow:auto）；内层再限宽居中，
 		// 否则内容超出视口后下面的插件永远看不到。
-		<section data-plugin-panel="plugin-manager-pro" style={{ boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden", padding: "22px 26px 44px", color: "var(--dsw-alias-label-primary)" }}>
+		<section data-plugin-panel="drydock" style={{ boxSizing: "border-box", height: "100%", overflowY: "auto", overflowX: "hidden", padding: "22px 26px 44px", color: "var(--dsw-alias-label-primary)" }}>
 			<div style={{ maxWidth: 960, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
 			<header data-window-drag="true">
 				<div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -2607,7 +2608,7 @@ const zh = {
 	uninstallCheckInfo: "信息",
 	uninstallCheckEmpty: "没有需要提示的体检项。",
 	uninstallSelfHint: "这是管理器自身：卸载前会先执行 bin/open-boot.mjs --uninstall 清理开机自启（停本 profile 守护 → 删 DSHWeb* 自启值 → 删 .vbs → 清 pid）。失败或超时不阻断卸载，结果会写进卸载报告与操作历史。",
-	uninstallSelfReport: "管理器自身已卸载：重启引擎后本页面消失；如要装回，用 dsh plugin --profile <name> add dsh-plugin-manager-pro。",
+	uninstallSelfReport: "管理器自身已卸载：重启引擎后本页面消失；如要装回，用 dsh plugin --profile <name> add dsh-drydock。",
 	uninstallAutostartTitle: "开机自启清理",
 	uninstallAutostartCleaned: "已完成",
 	uninstallAutostartSkipped: "已跳过（包内没有 --uninstall，旧版本）",
@@ -2848,7 +2849,7 @@ const en = {
 	uninstallCheckInfo: "info",
 	uninstallCheckEmpty: "No findings to report.",
 	uninstallSelfHint: "This is the manager itself: before removal it runs bin/open-boot.mjs --uninstall to clear autostart (stops this profile's daemon → deletes DSHWeb* Run values → deletes .vbs shims → clears the pid file). Failure or timeout never blocks the uninstall, and the outcome is written to the report and operation history.",
-	uninstallSelfReport: "The manager itself was removed: this page disappears after an engine restart; reinstall with dsh plugin --profile <name> add dsh-plugin-manager-pro.",
+	uninstallSelfReport: "The manager itself was removed: this page disappears after an engine restart; reinstall with dsh plugin --profile <name> add dsh-drydock.",
 	uninstallAutostartTitle: "Autostart cleanup",
 	uninstallAutostartCleaned: "done",
 	uninstallAutostartSkipped: "skipped (no --uninstall in this package — older version)",

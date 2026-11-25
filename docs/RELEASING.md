@@ -1,4 +1,4 @@
-# 发布流程（dsh-plugin-manager-pro）
+# 发布流程（dsh-drydock）
 
 本文件是唯一的发布口径。任何"发一个版本"的动作都应当能照着它重复出来。
 
@@ -94,7 +94,7 @@ npm run pack           # = node build.mjs && npm pack
 # 或：node tools/dev/pack.mjs
 ```
 
-- 产物：`dsh-plugin-manager-pro-<version>.tgz`（仓库根）。
+- 产物：`dsh-drydock-<version>.tgz`（仓库根）。
 - 发布物白名单在 `package.json` 的 `files`：`lib/*.js`、`lib/*.mjs`、`bin`、`cordis.patch.yml`、`README.md`、`LICENSE`。
   - **`lib/client.js.map` 故意不发布**（本地调试用，1.6 MB；同时被 `.gitignore` 忽略）。不要为了"体积好看"改回 `"lib"` 整目录。
   - 测试脚本、`tools/`、`docs/` 不发布。
@@ -190,17 +190,17 @@ npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打�
 
 ### 4.4 发完立刻要做的两件事
 
-1. **核对**：`npm view dsh-plugin-manager-pro version` 必须等于 `package.json` 的 `version`
+1. **核对**：`npm view dsh-drydock version` 必须等于 `package.json` 的 `version`
    （`publish:npm:apply` 已经自动打印）。README 里"npm 上最新是 X"这句话要同步改。
 2. **告诉用户怎么立刻装上**——pnpm 11 的 `minimumReleaseAge` 默认 **1440 分钟**（24 小时），
    刚发的版本**不带版本号是装不到的**：
 
    ```sh
    # 立刻装（唯一永远可靠的写法：显式版本号）
-   dsh plugin --profile web add dsh-plugin-manager-pro@0.9.0
+   dsh plugin --profile web add dsh-drydock@<刚发的版本号>
    # 或者把该版本加进 profile 的 pnpm-workspace.yaml：
    # minimumReleaseAgeExclude:
-   #   - dsh-plugin-manager-pro@0.9.0
+   #   - dsh-drydock@<刚发的版本号>
    ```
 
    这条同样写进了 README 的安装小节，避免"发了但用户说装不上"。
@@ -229,7 +229,7 @@ npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打�
 
 > 端口、退出码、写接口防护与 `--uninstall` 四步的完整口径见 [`LAUNCHER.md`](LAUNCHER.md)（该文件与实现逐条核对，附「文档条目 → 代码位置」核对表）。
 
-安装后可直接 `npx dsh-pm-launcher --help`，或在包目录里 `node node_modules/dsh-plugin-manager-pro/bin/open-boot.mjs --help`。
+安装后可直接 `npx dsh-pm-launcher --help`，或在包目录里 `node node_modules/dsh-drydock/bin/open-boot.mjs --help`。
 **不要在 README/文档里写裸相对路径 `node bin/...`**——那只对"cwd 恰好在包根"的开发者成立。
 
 ## 5. 迁移包 vendor 刷新（审计④ R3/R15 → F5）
@@ -247,18 +247,18 @@ npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打�
 
 刷新步骤：
 
-1. 确认本轮所有修复已合并（**最后一个改文件的写者也收工了**），然后按 §3 打出 `dsh-plugin-manager-pro-<version>.tgz`；
+1. 确认本轮所有修复已合并（**最后一个改文件的写者也收工了**），然后按 §3 打出 `dsh-drydock-<version>.tgz`；
 2. 把它拷进 `migration/pkg/main/vendor/`（删除旧版本 tgz，文件名与 `manifest.json` 指向一致）；
 3. 更新 `migration/pkg/main/vendor/manifest.json`：
-   - `"dsh-plugin-manager-pro": "dsh-plugin-manager-pro-<version>.tgz"`
-   - `"_meta": { "dsh-plugin-manager-pro": "<version>" }`（deploy 时的期望版本，**必须与 package.json 一致**）
+   - `"dsh-drydock": "dsh-drydock-<version>.tgz"`
+   - `"_meta": { "dsh-drydock": "<version>" }`（deploy 时的期望版本，**必须与 package.json 一致**）
 4. 断言（**仓库侧，内容级**）：`npm run check:vendor` → 必须全绿。它会做三件事：
    - 版本链一致（manifest `_meta` == tgz 内 `package/package.json` == 仓库 `package.json`）；
    - **正向**：`files` 白名单里工作树的每个文件都必须在 tgz 内出现且 sha256 一致（改了源码没重打包 → 失败）；
    - **反向**：tgz 内每个文件都必须能在工作树里找到且 sha256 一致（tgz 比工作树新或旧都算失败）。
    失败时会打印「文件 / tgz 内 sha256 / 工作树 sha256」差异清单，照着重新打包即可。
 5. 断言（**部署侧**）：`deploy.ps1` 在部署时还会再断言一次 —— 版本不符、tgz 缺关键文件、
-   或安装到 `node_modules/dsh-plugin-manager-pro` 的文件与 tgz 内同名文件 sha256 不一致，都会直接 throw
+   或安装到 `node_modules/dsh-drydock` 的文件与 tgz 内同名文件 sha256 不一致，都会直接 throw
    （防止"tarball 陈旧/损坏/被 registry 解析成别的版本"这类问题在新机器上静默通过）。
 
 
@@ -352,21 +352,21 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 **事实**：pnpm 11 起 `minimumReleaseAge` 默认 **1440 分钟**（v11 之前为 0）——
 [pnpm 文档 settings/dependency-resolution#minimumreleaseage](https://pnpm.io/settings/dependency-resolution#minimumreleaseage)。
 `minimumReleaseAgeStrict` 默认 `false`，所以表现不是"直接失败"，而是**新版本可见但解析不到**：当天发布的版本
-`dsh plugin --profile web add dsh-plugin-manager-pro`（不带版本号）会解析到**旧版**，用户看到的是"发了但我装不上"。
+`dsh plugin --profile web add dsh-drydock`（不带版本号）会解析到**旧版**，用户看到的是"发了但我装不上"。
 
 **发布时必做的两件事**
 
 1. 发完立刻核对（`publish:npm:apply` 会自动打印）：
    ```sh
-   npm view dsh-plugin-manager-pro version          # 必须等于 package.json 的 version
-   npm view dsh-plugin-manager-pro time.0.9.1       # 发布时间戳
+   npm view dsh-drydock version          # 必须等于 package.json 的 version
+   npm view dsh-drydock time.<刚发的版本号>   # 发布时间戳
    ```
 2. 告诉用户**怎么立刻装上**——唯一永远可靠的写法是显式版本号：
    ```sh
-   dsh plugin --profile web add dsh-plugin-manager-pro@0.9.1
+   dsh plugin --profile web add dsh-drydock@<刚发的版本号>
    # 或把它加进 profile 的 pnpm-workspace.yaml（本机已用过这个豁免）：
    # minimumReleaseAgeExclude:
-   #   - dsh-plugin-manager-pro@0.9.1
+   #   - dsh-drydock@<刚发的版本号>
    ```
 
 > 这条同时写进了仓库根 `README.md` 的安装小节（"装不到 / 装完还是旧版？"）：**别在发版当天说"已发布，去装吧"**。
@@ -392,7 +392,7 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 #    不要在彩排根目录跑 npm/pnpm install
 # 2) 用隔离引擎起一个独立端口（例：3085）
 # 3) 装候选 tgz（显式版本号 + 关掉冷静期）
-#    dsh plugin --profile web add ./dsh-plugin-manager-pro-<版本>.tgz --config.minimumReleaseAge=0
+#    dsh plugin --profile web add ./dsh-drydock-<版本>.tgz --config.minimumReleaseAge=0
 # 4) 判定标准
 #    a. 启动日志里**不出现** `dsh: warning: N entries did not activate`
 #    b. 侧边栏出现「插件管理」，五个分区齐备（截图存证）
@@ -413,7 +413,7 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 1. **未经用户明确确认，不得进入第 ⑤ 步** —— 推送 / tag / npm 发布一律等用户点头。
 2. **任何改动之后必须回到第 ② 步重新打包**（代码、文档、版本号、发布日期都算）；"版本号相同、内容陈旧"是最隐蔽的坑。
 3. 每一步都要留下**可复核证据**（命令原文 + 输出 + 哈希 / 截图）；**未实测的不写"通过"**。
-4. **预发布版绝不能发成 `latest`** —— 版本号含 `-`（如 `0.9.1-rc2`）时，`release.yml` 会自动改用 dist-tag **`next`**；走人工兜底路径（第 14 步）时必须**显式** `--tag next`。发错会让 `npm i dsh-plugin-manager-pro` 的用户拿到 RC（见下文「预发布版（RC）专项」）。
+4. **预发布版绝不能发成 `latest`** —— 版本号含 `-`（如 `0.9.1-rc2`）时，`release.yml` 会自动改用 dist-tag **`next`**；走人工兜底路径（第 14 步）时必须**显式** `--tag next`。发错会让 `npm i dsh-drydock` 的用户拿到 RC（见下文「预发布版（RC）专项」）。
 
 ### ① 独立端口验证（绝不碰真机 3080/3081/4081）
 
@@ -454,8 +454,8 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 | 13 | CI 发布（OIDC，零 token） | tag 触发 `.github/workflows/release.yml` 走 `npm publish --provenance --access public --tag <dist-tag>` | tag 与 `package.json` 版本一致性校验通过、日志里 token 是占位符、发布成功；CI 里也跑过与第 4–5、7 步相同的构建 / 测试 / vendor。**dist-tag 由工作流自动判定**：版本号含 `-` → `next`，否则 → `latest`（人工兜底发布时要自己加 `--tag next`） |
 | 14 | 兜底路径（仅本机、无 TOTP 时） | `npm run publish:webauth`（取未打码 `npm-notice` 链接 → Windows Hello → 每 20 秒重试真发布） | 见 §4.2 ①；**0.9.0 就是这么发的**。**注意**：手动路径不会自动判定 dist-tag —— 预发布版必须自己加 `--tag next` |
 | 15 | **双轨发布必须同字节（D1，强制）** | npm 发布完成后，**从 registry 下载该版本的 tarball**，与候选件比对 `sha256` 与字节数；**一致后把这个下载下来的文件作为 GitHub Release 附件上传**，并记录两边 sha256 与字节数 | 两处 sha256 与字节数**逐字相等**。**禁止**用"本机重新打包"的 tgz 当 Release 附件（v0.9.0 就是这么错的：附件 `217,689 B` / `sha256 a29ead25…`，npm 上 `217,699 B` / `9cbd3684…`，差 10 B）。**本轮起 `release.yml` 已把这一步自动化**：它用 `npm pack` 与 registry 下载件做 sha256 比对，不一致直接 throw；CI 日志末行打印「Release 附件请用 registry 下载的同一份」 |
-| 16 | 发完立刻核对（**两段判定**） | ① packument：`npm view dsh-plugin-manager-pro@<版本> version`；② tarball：`https://registry.npmjs.org/dsh-plugin-manager-pro/-/dsh-plugin-manager-pro-<版本>.tgz` 的 `HEAD` 是否 200；③ `npm view dsh-plugin-manager-pro dist-tags` | ① 必须等于 `package.json` 的 version —— **只有它缺失才算"发布失败"**；② **packument 出现 ≠ tarball 可用**：tarball 在 CDN 上可能滞后数分钟（0.9.1 首次实测约 5 分钟），因此要**先 packument、再 tarball 可达**，两段合起来等 **≥10 分钟**；tarball 仍未就绪只记"传播中"、不判失败（稍后手动回读）；③ dist-tags 见「预发布版（RC）专项」 |
-| 17 | 图片可达性回读（D2） | `https://api.github.com/repos/nonentity303/dsh-plugin-manager/contents/docs/images/pm-090-official2.png`（另两张同理） | HTTP **200** 且 `download_url` 可用。**推送前必然 404**（图是未跟踪的新文件）；本机 raw 域名受网络分区影响，回读用 api.github.com contents，必要时 jsDelivr 镜像，**不要**用 raw 链接自检 |
+| 16 | 发完立刻核对（**两段判定**） | ① packument：`npm view dsh-drydock@<版本> version`；② tarball：`https://registry.npmjs.org/dsh-drydock/-/dsh-drydock-<版本>.tgz` 的 `HEAD` 是否 200；③ `npm view dsh-drydock dist-tags` | ① 必须等于 `package.json` 的 version —— **只有它缺失才算"发布失败"**；② **packument 出现 ≠ tarball 可用**：tarball 在 CDN 上可能滞后数分钟（0.9.1 首次实测约 5 分钟），因此要**先 packument、再 tarball 可达**，两段合起来等 **≥10 分钟**；tarball 仍未就绪只记"传播中"、不判失败（稍后手动回读）；③ dist-tags 见「预发布版（RC）专项」 |
+| 17 | 图片可达性回读（D2） | `https://api.github.com/repos/nonentity303/dsh-drydock/contents/docs/images/pm-090-official2.png`（另两张同理） | HTTP **200** 且 `download_url` 可用。**推送前必然 404**（图是未跟踪的新文件）；本机 raw 域名受网络分区影响，回读用 api.github.com contents，必要时 jsDelivr 镜像，**不要**用 raw 链接自检 |
 | 18 | 冷静期提示 + 收尾 | `README.md` 安装小节保留"显式写版本号"（§8）；关掉临时 profile/端口；`git status` 干净 | 用户能按 README 就地装上当天发布的版本；工作树干净 |
 
 ### 预发布版（RC）专项（版本号含 `-` 时适用）
@@ -467,11 +467,11 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 |---|---|---|---|
 | R1 | 版本号 | `package.json` 的 `version` 写成 `0.9.1-rc2`（**含 `-rc2` 后缀**，npm 视为预发布） | `node -p "require('./package.json').version"` → `0.9.1-rc2` |
 | R2 | tag | `git tag v0.9.1-rc2`（与 `version` **逐字一致**，含后缀） | `release.yml` 的「校验 tag 与 package.json 版本一致」这一步通过；不一致会 throw 并中止（第 5 步） |
-| R3 | dist-tag | CI 自动判定：版本号含 `-` → **`next`**；人工兜底发布（第 14 步）时自己加 `--tag next` | `npm view dsh-plugin-manager-pro dist-tags` → 必须同时看到 `next: 0.9.1-rc2` **且 `latest: 0.9.1`（保持指向当时最新正式版）** |
-| R4 | **红线** | **绝不能把 RC 发成 `latest`** —— 否则 `npm i dsh-plugin-manager-pro` 的人会装到预发布版 | 若发现 `latest` 变成了 RC：立刻 `npm dist-tag add dsh-plugin-manager-pro@<最近正式版> latest` 把标签拨回去，并在发布记录里注明 |
+| R3 | dist-tag | CI 自动判定：版本号含 `-` → **`next`**；人工兜底发布（第 14 步）时自己加 `--tag next` | `npm view dsh-drydock dist-tags` → 必须同时看到 `next: <rc 版本>` **且 `latest: <最新正式版>`（保持指向当时最新正式版）** |
+| R4 | **红线** | **绝不能把 RC 发成 `latest`** —— 否则 `npm i dsh-drydock` 的人会装到预发布版 | 若发现 `latest` 变成了 RC：立刻 `npm dist-tag add dsh-drydock@<最近正式版> latest` 把标签拨回去，并在发布记录里注明 |
 | R5 | GitHub Release | 预发布版创建时勾 **`prerelease: true`**，**不要**标 "Latest" | Release 页显示 Pre-release 徽标；Latest 仍指向最近的正式版（附件仍按第 15 步用 registry 下载件） |
-| R6 | 尝鲜安装（对外写法） | 文档/公告写 `npm i dsh-plugin-manager-pro@next` 或 `@0.9.1-rc2` | 装出来的版本 = `0.9.1-rc2`；不要写"装最新版" |
-| R7 | 正式版收口 | RC 验证通过后，把它的内容并入**下一个正式版本号**（例如紧跟 `0.9.1-rc2` 的是 `0.9.2`）再发正式版 —— **此时 `latest` 才前移**；npm 不允许把已发布的正式版号重发 | `dist-tags` 的 `latest` 前移到新正式版；RC 留在 `next`（可选：发完正式版后 `npm dist-tag rm dsh-plugin-manager-pro next` 收掉 `next`） |
+| R6 | 尝鲜安装（对外写法） | 文档/公告写 `npm i dsh-drydock@next` 或显式 RC 版本号 | 装出来的版本 = 对应 RC；不要写"装最新版" |
+| R7 | 正式版收口 | RC 验证通过后，把它的内容并入**下一个正式版本号**再发正式版 —— **此时 `latest` 才前移**；npm 不允许把已发布的正式版号重发 | `dist-tags` 的 `latest` 前移到新正式版；RC 留在 `next`（可选：发完正式版后 `npm dist-tag rm dsh-drydock next` 收掉 `next`） |
 
 > **D1 的由来**：v0.9.0 的 GitHub Release 附件与 npm 发布件**不是同一份字节** —— 附件 `217,689 B` / `sha256 a29ead25…`，
 > npm `217,699 B` / `9cbd3684…`（差 10 B）。这是 F5 的同族问题：**版本号相同、内容不同**；两个渠道拿到的包不一样，

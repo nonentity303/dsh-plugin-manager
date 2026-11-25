@@ -2,7 +2,7 @@
 // 用法: node push-via-api.mjs <local-commit-sha> <branch> [tag]
 import { execSync } from "node:child_process";
 
-const repo = "nonentity303/dsh-plugin-manager";
+const repo = "nonentity303/dsh-drydock";
 const commitSha = process.argv[2];
 const branch = process.argv[3] || "master";
 const tag = process.argv[4] || null;

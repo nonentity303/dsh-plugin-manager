@@ -52,9 +52,9 @@ console.log(`三方比对：${pkg.name}@${pkg.version}   (git ref=${REF})\n`);
 
 // ---------- ① git 远端 ----------
 console.log("① 拉取 git 远端 tree …");
-const refInfo = ghApi(`repos/nonentity303/dsh-plugin-manager/git/ref/heads/${REF}`);
+const refInfo = ghApi(`repos/nonentity303/dsh-drydock/git/ref/heads/${REF}`);
 const headSha = refInfo.object.sha;
-const tree = ghApi(`repos/nonentity303/dsh-plugin-manager/git/trees/${headSha}?recursive=1`);
+const tree = ghApi(`repos/nonentity303/dsh-drydock/git/trees/${headSha}?recursive=1`);
 const remoteBlobs = new Map();
 for (const e of tree.tree || []) if (e.type === "blob") remoteBlobs.set(e.path, e.sha);
 console.log(`   远端 HEAD = ${headSha.slice(0, 12)}，blob 数 = ${remoteBlobs.size}`);
@@ -77,7 +77,7 @@ for (const rel of whitelist) {
 		continue;
 	}
 	try {
-		const blob = ghApi(`repos/nonentity303/dsh-plugin-manager/git/blobs/${sha}`);
+		const blob = ghApi(`repos/nonentity303/dsh-drydock/git/blobs/${sha}`);
 		remoteFiles.set(rel, Buffer.from(blob.content, blob.encoding || "base64"));
 	} catch (e) {
 		remoteFiles.set(rel, null);

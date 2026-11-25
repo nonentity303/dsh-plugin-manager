@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * rc2-compat-scan.mjs —— dsh-plugin-manager-pro 进包文件的「Node 版本敏感 API」静态门禁。
+ * rc2-compat-scan.mjs —— dsh-drydock 进包文件的「Node 版本敏感 API」静态门禁。
  *
  * 用法（脚本已随仓库进 tools/dev/；默认 root 从 cwd 向上找本包，t13）：
- *   node tools/dev/compat-scan.mjs                                # 自动定位包根（cwd 向上找 name=dsh-plugin-manager-pro）
+ *   node tools/dev/compat-scan.mjs                                # 自动定位包根（cwd 向上找 name=dsh-drydock）
  *   node tools/dev/compat-scan.mjs --root plugin-manager          # 显式指定包根
- *   node tools/dev/compat-scan.mjs --tgz plugin-manager/dsh-plugin-manager-pro-0.9.1.tgz
+ *   node tools/dev/compat-scan.mjs --tgz plugin-manager/dsh-drydock-1.0.0.tgz
  *   node tools/dev/compat-scan.mjs --level blocker                # 只在 blocker 命中时失败
  *   node tools/dev/compat-scan.mjs --level none                   # 只报告，永不失败
  *   node tools/dev/compat-scan.mjs --json --quiet
@@ -35,10 +35,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..", "..");
 
 /** 本包的 package.json 名（用于定位真正的包根，t13）。 */
-const PKG_NAME = "dsh-plugin-manager-pro";
+const PKG_NAME = "dsh-drydock";
 
 /**
- * 从 `startDir` 逐级向上找**本包**的根目录（package.json 的 name === dsh-plugin-manager-pro）。
+ * 从 `startDir` 逐级向上找**本包**的根目录（package.json 的 name === dsh-drydock）。
  *
  * 为什么不能按脚本位置推导默认 root（t13）：脚本原在 `audit/verify-090/`，复制到 `tools/dev/` 后
  * `__dirname/../..` 变成了包目录本身 → 默认 root 变成 `<repo>/plugin-manager/plugin-manager`

@@ -11,13 +11,13 @@ name: Release to npm
 # 预发布版（版本号形如 0.9.1-rc2，含 `-`）：
 #   · tag 用 `v0.9.1-rc2`；tag 与 package.json 的 version 必须逐字一致（含 `-rc2` 后缀）
 #   · 发布时自动改用 **dist-tag `next`**，`latest` 保持指向最近的正式版 —— 这样
-#     `npm i dsh-plugin-manager-pro` 不会把 RC 发给普通用户；尝鲜用 `@next` 或 `@0.9.1-rc2`
+#     `npm i dsh-drydock` 不会把 RC 发给普通用户；尝鲜用 `@next` 或显式 RC 版本号
 #   · 预发布版不写 GitHub Release 的「Latest」标记（Release 由人工/队长在核对后创建）
 #
 # ⚠️ 一次性前置（npm 网站，不在本仓库里）：
-#   npmjs.com → 包 dsh-plugin-manager-pro → Settings → Trusted Publisher → GitHub Actions
+#   npmjs.com → 包 dsh-drydock → Settings → Trusted Publisher → GitHub Actions
 #     Organization or user : nonentity303
-#     Repository            : dsh-plugin-manager
+#     Repository            : dsh-drydock
 #     Workflow filename     : release.yml        ← 必须与 .github/workflows/release.yml 同名
 #     Environment           : （留空）
 #   三者必须逐字匹配，否则 npm 会以 404/401 拒绝 OIDC 交换。
@@ -87,7 +87,7 @@ jobs:
         run: node tools/dev/compat-scan.mjs --root . --quiet
 
       # 预发布版（版本号含 `-`，如 0.9.1-rc2）必须发到 `next` 标签，否则会把 `latest` 顶成预发布版，
-      # 让 `npm i dsh-plugin-manager-pro` 的用户拿到 RC —— 这是硬红线（见 docs/RELEASING.md §10）。
+      # 让 `npm i dsh-drydock` 的用户拿到 RC —— 这是硬红线（见 docs/RELEASING.md §10）。
       - name: 计算 dist-tag（预发布 → next，正式版 → latest）
         id: disttag
         shell: pwsh

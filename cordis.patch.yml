@@ -1,4 +1,4 @@
-# plugin-manager patch layer
+# dsh-drydock（引擎船坞）patch layer
 #
 # 1) 接管内置插件页：自研管理器把自己注册进 `main`(key=plugins) /
 #    `sidebar.panellist`(id=plugins) 并声明内置页原来的 7 个 plugins.* 槽位。
@@ -6,9 +6,11 @@
 #    因此必须先在这里关掉内置的 ui-plugin-manager。
 # 2) 设置页那个只读清单 tab 不再冲突（自研 tab 的 id 已从 "all" 改为
 #    "pluginManagerPro"），所以无需再禁用它。
+# 3) 行 id 用 `drydock`（旧包用 `plugin-manager-pro`）：官方 0.1.6 起占用
+#    `plugin-manager` 这个 id，重复会 TypeError: duplicate loader entry id。
 - id: ui-plugin-manager
   disabled: true
 
 - insert:
-    - id: plugin-manager-pro
-      name: 'dsh-plugin-manager-pro'
+    - id: drydock
+      name: 'dsh-drydock'

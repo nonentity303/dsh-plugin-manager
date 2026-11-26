@@ -774,6 +774,118 @@ await check("C-31 只读红线：--out 落在桌面安装目录时拒绝（exit 
 	return "exit 2 + 未落盘";
 });
 
+// ------------------------------------------------------------------ C-32..C-37 自定义安装目录发现
+// 背景（2026-11-26 真实反馈）：用户把桌面版装在 %LOCALAPPDATA%\Programs\DSH NEXT，
+// doctor 却在普通 Node 进程里用 process.execPath（node.exe）反推出 C:\apps\node22\resources，
+// 报 desktopHost.found:false → 用户以为工具不支持桌面版。
+
+await check("C-32 looksLikeDesktopExecutable：node.exe 不触发 resources 反推", async () => {
+	const { looksLikeDesktopExecutable } = await import("./lib/diagnostics.mjs");
+	for (const exe of ["C:\\Program Files\\nodejs\\node.exe", "C:\\apps\\node22\\node.exe", "/usr/bin/node", "C:\\x\\nodejs.exe"]) {
+		eq(looksLikeDesktopExecutable(exe), false, `不应把 ${exe} 当桌面壳`);
+	}
+	for (const exe of ["C:\\Users\\u\\AppData\\Local\\Programs\\DSH NEXT\\DSH NEXT.exe", "C:\\apps\\DeepSeek Harness\\DeepSeek Harness.exe", "/Applications/DeepSeek Harness.app/Contents/MacOS/DeepSeek Harness", "C:\\x\\electron.exe"]) {
+		eq(looksLikeDesktopExecutable(exe), true, `应把 ${exe} 当桌面壳`);
+	}
+	eq(looksLikeDesktopExecutable(""), false, "空字符串应为 false");
+	eq(looksLikeDesktopExecutable(null), false, "null 应为 false");
+	return "node/nodejs 全部排除，dsh/deepseek/harness/electron 全认";
+});
+
+await check("C-33 defaultResourcesDirs：execPath=node.exe 时不产出 <node目录>/resources", async () => {
+	const { defaultResourcesDirs } = await import("./lib/diagnostics.mjs");
+	const dirs = defaultResourcesDirs({
+		env: {},
+		homeDir: "C:\\Users\\u",
+		platform: "win32",
+		execPath: "C:\\apps\\node22\\node.exe",
+		resourcesPath: undefined
+	});
+	eq(dirs.length, 0, `不该产出任何候选（实际 ${JSON.stringify(dirs)}）`);
+	ok(!dirs.some((d) => /node22/i.test(d)), "绝不能出现 C:\\apps\\node22\\resources 这类误导候选");
+	const deskDirs = defaultResourcesDirs({
+		env: {},
+		homeDir: "C:\\Users\\u",
+		platform: "win32",
+		execPath: "C:\\Users\\u\\AppData\\Local\\Programs\\DSH NEXT\\DSH NEXT.exe",
+		resourcesPath: undefined
+	});
+	ok(deskDirs.some((d) => /DSH NEXT[\\/]resources$/i.test(d)), `桌面壳 execPath 应推出 resources：${JSON.stringify(deskDirs)}`);
+	return "node.exe → 0 候选；DSH NEXT.exe → 推出 resources";
+});
+
+await check("C-34 discoverDesktopInstalls：认出自定义安装名 `DSH NEXT`（用户实测场景）", async () => {
+	const { discoverDesktopInstalls } = await import("./lib/diagnostics.mjs");
+	// discoverDesktopInstalls 扫的是 <LOCALAPPDATA>\Programs\*，所以夹具要摆成这个形状
+	const localAppData = join(tmpRoot, "probe-localappdata");
+	const root = join(localAppData, "Programs");
+	// ① 自定义命名：DSH NEXT
+	mkdirSync(join(root, "DSH NEXT", "resources"), { recursive: true });
+	writeFileSync(join(root, "DSH NEXT", "resources", "app.asar"), "x", "utf8");
+	// ② 完全不像 DSH 的 Electron 应用（Xmind）：只有 resources/app.asar，必须排除
+	mkdirSync(join(root, "Xmind", "resources"), { recursive: true });
+	writeFileSync(join(root, "Xmind", "resources", "app.asar"), "x", "utf8");
+	// ③ 名字不像 DSH，但有官方解包特征 app.asar.unpacked/dsh/
+	mkdirSync(join(root, "WeirdName", "resources", "app.asar.unpacked", "dsh"), { recursive: true });
+	writeFileSync(join(root, "WeirdName", "resources", "app.asar.unpacked", "dsh", "package.json"), "{}", "utf8");
+	// ④ 名字不像 DSH，但有 app-update.yml 指向 deepseek
+	mkdirSync(join(root, "Another", "resources"), { recursive: true });
+	writeFileSync(join(root, "Another", "resources", "app-update.yml"), "provider: generic\nurl: https://download.deepseek.com/dsh-desk/feeds/win-x64/\n", "utf8");
+	// ⑤ 只有 resources 目录、什么都不像的
+	mkdirSync(join(root, "PlainApp", "resources"), { recursive: true });
+	writeFileSync(join(root, "PlainApp", "resources", "app.asar"), "x", "utf8");
+
+	const found = discoverDesktopInstalls({ env: { LOCALAPPDATA: localAppData }, platform: "win32" });
+	const norm = found.map((d) => d.replace(/\\/g, "/").toLowerCase());
+	ok(norm.some((d) => d.endsWith("/dsh next/resources")), `应认出 DSH NEXT：${JSON.stringify(found)}`);
+	ok(norm.some((d) => d.endsWith("/weirdname/resources")), "应靠 app.asar.unpacked/dsh 认出解包特征");
+	ok(norm.some((d) => d.endsWith("/another/resources")), "应靠 app-update.yml 的 deepseek 域认出");
+	ok(!norm.some((d) => d.includes("/xmind/")), `绝不能把 Xmind 当成 DSH 桌面版：${JSON.stringify(found)}`);
+	ok(!norm.some((d) => d.includes("/plainapp/")), `纯 resources 目录不够：${JSON.stringify(found)}`);
+	return `认出 ${found.length} 个，Xmind/PlainApp 正确排除`;
+});
+
+await check("C-35 discoverDesktopInstalls：目录不存在/无权限时安静返回空数组", async () => {
+	const { discoverDesktopInstalls } = await import("./lib/diagnostics.mjs");
+	eq(discoverDesktopInstalls({ env: { LOCALAPPDATA: join(tmpRoot, "nope-does-not-exist") }, platform: "win32" }).length, 0, "不存在的根应返回空");
+	eq(discoverDesktopInstalls({ env: {}, platform: "win32" }).length, 0, "没有任何安装根时应返回空");
+	eq(discoverDesktopInstalls({ env: {}, platform: "linux" }).length >= 0, true, "linux 分支不应抛");
+	return "全部安静返回";
+});
+
+await check("C-36 collectDiagnostics：自定义安装的桌面版能被报告认出", async () => {
+	// 用真实 fixture 走一遍完整收集：LOCALAPPDATA 指向含 `DSH NEXT` 的目录
+	const localAppData = join(tmpRoot, "CustomRoot");
+	const installDir = join(localAppData, "Programs", "DSH NEXT");
+	mkdirSync(join(installDir, "resources", "app.asar.unpacked", "dsh"), { recursive: true });
+	// 放一个最小的 desktop-runtime.json（有界读取会取 release 段）
+	writeFileSync(
+		join(installDir, "resources", "app.asar.unpacked", "dsh", "desktop-runtime.json"),
+		JSON.stringify({ schemaVersion: 1, release: { version: "9.9.9-custom", hostProtocolVersion: 4, nodeVersion: "24.0.0", pnpmVersion: "11.0.0" }, platform: "win32", arch: "x64", sharedPackages: [], files: [] }),
+		"utf8"
+	);
+	// ⚠️ 必须把 fixtureEnv 里预设的 DSH_DESKTOP_RESOURCES_DIR 去掉，否则它会优先命中旧夹具
+	const env = { ...fixtureEnv, LOCALAPPDATA: localAppData };
+	delete env.DSH_DESKTOP_RESOURCES_DIR;
+	delete env.DSH_DESKTOP_USER_DATA_DIR;
+	const diag = await collectDiagnostics({ env, homeDir: fixtureHome, platform: "win32" });
+	ok(diag.desktopHost.found === true, `自定义安装的桌面版应被认出（found=${diag.desktopHost.found}）`);
+	eq(diag.desktopHost.release?.version, "9.9.9-custom", `应报出自定义安装的宿主版本：${JSON.stringify(diag.desktopHost.release)}`);
+	eq(diag.desktopHost.release?.hostProtocolVersion, 4, "hostProtocolVersion 应被读出（兼容性判断关键字段）");
+	return `found=true，版本 ${diag.desktopHost.release?.version}`;
+});
+
+await check("C-37 `C:\\apps\\node22\\resources` 类误导候选不再出现在报告里", async () => {
+	const env = { ...fixtureEnv, LOCALAPPDATA: join(tmpRoot, "no-programs") };
+	delete env.DSH_DESKTOP_RESOURCES_DIR;
+	delete env.DSH_DESKTOP_USER_DATA_DIR;
+	const diag = await collectDiagnostics({ env, homeDir: fixtureHome, platform: "win32" });
+	const probed = (diag.desktopHost.probed ?? []).map((entry) => String(entry.dir ?? ""));
+	ok(!probed.some((d) => /node22|nodejs/i.test(d)), `不该探查 node 安装目录：${JSON.stringify(probed)}`);
+	eq(diag.desktopHost.found, false, "没有桌面版时应如实报 found=false");
+	return "报告里无 node 安装目录候选";
+});
+
 // ------------------------------------------------------------------ 汇总
 
 try {

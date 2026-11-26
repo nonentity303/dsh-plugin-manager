@@ -18,9 +18,10 @@
  *   4) 认证生效后调用 npm publish 完成发布（带 --otp 时会自动带上）。
  *
  * 用法：
- *   node tools/dev/publish-webauth.mjs            # 走浏览器授权流程
- *   node tools/dev/publish-webauth.mjs --no-open  # 只打印网址，不自动开浏览器
- *   node tools/dev/publish-webauth.mjs --wait 300 # 等待秒数（默认 180）
+ *   node tools/dev/publish-webauth.mjs                # 走浏览器授权流程，发布到 latest
+ *   node tools/dev/publish-webauth.mjs --tag next     # 发布到 next（预发布版**必须**用它，否则 rc 会顶掉 latest）
+ *   node tools/dev/publish-webauth.mjs --no-open      # 只打印网址，不自动开浏览器
+ *   node tools/dev/publish-webauth.mjs --wait 300     # 等待秒数（默认 180）
  */
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,6 +35,13 @@ const argv = process.argv.slice(2);
 const NO_OPEN = argv.includes("--no-open");
 const waitIdx = argv.indexOf("--wait");
 const WAIT_S = waitIdx >= 0 ? Number(argv[waitIdx + 1] || 180) : 180;
+const tagIdx = argv.indexOf("--tag");
+// ⚠️ 预发布版绝不能落到 latest：rc 抢 latest 会让所有用户 `dsh plugin add` 拿到未验收版本
+const TAG = tagIdx >= 0 ? String(argv[tagIdx + 1] || "") : "latest";
+if (TAG === "" || !/^(latest|next|beta|rc|[a-z][a-z0-9._-]*)$/i.test(TAG)) {
+	console.error(`✘ --tag 取值不合法：${JSON.stringify(TAG)}`);
+	process.exit(2);
+}
 
 const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 const REG = "https://registry.npmjs.org";
@@ -133,7 +141,7 @@ const main = async () => {
 		attempt++;
 		await new Promise((r) => setTimeout(r, 20000));
 		const el = Math.round((Date.now() - start) / 1000);
-		const r = spawnSync("npm", ["publish", "--tag", "latest"], {
+		const r = spawnSync("npm", ["publish", "--tag", TAG], {
 			cwd: ROOT,
 			encoding: "utf8",
 			shell: true,

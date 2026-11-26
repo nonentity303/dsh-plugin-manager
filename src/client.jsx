@@ -48,9 +48,14 @@ const MANAGER_PACKAGE_NAME = "dsh-drydock";
 const MANAGER_CONFIG_ID = "drydock";
 
 /** 条目归属哪个分区（纯函数，可单测）：核心组件 → 用户插件 → 引擎内置组件。
- * 只看包名与来源：核心区按包名白名单，其余按 entry.origin（引擎侧 necessity 字段不采纳——
- * 它把 46 个架构 bundle 全标 core，全塞进核心区等于没有分区）。 */
+ * 1.1.0 起**优先采纳 host 投影的 entry.section**（lib/index.js 用官方 HIDDEN_BUNDLES / PROTECTED_PLUGINS
+ * 判出来的三分区，见 lib/bundles-official.mjs）；旧 host / 单测夹具没有该字段时，
+ * 退回 1.0.x 的本地规则（CORE_PACKAGE_NAMES + origin），保证零回归。
+ * 为什么不直接本地判：官方已导出这两个集合（17 protected / 8 hidden），本地硬编码会漏判
+ * dsh-headless / dsh-sdk-app / dsh-acp-app，且官方加项时无法跟随。 */
 function sectionKeyOfEntry(entry) {
+	const hosted = entry?.section;
+	if (hosted === "core" || hosted === "builtin" || hosted === "user") return hosted;
 	const pkg = String(entry?.packageName ?? entry?.moduleName ?? entry?.configId ?? "").toLocaleLowerCase();
 	if (CORE_PACKAGE_NAMES.has(pkg)) return "core";
 	if (entry?.origin === "user") return "user";

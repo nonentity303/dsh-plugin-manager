@@ -82,7 +82,7 @@ Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plu
 - **Rescue decoupled from the engine** (v0.7+): with the engine down, the **3081 launcher (with a built-in rescue page) and the 3082 rescue service** still self-check, repair and start it.
 - **Browser as launcher**: set your home page to `http://127.0.0.1:3081/` (`http://localhost:3081/` works the same way) — opening the browser runs self-check → repair → start → jumps to the main UI.
 - **Local write endpoints are guarded** (v0.9.1): same-origin `Origin` (same-host, same-port allowlist: `127.0.0.1` / `localhost` / `[::1]`) + one-time token + single-flight, so a third-party page cannot start/stop anything; `--status` also appends a `health.log` line (7 days / 1000 lines).
-- **Multi-source update aggregation**: npm registry / dshfind / GitHub / custom mirrors queried in parallel, with rate-limit circuit breaking and the highest version winning.
+- **Multi-source update aggregation**: npm registry / GitHub / custom mirrors queried in parallel, with rate-limit circuit breaking and the highest version winning.
 
 ---
 
@@ -96,7 +96,7 @@ Five sections, switching keeps your scroll position:
 |---|---|
 | **Official built-ins (optional)** | Engine-provided bundles that are disabled by default (one-click enable/disable) + official plugins with their own config page + version exemptions |
 | **All plugins** | Plugin list: search, collapsible groups, origin filter, enable/disable, inline config, inline uninstall, version & origin, manual origin override |
-| **Market** | dshfind curated catalog (browse by category / search / sort), one-click install; falls back to GitHub search when offline |
+| **Market** | ADP curated catalog (browse by category / search / sort), one-click install |
 | **Operations & scenarios** | Transactional uninstall with impact preview, **pre-uninstall health check**, operation history undo, scenarios |
 | **Maintenance** | Update sources, pre-boot self-check, rescue center entries, downloads folder |
 
@@ -218,7 +218,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --statu
 | `~/.dsh/profiles/<name>/vendor/downloads/*.tgz` | archive staging for browser downloads; archives still referenced by dependencies are never deleted | No |
 | `$DSH_HOME/downloads/*` | "auto-install from the downloads folder" scans archives and writes `.installed` / `.failed` stamps | No |
 | Local npm global root (Windows `%APPDATA%\npm`, macOS/Linux `npm root -g` and common paths) | **read-only**: locate the engine-provided `@deepseek-ai/*` packages and extract plugin summaries | No |
-| Update sources: npm registry (`registry.npmjs.org` by default), dshfind, GitHub, mirrors you add (e.g. `registry.npmmirror.com`) | query versions and download archives | **Queries only** (GET metadata / archives) — no local data is uploaded |
+| Update sources: npm registry (`registry.npmjs.org` by default), GitHub, mirrors you add (e.g. `registry.npmmirror.com`) | query versions and download archives | **Queries only** (GET metadata / archives) — no local data is uploaded |
 | GitHub API: `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com` | read releases and repository `package.json`, download tgz | same |
 | Catalog `awesome-dsh-plugin.com/plugins.json` | market catalog (10-minute host cache) | same |
 | Loopback ports `3080` / `3081` / `3082` (+ lock `4081 = 3081+1000`) | main UI / launcher + rescue page / backup rescue service / single-instance lock — bound to `127.0.0.1` only | No (never leaves the machine) |

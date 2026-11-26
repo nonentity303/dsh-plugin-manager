@@ -111,7 +111,7 @@
 | 字段 | 内容 | 上限/说明 |
 |---|---|---|
 | `version` | 侧车 schema 版本（当前 **2**，v1 只有 `sources` + `rescue`，读取时自动补默认值） | `SIDECAR_VERSION` |
-| `sources` | 更新源列表（名称/URL/启用/官方/类型 `registry\|github\|dshfind`） | 默认：npm 官方源、dshfind、GitHub 官方仓库、npmmirror 镜像 |
+| `sources` | 更新源列表（名称/URL/启用/官方/类型 `registry\|github`） | 默认：npm 官方源、GitHub 官方仓库、npmmirror 镜像 |
 | `rescue.autoQuarantine` | **自动隔离开关（默认 false）** | 见 §7 |
 | `overrides.source` | 来源人工修正：包名 → `npm` / `github` / `local` / `builtin` | 非法标签丢弃 |
 | `history` | 操作历史（卸载/启停/隔离/场景/重置开关），含 `undo` 描述 | 最多 **20** 条（`HISTORY_MAX`），新→旧 |

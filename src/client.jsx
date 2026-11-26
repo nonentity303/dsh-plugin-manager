@@ -568,7 +568,7 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 			{/* 更新源面板 */}
 			{showSources ? <SourcesPanel sources={snapshot.sources} save={saveSources} busy={busy !== null} t={t} /> : null}
 
-			{/* 插件市场（轻量：dshfind 精选目录 + 一键安装；key 随行内「市场详情」重挂载以接收预置关键词） */}
+			{/* 插件市场（轻量：ADP 精选目录 + 一键安装；key 随行内「市场详情」重挂载以接收预置关键词） */}
 			{showMarket ? <MarketPanel key={marketSeed.n} initialQuery={marketSeed.q} marketCatalog={marketCatalog} marketInstall={marketInstall} busy={busy !== null} t={t} entries={state.status === "ready" ? state.snapshot.entries : []} /> : null}
 
 			{/* 场景方案（保存/应用插件组合，切换前预览） */}
@@ -1697,7 +1697,7 @@ function marketFilterItems(catalog, query, category, sortBy) {
 	});
 }
 
-/** 插件市场面板：dshfind 精选目录一次拉全量，搜索/分类/排序/分页全部本地瞬时完成。 */
+/** 插件市场面板：ADP 精选目录一次拉全量，搜索/分类/排序/分页全部本地瞬时完成。 */
 function MarketPanel({ marketCatalog, marketInstall, busy, t, entries, initialQuery = "" }) {
 	const [catalog, setCatalog] = useState(marketCatalogCache);
 	const [loadError, setLoadError] = useState(null);
@@ -1952,7 +1952,6 @@ function SourcesPanel({ sources, save, busy, t }) {
 		if (!url || !/^https?:\/\//.test(url)) return;
 		let type = "registry";
 		if (/^https?:\/\/github\.com\//.test(url)) type = "github";
-		else if (/dshfind\.com/.test(url)) type = "dshfind";
 		setDraft((current) => [...current, { name: newName.trim() || url, url, enabled: true, official: false, type }]);
 		setNewName("");
 		setNewUrl("");
@@ -2540,7 +2539,7 @@ const zh = {
 	recommendedTagHint: "推荐加装：管理器建议安装的第三方增强插件",
 	managerBadge: "管理器",
 	marketDetail: "市场详情",
-	marketDetailHint: "在插件市场（dshfind 精选目录）中查看该插件",
+	marketDetailHint: "在插件市场（ADP 精选目录）中查看该插件",
 	statusError: "错误/需检查",
 	statusUpdate: "需更新",
 	statusDisabled: "未启用",
@@ -2573,7 +2572,6 @@ const zh = {
 	official: "官方",
 	enabled: "启用",
 	noSources: "没有启用的更新源，版本检查不可用。",
-	dshfind: "超市",
 	resetToggles: "重置开关",
 	resetConfirm: "确定还原所有由管理器修改的插件开关状态？（仅清除管理器写入的行，不影响用户自定义配置）",
 	resetDone: "已还原所有开关状态。",
@@ -2677,7 +2675,7 @@ const zh = {
 	scenarioApplied: "场景已应用",
 	restartHint: "如运行期未收敛，重启 profile 后生效。",
 	market: "市场",
-	marketTitle: "插件市场（dshfind 精选目录）",
+	marketTitle: "插件市场（ADP 精选目录）",
 	marketSearch: "搜索插件（名称/仓库/描述）…",
 	marketHint: "目录来自 awesome-dsh-plugin 精选收录；带 npm 包名的优先走 npm registry 直装（预构建产物），GitHub 仓库走内置下载器。装完在管理列表可见，重启后生效。",
 	marketLoading: "加载目录中…",
@@ -2781,7 +2779,7 @@ const en = {
 	recommendedTagHint: "Recommended add-on: a third-party enhancement plugin suggested by the manager",
 	managerBadge: "Manager",
 	marketDetail: "Market",
-	marketDetailHint: "View this plugin in the curated market (dshfind)",
+	marketDetailHint: "View this plugin in the curated market (ADP)",
 	statusError: "Error/Check",
 	statusUpdate: "Update",
 	statusDisabled: "Disabled",
@@ -2814,7 +2812,6 @@ const en = {
 	official: "official",
 	enabled: "enabled",
 	noSources: "No enabled sources; version checks unavailable.",
-	dshfind: "market",
 	resetToggles: "Reset toggles",
 	resetConfirm: "Reset every plugin toggle changed by this manager? (Only manager-owned rows are cleared; your own config is untouched.)",
 	resetDone: "All toggles have been reset.",
@@ -2918,7 +2915,7 @@ const en = {
 	scenarioApplied: "Scenario applied",
 	restartHint: "If runtime state does not converge, restart the profile.",
 	market: "Market",
-	marketTitle: "Plugin market (dshfind curated catalog)",
+	marketTitle: "Plugin market (ADP curated catalog)",
 	marketSearch: "Search plugins (name/repo/description)…",
 	marketHint: "Catalog from awesome-dsh-plugin; entries with an npm name install from the npm registry (prebuilt), GitHub repos use the built-in downloader. Installed plugins appear in the management list after restart.",
 	marketLoading: "Loading catalog…",

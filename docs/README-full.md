@@ -86,7 +86,7 @@ TypeError: duplicate loader entry id: plugin-manager
 - **救砖能力彻底解耦**（v0.7+）：主引擎挂了，**3081 的启动器（自带救援页）与 3082 的独立救援服务照样能自检、修复、拉起**——不再依赖主进程
 - **本地写接口有防护**（v0.9.1）：`Origin`（同机同端口白名单：`127.0.0.1` / `localhost` / `[::1]`）+ 一次性令牌 + 单飞闸门，第三方网页无法触发启动/停止；`--status` 每次留一条 `health.log` 自检记录（保留 7 天 / 1000 行）
 - **浏览器即启动器**：把主页设为 `http://127.0.0.1:3081/`（`http://localhost:3081/` 同样可用），打开浏览器 = 自动自检 → 修复 → 启动 → 跳转主界面
-- **多源更新聚合**：npm registry / 插件超市 dshfind / GitHub / 自定义镜像并行查询，限流熔断，公平取最高版本
+- **多源更新聚合**：npm registry / GitHub / 自定义镜像并行查询，限流熔断，公平取最高版本
 
 ---
 
@@ -100,7 +100,7 @@ TypeError: duplicate loader entry id: plugin-manager
 |---|---|
 | **官方内置（可选）** | 引擎自带、默认未启用的组合包（一键启用/停用）+ 自带配置页的官方插件 + 版本豁免 |
 | **全部插件** | 插件清单：搜索、分类折叠、来源筛选、启停开关、行内配置、行内卸载、版本与来源、来源人工修正 |
-| **插件市场** | dshfind 精选目录（分类浏览 / 搜索 / 排序）一键安装，在线不可用自动兜底 GitHub 搜索 |
+| **插件市场** | ADP 精选目录（分类浏览 / 搜索 / 排序）一键安装 |
 | **操作与场景** | 事务化卸载与影响预览、**卸载前体检**、操作历史一键撤销、场景方案 |
 | **维护** | 更新源与刷新、启动前自检、救援中心入口、下载目录 |
 
@@ -134,7 +134,7 @@ TypeError: duplicate loader entry id: plugin-manager
 
 ### 🛒 插件市场
 
-- **dshfind 精选目录**：目录接口 `https://awesome-dsh-plugin.com/plugins.json`（`lib/index.js` 的 `CATALOG_URL`），带本地化描述 / 星标 / 收录日期与分类；条目数随上游变化，host 端 10 分钟缓存。在线不可用自动兜底 GitHub `topic:dsh-plugin` 搜索
+- **ADP 精选目录**：目录接口 `https://awesome-dsh-plugin.com/plugins.json`（`lib/index.js` 的 `CATALOG_URL`），带本地化描述 / 星标 / 收录日期与分类；条目数随上游变化，host 端 10 分钟缓存。在线不可用自动兜底 GitHub `topic:dsh-plugin` 搜索
 - **零往返过滤**：目录一次拉全量，搜索 / 分类 chips / 排序 / 分页全部客户端本地完成
 - **一键安装**：带 npm 名的条目优先 **npm registry 直装**；GitHub 仓库走内置下载器；两步确认防误触；已装 ✓ 徽标
 - **装后防砖校验**：自动验证 `dsh.bundle` / `dsh.client` 清单，缺失自动卸载；pnpm hoist 漂移 / `minimumReleaseAge` 陷阱自动恢复
@@ -234,7 +234,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-plugin-manager-pro/bin/open-boot.m
 | `~/.dsh/profiles/<名字>/vendor/downloads/*.tgz` | 归档暂存（浏览器下载的包）；仍被依赖引用的永不删除 | 否 |
 | `$DSH_HOME/downloads/*` | 「下载目录自动安装」扫描归档；写 `.installed` / `.failed` 标记（删标记可重试） | 否 |
 | 本机 npm 全局根（Windows `%APPDATA%\npm`，macOS/Linux `npm root -g` 与常见路径） | **只读**：定位引擎自带的 `@deepseek-ai/*`、提取插件简介 | 否 |
-| 更新源：npm registry（默认 `registry.npmjs.org`）、插件超市 `dshfind.com`、GitHub、你添加的镜像（如 `registry.npmmirror.com`） | 查询最新版本、下载归档 | **只查询**（GET 版本元数据 / 下载归档），不上传本地数据 |
+| 更新源：npm registry（默认 `registry.npmjs.org`）、GitHub、你添加的镜像（如 `registry.npmmirror.com`） | 查询最新版本、下载归档 | **只查询**（GET 版本元数据 / 下载归档），不上传本地数据 |
 | GitHub API：`api.github.com`、`raw.githubusercontent.com`、`codeload.github.com` | 查 Release 与仓库 `package.json`、下载 tgz | 同上 |
 | 精选目录 `awesome-dsh-plugin.com/plugins.json` | 拉「插件市场」目录（host 端 10 分钟缓存） | 同上 |
 | 本机回环端口 `3080` / `3081` / `3082`（+ 守护锁 `4081 = 3081+1000`） | 主界面 / 启动器与救援页 / 独立备份救援服务 / 守护单实例锁；全部只绑 `127.0.0.1` | 否（不出本机） |

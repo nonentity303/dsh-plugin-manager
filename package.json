@@ -1,6 +1,6 @@
 {
   "name": "dsh-drydock",
-  "version": "1.1.0-rc.1",
+  "version": "1.0.2",
   "description": "DSH 引擎船坞（drydock，原名 dsh-plugin-manager-pro）：本地插件管理器——分类折叠（核心组件/引擎内置组件/用户插件）、更新源一键更新（npm/GitHub/插件超市）、浏览器下载优先、下载目录自动安装、插件市场（dshfind 精选目录）、README 简介提取、救援与启动前自检；事务化卸载（备份→删除→校验→回滚）、操作历史一键撤销、场景方案、来源人工修正、依赖关系感知；独立救援工具链（3082 rescue-daemon / open-boot 浏览器触发自启 / dsh-boot 启动序列）；跨平台（Windows/macOS/Linux）",
   "author": "nonentity303",
   "repository": {
@@ -64,10 +64,12 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs && node test-bundle.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs",
+    "test": "node build.mjs && node test-bundle.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs && node test-downloader.mjs && node test-security-provenance.mjs",
     "test:launcher": "node test-launcher.mjs",
     "test:strict": "node test-launcher.mjs --strict",
     "test:ux": "node test-ux.mjs",
+    "test:downloader": "node test-downloader.mjs",
+    "test:security": "node test-security-provenance.mjs",
     "check:vendor": "node tools/check-vendor.mjs",
     "pack": "node build.mjs && npm pack",
     "preflight": "node tools/dev/npm-preflight.mjs",

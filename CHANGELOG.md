@@ -50,6 +50,48 @@
 
 > 完整发布说明：[`docs/releases/1.1.0-rc.1.md`](docs/releases/1.1.0-rc.1.md)
 
+## [1.0.2] - 2026-11-26
+
+> 一句话：修掉一条可被投毒的更新链——删掉"搜索猜来源"的 dshfind 源，给下载器加上完整性校验，并让 registry 版本权威化；同时并入 1.1.0-rc.1 已发布的命名债清理与兜底页体验修复。
+
+### Changed · 变更
+
+- `npx dsh-pm-launcher` — **`npx dsh-drydock`**
+- `npx dsh-pm-boot` — **`npx dsh-drydock-boot`**
+- `npx dsh-pm-rescue` — **`npx dsh-drydock-rescue`**
+- `test-launcher.mjs` 的高位端口假失败（`freePort()` 取到 >64535 时守护锁端口越过 65535 → 误报"探测不可用"）
+
+### Fixed · 修复
+
+- 结果卡（更新 / mod 体检 / 步骤日志）**前移到工具栏下方**，并在点击后自动滚动 + 高亮；`/plugins#health` 直达也能立刻看到结果
+- 12 个交互入口补齐「开始 + 结果」两段反馈；失败必带具体原因
+- 修掉 3 个反馈类 bug：体检/更新接口异常导致按钮**永久禁用**、启动页 409 时 spinner 永转、toast 浮层**吃掉按钮点击**
+
+### Security · 安全
+
+- 默认更新源启用了 **dshfind**（"插件超市"）
+- dshfind 在 GitHub 搜索 `topic:dsh-plugin <包名>`，**接受第一个 `package.json` name 匹配的仓库**——不校验 owner
+- 跨源取**最高版本** → 攻击者伪造 `v999.0.0` 直接赢过真的 npm 发布
+- 下载该仓库的 release 资产 / torrent / magnet / codeload 归档，**没有任何 hashCode 或签名校验**，还接受明文 `http://`
+- 装进 profile → 生命周期脚本与插件代码在 agent host 里执行
+- `DEFAULT_SOURCES` 不再包含 dshfind；`fetchLatestDshfindVersion`、缓存、失败合流键、下载解析分支全部删除（不留死代码）
+- 已装用户的侧车 `plugin-manager.json` 里若还有 dshfind 条目，**读取时自动剔除**；旧客户端再提交也会被宿主丢弃
+- UI 源列表：**4 个变 3 个**（npm 官方 / GitHub 官方仓库 / npmmirror 镜像）；"恢复默认源"不再塞回 dshfind
+- ① 明文传输 — 中间人替换 / 降级劫持 — 默认**拒绝一切 `http://`**（含 `https` 跟随重定向后落到 `http` 的降级）
+- ② 无从校验 — "伪造高版本 + 无摘要直装" — 拿不到可校验摘要的下载**默认拒绝**（fail-closed），且**不发起下载、不落盘**
+- ③ 校验执行 — 内容被替换 — 给了摘要就**强制校验**：sha512/sha1/sha256（支持 npm SRI 多算法取最强、base64 与 hex 两种形态）+ 可选字节数；**边写盘边算**，包再大也不整体进内存；不匹配就删文件并失败
+- registry 源给出确定版本时，**其它源一律不参与比较** → 伪造的 `v999.0.0` 永远不会被选中
+- registry 没有版本时才回退到其它源，并标记 `degraded`（界面可提示"版本来自非官方源，未经 npm 校验"）
+- 同一信任层内并列仍是随机（保留原来的公平性）
+- **"插件超市（dshfind）"源没了**。靠它发现"同名 GitHub 仓库有新版 release"的包，不再从那条路拿到版本；如果包在 npm 上有新版，照常从 npm 更新。不再会出现"某个伪造仓库 v999.0.0 提示可更新"。
+- **没有可校验摘要的下载默认被拒**。典型场景：自建 GitHub 仓库的 release 资产没有 `digest`、或用源码归档兜底。
+- 提示语会告诉你怎么开
+- 开启方式：profile 的 `cordis.patch.yml` 里给 `dsh-drydock` 加配置
+- 开启后仍会**在回执里标注"未校验"**，不会静默放行
+- **摘要不匹配、明文 `http://` 永远拒绝**，不受上述开关影响——内容已被篡改 / 传输可被替换时没有任何理由放行。
+
+> 完整发布说明：[`docs/releases/1.0.2.md`](docs/releases/1.0.2.md)
+
 ## [1.0.1] - 2026-11-25
 
 > 一句话：项目更名为 dsh-drydock（DSH 引擎船坞）——新 npm 包名 + 新 loader id，彻底摆脱与官方插件管理器的 id 冲突；同时完成端口覆盖补完（全链路支持非默认端口）与品牌视觉落地（DeepSeek 官方鲸形 + Docker 式货箱 logo 接入全部自有页面）。

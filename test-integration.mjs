@@ -774,7 +774,7 @@ if (typeof nodeModuleNamespace.registerHooks !== "function") {
 // ---- 17 弱网四连（C-02/03/04/09）实证：本地 HTTP 桩 + 注入式 fake fetch，**全程不碰真实外网** ----
 // 手法：① 本地 127.0.0.1 HTTP 桩提供 registry 响应（可切 hang/404/500），真实 socket + 真实 AbortSignal；
 //      ② 包装 globalThis.fetch 拦截 awesome-dsh-plugin.com / api.github.com / raw.githubusercontent.com
-//         （目录与 dshfind 的 URL 在宿主里是硬编码的），其余请求透传真实 fetch。
+//         （目录的 URL 在宿主里是硬编码的），其余请求透传真实 fetch。
 import { createServer } from "node:http";
 
 const net = __internals.network;
@@ -783,7 +783,6 @@ let stubMode = "hang";        // hang | 404 | 500 | ok
 let catalogMode = "ok";       // hang | error | ok
 let catalogDelayMs = 0;
 let catalogCalls = 0;
-let dshfindMode = "ok";       // hang | ok
 const STUB_CATALOG = {
 	updated: "2026-10-07",
 	categories: { other: { zh: "其它", en: "Other" } },
@@ -845,8 +844,6 @@ globalThis.fetch = async (input, init) => {
 	if (url.startsWith("https://api.github.com/") || url.startsWith("https://raw.githubusercontent.com/")) {
 		netStats.fetched += 1;
 		netStats.github += 1;
-		if (dshfindMode === "hang") return await hangUntilAbort(init?.signal);
-		if (url.includes("/search/repositories")) return jsonResponse({ items: [{ full_name: "stub-owner/stub-plugin-a" }] });
 		if (url.includes("raw.githubusercontent.com/")) return jsonResponse({ name: "stub-plugin-a", version: "3.1.4" });
 		if (url.includes("/releases/latest")) return jsonResponse({ tag_name: "v3.1.4" });
 		return jsonResponse({}, 404);
@@ -915,19 +912,10 @@ const c02Switch = await net.refreshLatest("stub-pkg-1", stubSource(), {});
 ok(c02Switch.version === "2.0.0-next.1",
 	`C-02: 换回可用源（不加 force）立即拿到 ${c02Switch.version} —— 失败源不污染其它源/其它包`);
 
-// C-02-d：dshfind（插件超市）源的 **1 小时**负缓存同样不被网络失败污染
-net.resetNetworkState();
-const dshfindSource = { name: "插件超市", url: "dshfind://gh", enabled: true, official: false, type: "dshfind" };
-dshfindMode = "hang";
-const dfFail = await net.fetchLatestDshfindVersion("stub-plugin-a", dshfindSource, hangOpts());
-ok(dfFail.version === null && (dfFail.reason === "timeout" || dfFail.reason === "network"),
-	`C-02: dshfind 弱网失败 reason=${dfFail.reason}（1 小时缓存的同类污染点）`);
-ok(net.cacheSnapshot().dshfindSearch.length === 0,
-	`C-02: dshfind **1 小时**负缓存未被网络失败污染（条目=${net.cacheSnapshot().dshfindSearch.length}）`);
-dshfindMode = "ok";
-const dfOk = await net.fetchLatestDshfindVersion("stub-plugin-a", dshfindSource, { force: true });
-ok(dfOk.version === "3.1.4" && dfOk.repo === "stub-owner/stub-plugin-a",
-	`C-02: dshfind 网络恢复后立即重试拿到真实版本 ${dfOk.version}（repo=${dfOk.repo}）`);
+// C-02-d（已移除）：dshfind 源的 1 小时负缓存断言 —— dshfind 源连同它的搜索/缓存实现
+// 已随 CWE-494 供应链投毒修复整体删除（它"搜索猜来源"，加固也只能缓解），
+// 该断言不再有被测对象。registry 源的负缓存污染由上面的 C-02 覆盖，信任分级由
+// test-security-provenance.mjs 覆盖。
 
 // C-03：网络类失败按源指数退避；显式重试可穿透
 net.resetNetworkState();
@@ -1046,7 +1034,7 @@ ok(c09NetItem.status === "network-error" && /网络不可达，可重试/.test(c
 ok(c09MissingItem.status === "not-found" && /没有此插件/.test(c09MissingItem.message ?? "") && /无更新/.test(c09MissingItem.message ?? ""),
 	`C-09: 包不存在文案「${c09MissingItem.message}」（status=${c09MissingItem.status}，reason=${c09MissingItem.reason}）`);
 
-console.log(`弱网四连实测汇总：C-02 网络失败写负缓存 0 条（VERSION_CACHE/dshfind 1h 均为 0），force 重试即拿真实版本；C-03 宿主总预算 ${net.REFRESH_BUDGET_DEFAULT_MS / 1000}s（实测预算 ${c03Info?.budgetMs}ms 内中止 ${c03Info?.checked}/${c03Info?.total}，AbortError ${netStats.aborted}）vs 客户端 withTimeout 120s（原 240s）；C-04 队头被占 800ms 时目录 ${c04Ms}ms 返回、只打 1 次网络；C-09 404=not-found / 5xx=network 文案分流。`);
+console.log(`弱网四连实测汇总：C-02 网络失败写负缓存 0 条（VERSION_CACHE 为空），force 重试即拿真实版本；C-03 宿主总预算 ${net.REFRESH_BUDGET_DEFAULT_MS / 1000}s（实测预算 ${c03Info?.budgetMs}ms 内中止 ${c03Info?.checked}/${c03Info?.total}，AbortError ${netStats.aborted}）vs 客户端 withTimeout 120s（原 240s）；C-04 队头被占 800ms 时目录 ${c04Ms}ms 返回、只打 1 次网络；C-09 404=not-found / 5xx=network 文案分流；dshfind 源已随 CWE-494 修复移除（信任分级回归见 test-security-provenance.mjs）。`);
 globalThis.fetch = realFetch;
 await new Promise((resolve) => stubServer.close(resolve));
 net.resetRefreshBudgetMs();

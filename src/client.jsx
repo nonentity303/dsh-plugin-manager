@@ -1958,9 +1958,10 @@ function SourcesPanel({ sources, save, busy, t }) {
 		setNewUrl("");
 	};
 	const resetDefaults = () => {
+		// 1.0.2 起默认源不再包含 dshfind —— 它用"搜索 GitHub topic 的第一个同名仓库"决定来源，
+		// 是累积性供应链风险（CWE-494），已从宿主实现中移除；这里同步去掉，避免"恢复了但少一项"。
 		setDraft([
 			{ name: "官方源 (npm)", url: "https://registry.npmjs.org", enabled: true, official: true, type: "registry" },
-			{ name: "插件超市 (dshfind)", url: "https://dshfind.com/zh/plugins", enabled: true, official: false, type: "dshfind" },
 			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: false, official: true, type: "github" },
 			{ name: "npmmirror 镜像", url: "https://registry.npmmirror.com", enabled: false, official: false, type: "registry" }
 		]);
@@ -1993,7 +1994,6 @@ function SourcesPanel({ sources, save, busy, t }) {
 							{source.name}
 							{source.official ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("official")}</em> : null}
 							{source.type === "github" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-label-tertiary)", marginLeft: 4 }}>GitHub</em> : null}
-							{source.type === "dshfind" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-warning-primary, #f59e0b)", marginLeft: 4 }}>{t("dshfind")}</em> : null}
 						</span>
 						<code style={{ flex: "1 1 auto", fontFamily: "var(--ds-font-family-code)", fontSize: 11, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</code>
 						<button type="button" onClick={() => removeAt(index)} style={linkButtonStyle} disabled={busy}>{t("remove")}</button>

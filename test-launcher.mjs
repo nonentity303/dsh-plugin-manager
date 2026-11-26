@@ -290,15 +290,43 @@ function tempDir(prefix) {
 	return dir;
 }
 
-function freePort() {
+/**
+ * 取一个"应当空闲"的端口。
+ *
+ * ⚠️ 上限必须 ≤ 64535：`lib/ports.mjs` 的守护锁端口 = 启动器端口 + 1000（`lockPortOf`），
+ * 超过 65535 时 `lockPortOf()` 返回 null，open-boot 会报"探测不可用"并判 `verified:false`。
+ * 曾因此在高位临时端口（如 65060）偶发 3 条 F2 假失败（2026-11-26 S5 复现并定位）。
+ *
+ * ⚠️ 注意 `listen(0)` 在 Windows 上对高位端口的分配是**确定性的**：连试 40 次可能仍是同一个
+ * 65060。所以超限时不能简单重试 `listen(0)`，要在安全区间里显式随机取端口逐个试。
+ */
+const FREE_PORT_MAX = 64535;
+const FREE_PORT_MIN = 20000;
+
+function tryListenOn(port) {
 	return new Promise((resolvePort, rejectPort) => {
 		const srv = createServer();
 		srv.once("error", rejectPort);
-		srv.listen(0, "127.0.0.1", () => {
-			const port = srv.address().port;
-			srv.close(() => resolvePort(port));
+		srv.listen(port, "127.0.0.1", () => {
+			const assigned = srv.address().port;
+			srv.close(() => resolvePort(assigned));
 		});
 	});
+}
+
+async function freePort() {
+	const wildcard = await tryListenOn(0);
+	if (wildcard <= FREE_PORT_MAX) return wildcard;
+	const span = FREE_PORT_MAX - FREE_PORT_MIN + 1;
+	for (let i = 0; i < 80; i++) {
+		const candidate = FREE_PORT_MIN + Math.floor(Math.random() * span);
+		try {
+			return await tryListenOn(candidate);
+		} catch {
+			// 该端口被占：换一个
+		}
+	}
+	throw new Error(`freePort: 无法在 ${FREE_PORT_MIN}..${FREE_PORT_MAX} 取到空闲端口（系统临时端口给到 ${wildcard}，超出 lockPortOf 约束）`);
 }
 
 function listenOn(port) {

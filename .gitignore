@@ -5,6 +5,9 @@ node_modules/
 # npm 工具的本地缓存/工作目录
 .npm-cache/
 # 发布流程的本地产物（含安全密钥授权网址、实时发布日志）——不进仓库
+# 双平台发布（tools/dev/publish-all.mjs）的断点续传状态：本机事务日志，含绝对路径，绝不入库
+.publish-state.json
+.publish-state.json.tmp-*
 auth-url-last.txt
 auth-urls.log
 publish-live.log

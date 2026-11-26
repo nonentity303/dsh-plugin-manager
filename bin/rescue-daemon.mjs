@@ -238,6 +238,8 @@ h1{font-size:20px;margin:0 0 4px;color:#fff}.sub{color:#8b93a3;font-size:13px;ma
 .row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 button{padding:9px 16px;border-radius:8px;border:1px solid #3a4050;background:#242a36;color:#e6e6e6;cursor:pointer;font-size:14px}
 button:hover{background:#2d3544}button.danger{background:#7f1d1d;border-color:#a03030}
+button:disabled{opacity:.55;cursor:progress}button.done{animation:doneflash .9s ease-out}
+@keyframes doneflash{0%{box-shadow:0 0 0 0 rgba(96,165,250,0)}30%{box-shadow:0 0 0 3px #2563eb}100%{box-shadow:0 0 0 0 rgba(96,165,250,0)}}
 button.primary{background:#1d4ed8;border-color:#2563eb}
 pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;font-size:12px;white-space:pre-wrap;max-height:320px;overflow:auto}
 .result{font-size:13px;white-space:pre-wrap}.ok{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}
@@ -246,11 +248,11 @@ a{color:#60a5fa}
 <h1>${drydockLogoMarkSvg(22)} 🛟 DSH 独立救援中心</h1>
 <div class="sub">独立于主引擎的救援入口 · 引擎挂了这里依然可用 · 停止引擎前会校验 pid 与端口归属 · 写操作需同源 + 一次性令牌</div>
 <div class="row">
-<button class="primary" onclick="startAndOpen()">启动引擎并打开主界面</button>
-<button onclick="runVerify()">运行检查</button>
-<button class="danger" onclick="runFix()">修复引擎配置</button>
-<button onclick="runStatus()">状态</button>
-<button class="danger" onclick="runStop()">停止引擎</button>
+<button class="primary" onclick="startAndOpen(this)">启动引擎并打开主界面</button>
+<button onclick="runVerify(this)">运行检查</button>
+<button class="danger" onclick="runFix(this)">修复引擎配置</button>
+<button onclick="runStatus(this)">状态</button>
+<button class="danger" onclick="runStop(this)">停止引擎</button>
 </div>
 <div class="result" id="out">就绪。先点"运行检查"看 profile 是否健康。</div>
 <script>
@@ -258,56 +260,89 @@ const API = ${JSON.stringify(apiPrefix)};
 const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
 const out = document.getElementById("out");
 function show(html, cls){ out.innerHTML = html; out.className = "result " + (cls||""); }
+// U1：每次点击先让按钮进入 loading 态（禁用 + 文案），结束还原并闪一下 —— 用户能看出"点到了/还在跑"
+function busy(btn, label){
+	if (!btn) return function(){};
+	const old = btn.textContent;
+	btn.disabled = true;
+	btn.textContent = label || "处理中…";
+	return function(){ btn.disabled = false; btn.textContent = old; };
+}
+async function withBusy(btn, label, fn){
+	const done = busy(btn, label);
+	let result;
+	try { result = await fn(); } finally { done(); }
+	if (btn) {
+		btn.classList.remove("done");
+		void btn.offsetWidth;
+		btn.classList.add("done");
+		setTimeout(function(){ btn.classList.remove("done"); }, 1000);
+	}
+	return result;
+}
 async function api(path, method, body){
 	const r = await fetch(API + path, { method: method || "GET", headers: { "Content-Type": "application/json", "X-DSH-PM-Token": TOKEN }, body: body ? JSON.stringify(body) : undefined });
 	return r.json();
 }
-async function runVerify(){
-	show("检查中…");
-	try {
-		const r = await api("/api/verify");
-		if (r.ok === true && Array.isArray(r.issues) && r.issues.length === 0) show("✓ profile 配置正常，引擎可以正常启动。", "ok");
-		else if (r.ok === true) show("⚠ 发现 " + r.issues.length + " 个问题：\\n" + r.issues.map(i=>"• "+i.name+": "+i.reason).join("\\n"), "bad");
-		else show("检查失败：" + (r.error||"未知错误"), "bad");
-	} catch(e){ show("请求失败：" + e.message, "bad"); }
+async function runVerify(btn){
+	return withBusy(btn, "检查中…", async function(){
+		show("检查中…（读取 profile 与 bundle 可解析性）");
+		try {
+			const r = await api("/api/verify");
+			if (r.ok === true && Array.isArray(r.issues) && r.issues.length === 0) show("✓ profile 配置正常，引擎可以正常启动。", "ok");
+			else if (r.ok === true) show("⚠ 发现 " + r.issues.length + " 个问题：\\n" + r.issues.map(i=>"• "+i.name+": "+i.reason).join("\\n"), "bad");
+			else show("检查失败：" + (r.error||"服务端未返回原因"), "bad");
+		} catch(e){ show("请求失败：" + e.message, "bad"); }
+	});
 }
-async function runFix(){
-	if(!confirm("确认执行修复？将隔离损坏的 bundle 并还原损坏的补丁文件（均带备份）。")) return;
-	show("修复中…");
-	try {
-		const r = await api("/api/fix", "POST");
-		if (r.ok === true) show("✓ 修复完成\\n" + (r.message||""), "ok");
-		else show("修复失败：" + JSON.stringify(r), "bad");
-	} catch(e){ show("请求失败：" + e.message, "bad"); }
+async function runFix(btn){
+	return withBusy(btn, "修复中…", async function(){
+		if(!confirm("确认执行修复？将隔离损坏的 bundle 并还原损坏的补丁文件（均带备份）。")) { show("已取消修复（未改动任何文件）。", "warn"); return; }
+		show("修复中…（隔离损坏 bundle → 还原补丁 → 逐项验证，均带备份）");
+		try {
+			const r = await api("/api/fix", "POST");
+			if (r.ok === true) show("✓ 修复完成\\n" + (r.message||""), "ok");
+			else show("修复失败：" + (r.error || JSON.stringify(r)), "bad");
+		} catch(e){ show("请求失败：" + e.message, "bad"); }
+	});
 }
-async function runStatus(){
-	try {
-		const r = await api("/api/status");
-		let text = "引擎：" + (r.engineUp ? "运行中（HTTP 握手正常，端口 " + r.enginePort + "）" : "未运行");
-		if (r.engineOccupiedByOther) text += "\\n⚠ 端口 " + r.enginePort + " 被 pid " + r.engineOccupiedByOther + " 占用，但它不是 dsh 引擎";
-		if (r.engineProcess) text += "\\n引擎 PID 文件：" + JSON.stringify(r.engineProcess);
-		text += "\\n救援守护 PID：" + r.pid + "（端口 " + r.port + "）";
-		show(text, r.engineUp ? "ok" : "warn");
-	} catch(e){ show("请求失败：" + e.message, "bad"); }
+async function runStatus(btn){
+	return withBusy(btn, "读取中…", async function(){
+		show("正在读取引擎 / 守护 / 端口状态…");
+		try {
+			const r = await api("/api/status");
+			let text = "引擎：" + (r.engineUp ? "运行中（HTTP 握手正常，端口 " + r.enginePort + "）" : "未运行");
+			if (r.engineOccupiedByOther) text += "\\n⚠ 端口 " + r.enginePort + " 被 pid " + r.engineOccupiedByOther + " 占用，但它不是 dsh 引擎";
+			if (r.engineProcess) text += "\\n引擎 PID 文件：" + JSON.stringify(r.engineProcess);
+			text += "\\n救援守护 PID：" + r.pid + "（端口 " + r.port + "）";
+			show(text, r.engineUp ? "ok" : "warn");
+		} catch(e){ show("请求失败：" + e.message, "bad"); }
+	});
 }
-async function startAndOpen(){
-	show("正在启动引擎（自检→启动→等待就绪）…");
-	try {
-		const r = await api("/api/start", "POST");
-		show((r.alreadyRunning ? "引擎已在运行。" : (r.message||"已请求启动。")), r.ok ? "ok" : "bad");
-		if (r.ok) setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 800);
-	} catch(e){ show("请求失败：" + e.message, "bad"); }
+async function startAndOpen(btn){
+	return withBusy(btn, "启动中…", async function(){
+		show("正在启动引擎（自检→启动→等待就绪）…启动期间本按钮保持禁用，避免重复拉起。");
+		try {
+			const r = await api("/api/start", "POST");
+			show((r.alreadyRunning ? "引擎已在运行。" : (r.message||"已请求启动。")), r.ok ? "ok" : "bad");
+			if (r.ok) setTimeout(() => location.href = "http://127.0.0.1:${enginePort}/", 800);
+		} catch(e){ show("请求失败：" + e.message, "bad"); }
+	});
 }
-async function runStop(){
-	if(!confirm("确认停止引擎？会先校验 PID 与端口归属，校验不过会被拒绝。")) return;
-	try {
-		let r = await api("/api/stop", "POST", {});
-		if (r.refused) {
-			if (!confirm("已拒绝结束：\\n" + r.message + "\\n\\n确认强制结束该进程树？（仅在确认 pid 就是本机的 dsh 引擎时使用）")) { show(r.message, "warn"); return; }
-			r = await api("/api/stop", "POST", { force: true });
-		}
-		show(r.message || JSON.stringify(r), r.ok ? "ok" : "bad");
-	} catch(e){ show("请求失败：" + e.message, "bad"); }
+async function runStop(btn){
+	return withBusy(btn, "停止中…", async function(){
+		if(!confirm("确认停止引擎？会先校验 PID 与端口归属，校验不过会被拒绝。")) { show("已取消停止（引擎未被动过）。", "warn"); return; }
+		show("正在停止引擎（先校验 PID 与端口归属）…");
+		try {
+			let r = await api("/api/stop", "POST", {});
+			if (r.refused) {
+				if (!confirm("已拒绝结束：\\n" + r.message + "\\n\\n确认强制结束该进程树？（仅在确认 pid 就是本机的 dsh 引擎时使用）")) { show(r.message, "warn"); return; }
+				show("正在强制结束进程树（已确认 pid 归属）…");
+				r = await api("/api/stop", "POST", { force: true });
+			}
+			show(r.message || JSON.stringify(r), r.ok ? "ok" : "bad");
+		} catch(e){ show("请求失败：" + e.message, "bad"); }
+	});
 }
 </script>
 <div class="sub" style="margin:14px 0 0">唯一网页入口（浏览器主页 / 桌面快捷方式）：<a href="${entryUrl}">${entryUrl}</a></div>

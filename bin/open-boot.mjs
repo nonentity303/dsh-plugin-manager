@@ -1522,13 +1522,28 @@ pre{background:#0b0d11;border:1px solid #2a2e38;border-radius:8px;padding:12px;f
 <h1>${drydockLogoMarkSvg(20)} 🚀 DSH 启动器</h1>
 <div class="sub">正在执行 自检 → 修复 → 启动，完成后自动打开主界面…</div>
 <div class="spinner" id="spin"></div>
+<div class="sub" id="elapsed" aria-live="polite" style="margin:-6px 0 10px;font-size:12.5px"></div>
 <pre id="out"></pre>
 <div class="sub" style="margin:16px 0 0"><a href="/rescue">救援中心</a>（检查 / 修复 / 启动 / 停止 / 状态）· <a href="/plugins">插件管理</a>（启停 mod / 重启引擎 / 停止启动器）</div>
 <script>
 const out = document.getElementById("out");
+const spin = document.getElementById("spin");
+const elapsedEl = document.getElementById("elapsed");
 const TOKEN = (document.querySelector('meta[name="dsh-pm-token"]') || {}).content || "";
+// U1：启动流程是一个长请求（自检→修复→启动），中间没有任何服务端事件 —— 用计时器证明"页面没卡住"
+let waited = 0;
+const ticker = setInterval(function(){
+	waited++;
+	elapsedEl.textContent = "已等待 " + waited + " 秒" + (waited >= 15 ? "（首次启动或修复较慢，页面没有卡住，请勿关闭）" : "…");
+}, 1000);
+function stopSpin(){
+	clearInterval(ticker);
+	spin.style.display = "none";
+	if (waited > 0) elapsedEl.textContent = "本次等待 " + waited + " 秒";
+}
 function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + String(line).replace(/</g,'&lt;') + (cls?'</span>':'') + "\\n"; }
 function goEntry(r){
+	stopSpin();
 	if (r && r.entryUrl) { location.href = r.entryUrl; return; }
 	// G03：entryUrl=null（引擎本次启动没打印/没写可读的 token 行）→ 降级指引，不渲染假 token 链接。
 	log("⚠ 未捕获到本次启动的登录链接（entryUrl=null，引擎可能没有把 token 行写进 web.log）。", "warn");
@@ -1539,7 +1554,7 @@ function goEntry(r){
 	link.textContent = "→ 打开 http://127.0.0.1:${enginePort}/";
 	out.appendChild(document.createElement("br"));
 	out.appendChild(link);
-	document.getElementById("spin").style.display = "none";
+	stopSpin();
 }
 (async () => {
 	try {
@@ -1549,22 +1564,28 @@ function goEntry(r){
 			goEntry(r);
 			return;
 		}
-		if (r.code === 409) { log("⚠ " + (r.error || "已有启动流程在执行中"), "warn"); return; }
+		if (r.code === 409) {
+			// U1：原本这里只写一行日志就 return，转圈图标永远转下去 → 看起来像卡死
+			log("⚠ " + (r.error || "已有启动流程在执行中"), "warn");
+			log("本页不会自动跳转；可等它完成，或打开 " + location.origin + "/rescue 救援中心看状态。", "warn");
+			stopSpin();
+			return;
+		}
 		if (r.verifyOk === false) log("自检：⚠ 发现 " + (r.issues||[]).length + " 个问题", "warn");
 		else if (r.verifyOk === true) log("自检：✓ 配置正常", "ok");
 		if (r.fixed) log("修复：" + (r.fixed.message || "完成"), "ok");
 		if (r.window && r.window.ok) log("⧉ " + r.window.message + "（窗口里可看到完整进度，结束时按任意键关闭）", "warn");
-		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); setTimeout(() => goEntry(r), 600); }
-		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); setTimeout(() => goEntry(r), 600); }
+		if (r.ok) { log("✓ " + (r.message || "引擎已启动"), "ok"); stopSpin(); setTimeout(() => goEntry(r), 600); }
+		else if (r.quarantined && r.quarantined.length) { log("⚠ 运行期失败条目已自动隔离：" + r.quarantined.join(", "), "bad"); log("✓ " + (r.message || "重试成功"), "ok"); stopSpin(); setTimeout(() => goEntry(r), 600); }
 		else {
 			log("✗ " + (r.message || JSON.stringify(r)), "bad");
 			if (r.logPath) log("日志：" + r.logPath, "warn");
 			log("可运行 node bin/open-boot.mjs --status 查看启动器/守护/引擎状态，或打开 " + location.origin + "/rescue 救援中心", "warn");
-			document.getElementById("spin").style.display = "none";
+			stopSpin();
 		}
 	} catch (e) {
 		log("✗ 请求失败：" + e.message, "bad");
-		document.getElementById("spin").style.display = "none";
+		stopSpin();
 	}
 })();
 </script>
@@ -2238,6 +2259,9 @@ button.danger:hover{background:var(--bad-bg);color:var(--bad)}
 .toggle input:checked + .knob{background:var(--accent)}
 .toggle input:checked + .knob::after{left:18px}
 .toggle input:disabled + .knob{opacity:.45;cursor:not-allowed}
+/* U1：禁用的 input 会吞掉鼠标事件（点击落在它身上就什么都不发生）→ 让事件落到 label/knob 上，
+   这样"点核心组件开关"能弹 toast 解释为什么不能点，而不是一片死寂。 */
+.toggle input:disabled{pointer-events:none}
 .hint{color:var(--dim);font-size:12px;line-height:1.6}
 .hint a{color:var(--accent)}
 .dim{color:var(--dim)}
@@ -2246,7 +2270,7 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:baseline}
 .dot.ok{background:var(--ok)}.dot.suspect{background:var(--warn)}.dot.broken{background:var(--bad)}
 /* toast */
-#toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center}
+#toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
 .toast{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:8px;padding:9px 16px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.14);max-width:520px}
 .toast.ok{border-left-color:var(--ok)}.toast.bad{border-left-color:var(--bad)}.toast.warn{border-left-color:var(--warn)}
 /* 确认框 */
@@ -2258,6 +2282,12 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 #confirmBox .btns{display:flex;justify-content:flex-end;gap:8px}
 .panel{display:none}
 .panel.open{display:block}
+/* U1：结果卡片落点 —— 操作完成后滚动到位 + 闪一下，避免"结果在视口外 = 按钮没反应" */
+@keyframes cardflash{0%{box-shadow:0 0 0 0 rgba(59,110,246,0)}35%{box-shadow:0 0 0 3px var(--accent)}100%{box-shadow:0 0 0 0 rgba(59,110,246,0)}}
+.card.flash{animation:cardflash 1.6s ease-out}
+/* U1：按钮 loading 态（发起反馈） */
+button.busy{cursor:progress;opacity:.65}
+.rowitem.busy{opacity:.6}
 </style></head><body><div class="wrap">
 <header>
 	<div>
@@ -2283,17 +2313,6 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 	<div class="hint" style="margin-top:10px"><span id="engstate" class="dim">引擎状态检测中…</span> · 改动启用状态后需重启引擎生效（写前自动备份 package.json）。</div>
 </div>
 
-<div class="card">
-	<p class="sect">核心组件（引擎必需，不允许禁用）</p>
-	<div class="rows" id="coreRows"></div>
-</div>
-
-<div class="card">
-	<p class="sect">用户插件</p>
-	<div class="rows" id="userRows"></div>
-	<div class="hint" style="margin-top:8px">配置入口在各插件的行内设置（主界面 → 插件管理 → 行内 ⚙）；「市场详情」打开主界面市场页。</div>
-</div>
-
 <div class="card panel" id="updPanel">
 	<p class="sect">更新检查结果</p>
 	<div class="rows" id="updRows"></div>
@@ -2308,6 +2327,17 @@ pre.log{background:var(--bg);border:1px solid var(--border);border-radius:8px;pa
 <div class="card panel" id="stepPanel">
 	<p class="sect">操作步骤日志</p>
 	<div class="rows" id="stepRows"></div>
+</div>
+
+<div class="card">
+	<p class="sect">核心组件（引擎必需，不允许禁用）</p>
+	<div class="rows" id="coreRows"></div>
+</div>
+
+<div class="card">
+	<p class="sect">用户插件</p>
+	<div class="rows" id="userRows"></div>
+	<div class="hint" style="margin-top:8px">配置入口在各插件的行内设置（主界面 → 插件管理 → 行内 ⚙）；「市场详情」打开主界面市场页。</div>
 </div>
 
 <div class="hint" style="margin-top:16px">管理器不能在自身管理界面（引擎 ${enginePort}）中停用自己；如需禁用或卸载，请前往启动器兜底页（本页 ${launcherPort} /plugins）或使用 dsh 命令行——兜底页独立于引擎存活，禁用后仍可恢复。<b>可事务性自卸载</b>（含开机自启清理指引）。卸载/更新前若引擎正占用目标包，会引导你先禁用并重启引擎，而不是硬删。</div>
@@ -2356,6 +2386,7 @@ themeBtn.addEventListener("click", function(){
 	var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
 	try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 写不进去就只在本会话生效 */ }
 	applyTheme();
+	toast("主题已切换为" + (next === "dark" ? "深色" : "浅色") + "（本页记忆；长按主题按钮复位为自动）", "ok");
 });
 themeBtn.addEventListener("pointerdown", function(){
 	themeLongPressed = false;
@@ -2379,10 +2410,54 @@ function toast(text, cls){
 	var box = document.getElementById("toasts");
 	var el = document.createElement("div");
 	el.className = "toast " + (cls || "");
+	el.setAttribute("role", "status");
 	el.textContent = text;
 	box.appendChild(el);
 	setTimeout(function(){ el.remove(); }, 5200);
 }
+// —— U1：发起反馈 / 落点反馈的统一实现 ——
+/** 按钮 loading 态：禁用 + 改文案，结束后逐字还原（防重复点击 + 用户能看出"点到了"）。 */
+function setBusy(btn, busy, label){
+	if (!btn) return;
+	if (busy) {
+		if (btn.dataset.idleText === undefined) btn.dataset.idleText = btn.textContent;
+		btn.disabled = true;
+		btn.classList.add("busy");
+		btn.setAttribute("aria-busy", "true");
+		if (label) btn.textContent = label;
+	} else {
+		btn.disabled = false;
+		btn.classList.remove("busy");
+		btn.removeAttribute("aria-busy");
+		if (btn.dataset.idleText !== undefined) { btn.textContent = btn.dataset.idleText; delete btn.dataset.idleText; }
+	}
+}
+async function withBusy(btn, label, fn){
+	setBusy(btn, true, label);
+	try { return await fn(); } finally { setBusy(btn, false); }
+}
+/** 结果卡片落点：打开 → 滚进视口（block:nearest，不把页面顶跳）→ 高亮闪一下；toast 是"感知"，这是"眼睛的落点"。 */
+function revealPanel(id){
+	var panel = document.getElementById(id);
+	if (!panel) return;
+	panel.classList.add("open");
+	panel.classList.remove("flash");
+	try { void panel.offsetWidth; } catch (e) { /* 强制重排以重放动画 */ }
+	panel.classList.add("flash");
+	if (panel._flashTimer) clearTimeout(panel._flashTimer);
+	panel._flashTimer = setTimeout(function(){ panel.classList.remove("flash"); }, 1700);
+	try {
+		// 卡片比视口还高时（体检 20+ 行 / 长列表后的步骤日志）nearest 可能只对齐底边，
+		// 标题被切掉一半 → 这种情况对齐卡片顶部，保证"体检结果"这个标题一定在屏幕里。
+		var tall = panel.getBoundingClientRect().height > window.innerHeight * 0.85;
+		panel.scrollIntoView({ block: tall ? "start" : "nearest", behavior: "smooth" });
+	} catch (e) { try { panel.scrollIntoView(false); } catch (e2) { /* 老浏览器不支持时退化为仅高亮 */ } }
+}
+/** 失败 toast 必须带原因：服务端没给原因也要说清"没给原因"，不许只说"失败"。 */
+function failText(prefix, r){
+	return prefix + "：" + ((r && r.error) ? r.error : "服务端未返回原因（可看「操作步骤日志」或重启启动器后重试）");
+}
+
 function confirmBox(title, text, okLabel){
 	return new Promise(function(resolveCF){
 		var mask = document.getElementById("mask");
@@ -2434,6 +2509,13 @@ function toggleHtml(b){
 	input.dataset.name = b.name;
 	var knob = document.createElement("span"); knob.className = "knob";
 	label.appendChild(input); label.appendChild(knob);
+	if (b.core) {
+		// 核心组件的开关是 disabled 的：点它原本毫无反应（用户以为坏了）→ 现在明确说明为什么不能点
+		label.addEventListener("click", function(ev){
+			ev.preventDefault();
+			toast(b.name + " 是引擎必需的核心组件，不能在这里禁用；确需停用请走救援中心 /rescue 或手工改 profile。", "warn");
+		});
+	}
 	return label;
 }
 function renderRows(){
@@ -2476,7 +2558,13 @@ function renderRows(){
 		var mk = el("button", null, "市场详情");
 		mk.title = "打开主界面（引擎未运行时置灰）";
 		mk.disabled = !engineUp;
-		mk.addEventListener("click", function(){ window.open("http://127.0.0.1:" + ENGINE_PORT + "/", "_blank"); });
+		mk.addEventListener("click", function(){
+			var url = "http://127.0.0.1:" + ENGINE_PORT + "/";
+			var w = null;
+			try { w = window.open(url, "_blank"); } catch (e) { w = null; }
+			if (!w) toast("浏览器拦截了新标签页：请允许本站弹窗，或手动打开 " + url, "warn");
+			else toast("已在新标签页打开主界面（" + url + "）", "ok");
+		});
 		row.appendChild(mk);
 		(b.core ? coreRows : userRows).appendChild(row);
 	});
@@ -2522,67 +2610,89 @@ function renderSteps(steps){
 	});
 }
 async function doUpdate(name, btn){
-	btn.disabled = true;
+	setBusy(btn, true, "更新中…");
 	await guard(async function(){
 		var okGo = await confirmBox("更新 " + name, "将运行 pnpm update --latest。若引擎正在运行且该插件已启用，会拒绝并引导你先禁用。", "更新");
-		if (!okGo) return;
+		if (!okGo) { toast("已取消更新 " + name, "warn"); return; }
+		toast("正在更新 " + name + "（pnpm update --latest，可能 10-60s）…", "warn");
 		var r = await api("/plugins/api/update", { name: name });
-		if (!r.ok) { toast(r.error || "更新失败", r.blocked === "engine-busy" ? "warn" : "bad"); return; }
-		toast(r.message || "已更新", "ok");
-		await refreshUpdates(false);
+		if (!r.ok) {
+			toast(failText("更新 " + name + " 失败", r) + (r.blocked === "engine-busy" ? "（引擎正占用该包：先禁用该插件并重启引擎，再更新）" : ""), r.blocked === "engine-busy" ? "warn" : "bad");
+			return;
+		}
+		toast("已更新 " + name + (r.message ? "：" + r.message : "（重启引擎后生效）"), "ok");
+		// 刷新更新面板并 revealPanel("updPanel")（refreshUpdates 内部负责滚到位；失败时不会掀出空卡片）
+		await refreshUpdates({ showPanel: true, announce: false });
 	});
-	btn.disabled = false;
+	setBusy(btn, false);
 }
 async function doUninstall(b, btn){
-	btn.disabled = true;
+	setBusy(btn, true, "卸载中…");
 	await guard(async function(){
 		var warnText = b.self
 			? "这是管理器自身：卸载后引擎 ${enginePort} 内的插件管理界面消失；启动器 ${launcherPort} 本兜底页存活到启动器进程结束；之后请运行 node bin/open-boot.mjs --uninstall 清理开机自启。确定继续？"
 			: "将执行事务性卸载：备份清单与 cordis.patch.yml → pnpm remove → 清理补丁行 → 验证；每一步都会留下回滚记录。确定继续？";
 		var okGo = await confirmBox("卸载 " + b.name, warnText, "卸载");
-		if (!okGo) return;
+		if (!okGo) { toast("已取消卸载 " + b.name, "warn"); return; }
+		toast("正在卸载 " + b.name + "（事务性：备份 → pnpm remove → 清理补丁 → 验证）…", "warn");
 		var r = await api("/plugins/api/uninstall", { name: b.name });
-		if (!r.ok) { toast(r.error || "卸载失败", r.blocked === "engine-busy" ? "warn" : "bad"); return; }
-		toast(r.message || "已卸载", "ok");
-		if (Array.isArray(r.steps)) renderSteps(r.steps);
+		if (!r.ok) {
+			toast(failText("卸载 " + b.name + " 失败", r) + (r.blocked === "engine-busy" ? "（引擎正占用该包：先禁用该插件并重启引擎，再卸载）" : ""), r.blocked === "engine-busy" ? "warn" : "bad");
+			return;
+		}
+		toast("已卸载 " + b.name + (r.message ? "：" + r.message : "（重启引擎后生效）"), "ok");
+		if (Array.isArray(r.steps)) { renderSteps(r.steps); revealPanel("stepPanel"); }
 		await loadBundles();
 	});
-	btn.disabled = false;
+	setBusy(btn, false);
 }
-async function loadBundles(){
+async function loadBundles(announce){
 	return guard(async function(){
 		var r = await api("/plugins/api/bundles");
-		if (!r.ok) { toast(r.error || "读取 bundle 失败", "bad"); return; }
+		if (!r.ok) { toast(failText("读取插件列表失败", r), "bad"); return; }
 		bundles = (r.bundles || []).map(function(b){ return { name: b.name, enabled: b.enabled, core: b.core, self: b.name === "dsh-drydock" }; });
 		renderRows();
+		if (announce) {
+			var users = bundles.filter(function(b){ return !b.core; }).length;
+			var on = bundles.filter(function(b){ return b.enabled; }).length;
+			toast("已刷新：共 " + bundles.length + " 个组件（用户插件 " + users + " 个，已启用 " + on + " 个）", "ok");
+		}
 	});
 }
-async function refreshUpdates(showPanel){
+async function refreshUpdates(opts){
+	opts = opts || {};
+	var showPanel = opts.showPanel !== false;
+	var announce = opts.announce !== false;
 	return guard(async function(){
-		var btn = document.getElementById("checkUpdBtn");
-		btn.disabled = true;
+		if (announce) toast("正在检查更新：逐个比对用户插件的最新版本…", "warn");
 		var r = await api("/plugins/api/updates");
-		btn.disabled = false;
-		if (!r.ok) { toast(r.error || "检查更新失败", "bad"); return; }
+		if (!r.ok) { toast(failText("检查更新失败", r), "bad"); return; }
 		updates = r.updates || [];
-		var n = updates.filter(function(u){ return u.needsUpdate; }).length;
-		toast(n ? "发现 " + n + " 个可更新插件" : "全部用户插件已是最新", n ? "warn" : "ok");
+		var pending = updates.filter(function(u){ return u.needsUpdate; });
+		var n = pending.length;
+		if (announce) {
+			var names = pending.slice(0, 3).map(function(u){ return u.name; }).join("、");
+			toast(n
+				? "发现 " + n + " 个可更新插件：" + names + (n > 3 ? " 等" : "") + "（结果在「更新检查结果」卡片）"
+				: "全部 " + updates.length + " 个用户插件已是最新", n ? "warn" : "ok");
+		}
 		renderRows();
-		if (showPanel !== false) renderUpdateRows();
+		if (showPanel) renderUpdateRows();
+		if (showPanel) revealPanel("updPanel");
 	});
 }
 async function runHealth(){
 	return guard(async function(){
-		var btn = document.getElementById("healthBtn");
-		btn.disabled = true;
+		toast("正在做 mod 体检（只读：preflight 校验 + 引擎日志末尾 256KB）…", "warn");
 		var r = await api("/plugins/api/health");
-		btn.disabled = false;
-		if (!r.ok) { toast(r.error || "体检失败", "bad"); return; }
+		if (!r.ok) { toast(failText("mod 体检失败", r), "bad"); return; }
+		var reportRows = r.rows || [];
+		var gi = r.globalIssues || [];
+		var broken = reportRows.filter(function(x){ return x.verdict === "broken"; });
+		var suspect = reportRows.filter(function(x){ return x.verdict === "suspect"; });
 		var rows = document.getElementById("healthRows");
-		var panel = document.getElementById("healthPanel");
 		rows.textContent = "";
-		panel.classList.add("open");
-		(r.rows || []).forEach(function(row){
+		reportRows.forEach(function(row){
 			var item = el("div", "rowitem");
 			var meta = el("div", "meta");
 			var line = el("div", "name", null);
@@ -2596,7 +2706,6 @@ async function runHealth(){
 			rows.appendChild(item);
 		});
 		// rc.2 P2-4：非 bundle 归属的 preflight 问题与未识别日志错误 → 单独区块
-		var gi = r.globalIssues || [];
 		if (gi.length) {
 			var ghead = el("div", "rowitem");
 			ghead.appendChild(el("b", "warn", "⚠ 全局问题（不属于任何已装 bundle，勿按插件处理）"));
@@ -2611,46 +2720,71 @@ async function runHealth(){
 			});
 		}
 		document.getElementById("healthHint").textContent = "日志：" + (r.logPath || "") + "；体检只读（preflight 校验 + 日志末尾 256KB 聚合，30s 缓存），不改任何文件。";
+		var healthy = reportRows.length - broken.length - suspect.length;
+		var head = "体检完成：" + reportRows.length + " 个组件（正常 " + healthy + " / 可疑 " + suspect.length + " / 异常 " + broken.length + "）" + (gi.length ? "，另有 " + gi.length + " 条全局问题" : "");
+		if (!reportRows.length) toast("体检完成：profile 里没有已装组件（「用户插件」列表为空就是原因）", "warn");
+		else if (broken.length) toast(head + "；异常：" + broken.slice(0, 3).map(function(x){ return x.name; }).join("、") + (broken.length > 3 ? " 等" : ""), "bad");
+		else if (suspect.length || gi.length) toast(head, "warn");
+		else toast(head + "，全部正常", "ok");
+		revealPanel("healthPanel");
 	});
 }
 document.getElementById("q").addEventListener("input", renderRows);
-document.getElementById("refreshBtn").addEventListener("click", loadBundles);
-document.getElementById("checkUpdBtn").addEventListener("click", function(){ refreshUpdates(true); });
-document.getElementById("healthBtn").addEventListener("click", runHealth);
+document.getElementById("refreshBtn").addEventListener("click", function(){
+	return withBusy(this, "刷新中…", function(){ return loadBundles(true); });
+});
+document.getElementById("checkUpdBtn").addEventListener("click", function(){
+	return withBusy(this, "检查中…", function(){ return refreshUpdates({ showPanel: true, announce: true }); });
+});
+document.getElementById("healthBtn").addEventListener("click", function(){
+	return withBusy(this, "体检中…", function(){ return runHealth(); });
+});
 document.getElementById("restartBtn").addEventListener("click", async function(){
-	this.disabled = true;
-	await guard(async function(){
-		var okGo = await confirmBox("重启引擎", "停旧引擎 → 拉起新引擎（失败条目自动隔离一次）→ 等握手。期间引擎 ${enginePort} 会短暂不可用。", "重启");
-		if (!okGo) { document.getElementById("restartBtn").disabled = false; return; }
-		toast("重启引擎中…", "warn");
-		var r = await api("/plugins/api/engine/restart", {});
-		toast(r.message || (r.ok ? "引擎已重启。" : "重启失败。"), r.ok ? "ok" : "bad");
-		setEngineState(r.ok);
-		// G03：entryUrl=null 时的降级指引（不渲染假 token 链接）
-		if (r.ok && r.entryUrl) toast("登录链接已就绪（含 token），可直接打开主界面。", "ok");
-		else if (r.ok) toast("未捕获到本次启动的登录链接：① 已登录过的浏览器直接打开 http://127.0.0.1:" + ENGINE_PORT + "/（cookie 仍有效）；② 新浏览器请看引擎控制台输出的 dsh web: …?token=…，或到 ~/.dsh/logs/web.log 末尾查找最后一次启动追加的链接。", "warn");
-	});
-	document.getElementById("restartBtn").disabled = false;
+	setBusy(this, true, "重启中…");
+	try {
+		await guard(async function(){
+			var okGo = await confirmBox("重启引擎", "停旧引擎 → 拉起新引擎（失败条目自动隔离一次）→ 等握手。期间引擎 ${enginePort} 会短暂不可用。", "重启");
+			if (!okGo) { toast("已取消重启引擎", "warn"); return; }
+			toast("正在重启引擎（停旧 → 拉起 → 握手，最长约 30s）…", "warn");
+			var r = await api("/plugins/api/engine/restart", {});
+			if (r.ok) toast("引擎已重启，http://127.0.0.1:" + ENGINE_PORT + "/ 可访问" + (r.entryUrl ? "；登录链接已就绪，可直接打开主界面。" : "。"), "ok");
+			else toast(failText("重启引擎失败", r), "bad");
+			setEngineState(r.ok);
+			// G03：entryUrl=null 时的降级指引（不渲染假 token 链接）
+			if (r.ok && !r.entryUrl) toast("未捕获到本次启动的登录链接：① 已登录过的浏览器直接打开 http://127.0.0.1:" + ENGINE_PORT + "/（cookie 仍有效）；② 新浏览器请看引擎控制台输出的 dsh web: …?token=…，或到 ~/.dsh/logs/web.log 末尾查找最后一次启动追加的链接。", "warn");
+		});
+	} finally {
+		setBusy(document.getElementById("restartBtn"), false);
+	}
 });
 document.getElementById("stopBtn").addEventListener("click", async function(){
-	this.disabled = true;
-	await guard(async function(){
-		var okGo = await confirmBox("停止本启动器", "启动器进程将优雅退出并清理 pid 文件；引擎与本页面不受影响，重新打开 ${launcherPort} 会重新拉起启动器。", "停止");
-		if (!okGo) { document.getElementById("stopBtn").disabled = false; return; }
-		var r = await api("/api/launcher/stop", {});
-		toast(r.message || "启动器即将退出。", "warn");
-		setTimeout(function(){ location.reload(); }, 1200);
-	});
-	document.getElementById("stopBtn").disabled = false;
+	setBusy(this, true, "停止中…");
+	try {
+		await guard(async function(){
+			var okGo = await confirmBox("停止本启动器", "启动器进程将优雅退出并清理 pid 文件；引擎与本页面不受影响，重新打开 ${launcherPort} 会重新拉起启动器。", "停止");
+			if (!okGo) { toast("已取消停止启动器", "warn"); return; }
+			toast("正在停止本启动器（引擎与本页面不受影响）…", "warn");
+			var r = await api("/api/launcher/stop", {});
+			toast(r.message || "启动器即将退出；重新打开本页地址会重新拉起启动器。", r.ok === false ? "bad" : "warn");
+			setTimeout(function(){ location.reload(); }, 1200);
+		});
+	} finally {
+		setBusy(document.getElementById("stopBtn"), false);
+	}
 });
 document.getElementById("userRows").addEventListener("change", async function(ev){
 	var input = ev.target;
 	if (!input || input.dataset.name === undefined) return;
+	var name = input.dataset.name;
+	var want = Boolean(input.checked);
+	var row = input.closest ? input.closest(".rowitem") : null;
 	input.disabled = true;
+	if (row) row.classList.add("busy");
+	toast((want ? "正在启用 " : "正在禁用 ") + name + "…", "warn");
 	await guard(async function(){
-		var r = await api("/plugins/api/bundles", { name: input.dataset.name, action: input.checked ? "enable" : "disable" });
-		if (!r.ok) { toast(r.error || "操作失败", "bad"); }
-		else toast(r.message || "已更新（重启引擎后生效）", r.changed === false ? "warn" : "ok");
+		var r = await api("/plugins/api/bundles", { name: name, action: want ? "enable" : "disable" });
+		if (!r.ok) toast(failText((want ? "启用 " : "禁用 ") + name + " 失败", r), "bad");
+		else toast((want ? "已启用 " : "已禁用 ") + name + (r.changed === false ? "（本来就是这个状态，未改动）" : "，重启引擎后生效"), r.changed === false ? "warn" : "ok");
 	});
 	await loadBundles();
 });
@@ -2669,7 +2803,12 @@ async function loadEngine(){
 	});
 }
 loadBundles(); loadEngine();
+// U1：结果区（#updPanel / #healthPanel / #stepPanel）已前移到用户插件列表之上，
+// 因此 #health 直达既能看见结果，也不会被长列表顶出视口；再靠 revealPanel 的滚动+高亮给落点。
 if (location.hash === "#health") runHealth(); // 3080 RescuePanel 的「mod 体检」入口直达（/plugins#health）
+window.addEventListener("hashchange", function(){
+	if (location.hash === "#health") runHealth();
+});
 </script>
 </div></body></html>`;
 }
@@ -2998,5 +3137,7 @@ export {
 	main, parseArgs, reportStatus, startServer, uninstallAutostart, writeShim,
 	// rc.2 测试面：单测直接驱动这些函数（不经过 HTTP）
 	CORE_BUNDLES, MANAGER_SELF_NAME, PKG_NAME_RE, runPnpm, writeFileAtomic, engineBusyGate,
-	uninstallPackageTransactional, updatePackage, checkUpdates, healthReport, restartEngine, ensureLauncherCmd
+	uninstallPackageTransactional, updatePackage, checkUpdates, healthReport, restartEngine, ensureLauncherCmd,
+	// U1 测试面：兜底页 HTML 静态断言（test-ux.mjs）直接检查页面结构，不用起浏览器
+	pluginsPageHtml
 };

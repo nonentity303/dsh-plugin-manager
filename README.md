@@ -144,9 +144,9 @@
 
 | 工具 | 用途 | 用法 |
 |---|---|---|
-| `bin/open-boot.mjs` | **唯一网页入口 + 常驻守护**（3081）：`/` 是"打开即启动"页；**`/plugins` 是兜底管理页**（v1.0）；`/rescue` 是救援页。设为浏览器主页即"打开即启动"。平时完全隐藏，只有引擎需要拉起时才弹一个可见启动窗口（`--no-window` 可关）。健康判定 = HTTP 握手 + 身份指纹；写接口带 Origin + 一次性令牌防护；`--uninstall` 一键清理（退出码 0/1/2，2 = 归属未确认时不动任何进程） | `npx dsh-pm-launcher` |
-| `bin/rescue-daemon.mjs` | **独立备份救援守护**（默认端口 **3082**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。**不与 3081 抢端口**（被占时明确报错退出，不静默漂移） | `npx dsh-pm-rescue`（默认 3082） |
-| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 只自检+修复不启动；退出码 0=就绪 / 1=启动失败 / 2=修复未完成；启动即失败会**立即返回**并打印日志绝对路径 | `npx dsh-pm-boot`（Windows 双击：**包内** `bin\dsh-boot.cmd`） |
+| `bin/open-boot.mjs` | **唯一网页入口 + 常驻守护**（3081）：`/` 是"打开即启动"页；**`/plugins` 是兜底管理页**（v1.0）；`/rescue` 是救援页。设为浏览器主页即"打开即启动"。平时完全隐藏，只有引擎需要拉起时才弹一个可见启动窗口（`--no-window` 可关）。健康判定 = HTTP 握手 + 身份指纹；写接口带 Origin + 一次性令牌防护；`--uninstall` 一键清理（退出码 0/1/2，2 = 归属未确认时不动任何进程） | `npx dsh-drydock` |
+| `bin/rescue-daemon.mjs` | **独立备份救援守护**（默认端口 **3082**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。**不与 3081 抢端口**（被占时明确报错退出，不静默漂移） | `npx dsh-drydock-rescue`（默认 3082） |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 只自检+修复不启动；退出码 0=就绪 / 1=启动失败 / 2=修复未完成；启动即失败会**立即返回**并打印日志绝对路径 | `npx dsh-drydock-boot`（Windows 双击：**包内** `bin\dsh-boot.cmd`） |
 
 > 端口的完整分工、退出码表、写接口防护与 `--uninstall` 四步见 [docs/LAUNCHER.md](docs/LAUNCHER.md)；进程与槽位架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -154,13 +154,13 @@
 
 | 命令 | 作用 |
 |---|---|
-| `npx dsh-pm-launcher --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）单实例；只有 HTTP 握手失败才拉起，绝不误杀健康实例 |
-| `npx dsh-pm-launcher --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
-| `npx dsh-pm-launcher --status` | **状态自检 + 健康留痕**：启动器/守护/引擎/PID/cwd/日志与最后心跳；每次追加一行 `profile/health.log`（保留 7 天 / 1000 行） |
-| `npx dsh-pm-launcher --install-autostart` | **写开机自启**（Windows）：HKCU Run + 登录静默常驻；包装脚本正文纯 ASCII，中文用户名/含空格路径不乱码 |
-| `npx dsh-pm-launcher --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态；未安装时**幂等**（exit 0） |
-| `npx dsh-pm-launcher --uninstall` | **卸载闭环**：三重归属校验停守护 → 删 HKCU\...\Run 下**所有** `DSHWeb*` 值 → 删 shim → 清 pid（**日志保留**）。退出码 0=完成 / 1=出错 / **2=归属未确认**（不动任何进程、保留 pid）；引擎 3080 不动。管理器卸载自身前会自动调用它 |
-| `npx dsh-pm-launcher --help` / `npx dsh-pm-boot --help` | 显示用法（参数不再被静默忽略） |
+| `npx dsh-drydock --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）单实例；只有 HTTP 握手失败才拉起，绝不误杀健康实例 |
+| `npx dsh-drydock --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
+| `npx dsh-drydock --status` | **状态自检 + 健康留痕**：启动器/守护/引擎/PID/cwd/日志与最后心跳；每次追加一行 `profile/health.log`（保留 7 天 / 1000 行） |
+| `npx dsh-drydock --install-autostart` | **写开机自启**（Windows）：HKCU Run + 登录静默常驻；包装脚本正文纯 ASCII，中文用户名/含空格路径不乱码 |
+| `npx dsh-drydock --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态；未安装时**幂等**（exit 0） |
+| `npx dsh-drydock --uninstall` | **卸载闭环**：三重归属校验停守护 → 删 HKCU\...\Run 下**所有** `DSHWeb*` 值 → 删 shim → 清 pid（**日志保留**）。退出码 0=完成 / 1=出错 / **2=归属未确认**（不动任何进程、保留 pid）；引擎 3080 不动。管理器卸载自身前会自动调用它 |
+| `npx dsh-drydock --help` / `npx dsh-drydock-boot --help` | 显示用法（参数不再被静默忽略） |
 
 > **健康判定与"停引擎"的安全性**：引擎/启动器就绪 = **HTTP 握手成功且响应带 dsh 身份指纹**（裸 TCP 监听器一律判不健康）。端口被别的进程占用时明确报错，不静默换端口。`stopEngine()` 前三重校验（pid 存活 / 进程镜像 / 端口归属），不过一律拒绝，需要时可在救援页"强制停止"。PID 文件均为 JSON（`profile/.rescue-daemon.pid` / `.open-boot.pid`）。
 >
@@ -234,8 +234,8 @@ pnpm update dsh-drydock --latest --dir <profile>
 
 # 卸载：3081 兜底页「卸载」（带备份、验证与失败回滚），或
 dsh plugin --profile web remove dsh-drydock   # 卸载前自动清理自启/守护/shim
-npx dsh-pm-launcher --uninstall-autostart                # Windows：清理开机自启（幂等）
-npx dsh-pm-launcher --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
+npx dsh-drydock --uninstall-autostart                # Windows：清理开机自启（幂等）
+npx dsh-drydock --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
 ```
 
 ## 救援流程速查
@@ -247,10 +247,10 @@ npx dsh-pm-launcher --uninstall                          # 需要时：彻底清
 | 插件被禁用到界面起不来 | `http://127.0.0.1:3081/plugins` 直接 toggle（该页不依赖引擎） |
 | 某个插件把引擎打挂 | 3081 `/plugins` → mod 体检看 verdict → 禁用观察或卸载（带备份与验证） |
 | 卸载/更新被引擎占用 | 拒绝硬删并引导：先禁用 → 重启引擎 → 再操作 |
-| 需要独立于 3081 的备份救援入口 | `npx dsh-pm-rescue`（默认 3082，不抢端口） |
-| 想知道 3080/3081/3082/4081 到底什么状态 | `npx dsh-pm-launcher --status`（并追加一条 `health.log` 留痕） |
-| 命令行一键自检+启动 | `npx dsh-pm-boot`（启动）或 `npx dsh-pm-boot --repair-only`（只自检+修复） |
-| 彻底移除启动器 | `npx dsh-pm-launcher --uninstall`（退出码 2 = 归属未确认：不动任何进程） |
+| 需要独立于 3081 的备份救援入口 | `npx dsh-drydock-rescue`（默认 3082，不抢端口） |
+| 想知道 3080/3081/3082/4081 到底什么状态 | `npx dsh-drydock --status`（并追加一条 `health.log` 留痕） |
+| 命令行一键自检+启动 | `npx dsh-drydock-boot`（启动）或 `npx dsh-drydock-boot --repair-only`（只自检+修复） |
+| 彻底移除启动器 | `npx dsh-drydock --uninstall`（退出码 2 = 归属未确认：不动任何进程） |
 
 > **已知限制**：入口 token URL 只有在引擎 stdout 落到 `<DSH_HOME>/logs/web.log` 时才取得到（启动器经 `enginectl` 拉起时正常落盘）。若引擎由其他路径拉起（如 `dsh-boot` 的弹窗路径），3081 可能给不出可直接跳转的链接——到 `/rescue` 执行一次「重启引擎」即可恢复。
 
@@ -313,7 +313,7 @@ npm run pack                                 # build + npm pack（产出安装�
 | 装完界面还是旧的 / 新页面不出现 | 客户端 bundle 在引擎启动时加载：**必须重启 `dsh web`**（或让启动器重新拉起引擎） |
 | 启停插件后列表状态没变 | 引擎在启动时套用条目：配置已写入，**重启引擎后生效**（界面会在需要重启时提示） |
 | `dsh plugin add` 报 "Already up to date" 不更新 | pnpm 按版本号缓存 tarball；**修改后必须升版本号**再 add |
-| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/rescue` → 运行检查 → 修复 → 启动；或 `npx dsh-pm-boot --repair-only` |
+| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/rescue` → 运行检查 → 修复 → 启动；或 `npx dsh-drydock-boot --repair-only` |
 | 想禁用管理器自己 | 3080 界面内不可自禁：去 `http://127.0.0.1:3081/plugins`（独立于引擎存活）或用 `dsh plugin remove`；3080 内允许的是**卸载**（额外警告路径，自动清理自启） |
 | 列表分区和我认知的不一样 | v1.0 起按来源三分区（核心组件 / 引擎内置组件 / 用户插件）；「推荐」只是行内标签，不再是分区 |
 | 担心第三方网页能触发启动/停止 | 不会：写接口要**同源 `Origin` + 一次性令牌**，并发受单飞闸门限制（403 / 401 / 409）——见 [docs/LAUNCHER.md](docs/LAUNCHER.md) §4 |

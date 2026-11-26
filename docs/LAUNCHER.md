@@ -13,14 +13,14 @@
 
 | 命令 | 文件 | 角色 |
 |---|---|---|
-| `dsh-pm-launcher` | `bin/open-boot.mjs` | 3081 网页入口（启动页 + 救援页）+ 常驻守护 + 开机自启管理 + `--uninstall` 卸载闭环 |
-| `dsh-pm-boot` | `bin/dsh-boot.mjs` | Steam 式启动序列：自检 → 修复/隔离 → 拉起引擎 → 等就绪 |
-| `dsh-pm-rescue` | `bin/rescue-daemon.mjs` | 独立备份救援服务（默认 **3082**）：`verify` / `fix` / `start` / `stop` / `status` |
+| `dsh-drydock` | `bin/open-boot.mjs` | 3081 网页入口（启动页 + 救援页）+ 常驻守护 + 开机自启管理 + `--uninstall` 卸载闭环 |
+| `dsh-drydock-boot` | `bin/dsh-boot.mjs` | Steam 式启动序列：自检 → 修复/隔离 → 拉起引擎 → 等就绪 |
+| `dsh-drydock-rescue` | `bin/rescue-daemon.mjs` | 独立备份救援服务（默认 **3082**）：`verify` / `fix` / `start` / `stop` / `status` |
 
 ```sh
-npx dsh-pm-launcher --help
-npx dsh-pm-boot --help
-npx dsh-pm-rescue --help
+npx dsh-drydock --help
+npx dsh-drydock-boot --help
+npx dsh-drydock-rescue --help
 # 不想用 npx（或没装）：直接跑包内文件，路径与 cwd 无关
 node "<包目录>/bin/open-boot.mjs" --status
 ```
@@ -73,7 +73,7 @@ node "<包目录>/bin/open-boot.mjs" --supervise --profile "$env:USERPROFILE\.ds
 
 ## 3. 命令与退出码
 
-### `bin/open-boot.mjs`（`dsh-pm-launcher`）
+### `bin/open-boot.mjs`（`dsh-drydock`）
 
 | 命令 | 语义 | 退出码 |
 |---|---|---|
@@ -96,14 +96,14 @@ node "<包目录>/bin/open-boot.mjs" --supervise --profile "$env:USERPROFILE\.ds
 - **支持 `--profile=<目录>`** 写法（以前这种写法会落进 unknown 被静默忽略，目标悄悄变成默认 profile）；取值前后空白容忍（`trim`）后再绝对化。
 - 执行**全局动作**（写或删 `HKCU\...\Run` 下的 `DSHWeb*`、往 profile 写 `.vbs`）**之前**先过**目标闸门**：`--profile` 指向的目录必须**存在 + 是目录 + 含 `package.json` / `cordis.yml` / `cordis.yaml` / `cordis.patch.yml` 之一**；不满足 → **拒绝执行 + exit 1**（归入既有的 **1 = 出错**，**没有新增退出码档位**），且此时注册表与 shim 都不会被动过。
 
-### `bin/rescue-daemon.mjs`（`dsh-pm-rescue`）
+### `bin/rescue-daemon.mjs`（`dsh-drydock-rescue`）
 
 | 命令 | 语义 | 退出码 |
 |---|---|---|
 | `[--profile <dir>] [--port <n>] [--dsh <cmd>] [--cwd <dir>]` | 独立救援服务（默认 **3082**） | 常驻；端口被占 → **1**（不漂移） |
 | `--help` | 用法（含写接口防护说明） | **0** |
 
-### `bin/dsh-boot.mjs`（`dsh-pm-boot`）
+### `bin/dsh-boot.mjs`（`dsh-drydock-boot`）
 
 | 命令 | 语义 | 退出码 |
 |---|---|---|
@@ -137,7 +137,7 @@ Windows 双击等价物是**包内** `bin\dsh-boot.cmd`（只显示进度，引�
 
 ## 5. `--uninstall` 卸载闭环（R13）
 
-`npx dsh-pm-launcher --uninstall [--profile <dir>] [--port <n>]` 按四步清理，幂等（确认没有可清理项也 exit 0）。
+`npx dsh-drydock --uninstall [--profile <dir>] [--port <n>]` 按四步清理，幂等（确认没有可清理项也 exit 0）。
 
 **退出码三档**：**0** = 完成 / **1** = 出错 / **2** = **归属未确认** —— 当 `netstat`/`tasklist` 探测不可用（受限会话、安全策略拦命令）时，
 无法判断"进程是不是本 profile 的守护"，于是**不停止任何进程**、**保留** `<profile>\.open-boot.pid`（留线索）、
@@ -160,9 +160,9 @@ Windows 双击等价物是**包内** `bin\dsh-boot.cmd`（只显示进度，引�
 
 | 动作 | 命令 | 写什么 |
 |---|---|---|
-| 安装 | `npx dsh-pm-launcher --install-autostart` | `HKCU\...\Run\DSHWebFront` → `wscript` 调用 `open-boot-autostart.vbs`（登录静默常驻）与 `open-boot-ui.vbs`（确保 3081 后开浏览器） |
-| 查看 | `npx dsh-pm-launcher --autostart-status` | 只读：注册表值、shim 是否存在、守护是否持有锁端口 |
-| 移除 | `npx dsh-pm-launcher --uninstall-autostart`（或 `--uninstall`） | 删所有 `DSHWeb*` 值 + 两个 `.vbs`；未安装时 exit **0** |
+| 安装 | `npx dsh-drydock --install-autostart` | `HKCU\...\Run\DSHWebFront` → `wscript` 调用 `open-boot-autostart.vbs`（登录静默常驻）与 `open-boot-ui.vbs`（确保 3081 后开浏览器） |
+| 查看 | `npx dsh-drydock --autostart-status` | 只读：注册表值、shim 是否存在、守护是否持有锁端口 |
+| 移除 | `npx dsh-drydock --uninstall-autostart`（或 `--uninstall`） | 删所有 `DSHWeb*` 值 + 两个 `.vbs`；未安装时 exit **0** |
 
 - 包装脚本正文**纯 ASCII**，路径由 `WScript.ScriptFullName` 运行时自解析 —— 中文用户名/含空格路径不会乱码。
 - 自启项**只有本工具写**（迁移包 `deploy.ps1` 只调用本命令，不自己写注册表）；卸载插件后请执行 `--uninstall-autostart`，否则自启项会指向已删除的包。
@@ -183,10 +183,10 @@ Windows 双击等价物是**包内** `bin\dsh-boot.cmd`（只显示进度，引�
 
 ```sh
 # 恢复「当前 profile」的开机自启（写回 DSHWebFront + 重建两个 .vbs）
-npx dsh-pm-launcher --install-autostart
+npx dsh-drydock --install-autostart
 
 # 如果被删掉的是「另一个 profile」的自启项：在**那个 profile** 上重跑同一条命令
-npx dsh-pm-launcher --install-autostart --profile <那个 profile 目录>
+npx dsh-drydock --install-autostart --profile <那个 profile 目录>
 ```
 
 - 注册表里只有**一个**值名（`DSHWebFront`），所以语义是"**谁最后装谁生效**"——把自启指回你想要的那个 profile，就是重跑它的 `--install-autostart`。
@@ -195,8 +195,8 @@ npx dsh-pm-launcher --install-autostart --profile <那个 profile 目录>
 **③ 怎么核对**
 
 ```sh
-npx dsh-pm-launcher --autostart-status   # 只读（未安装也 exit 0；非 Windows 明确提示并 exit 1）
-npx dsh-pm-launcher --status             # 引擎 / 启动器 / 守护的真实状态 + health.log 最后一条
+npx dsh-drydock --autostart-status   # 只读（未安装也 exit 0；非 Windows 明确提示并 exit 1）
+npx dsh-drydock --status             # 引擎 / 启动器 / 守护的真实状态 + health.log 最后一条
 ```
 
 `--autostart-status` 会打印三项状态 + 最近心跳：
@@ -234,15 +234,15 @@ npx dsh-pm-launcher --status             # 引擎 / 启动器 / 守护的真实�
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 打开 3081 是别人的页面 | 端口被非本工具进程占用（工具不会漂移端口） | `npx dsh-pm-launcher --status` 看占用者 pid；结束它，或 `--port` 换端口并同步改浏览器主页/自启 |
-| `--status` 报守护未运行但 3081 能开 | 守护被外部结束过（锁端口已释放） | `npx dsh-pm-launcher --supervise` 重新常驻；日志见 `open-boot-supervisor.log` |
-| 引擎起不来 | 坏 bundle / 坏 patch / 端口被占 | ① 浏览器开 <http://127.0.0.1:3081/> →"运行检查 → 修复 → 启动"；② `npx dsh-pm-boot --repair-only` 看隔离列表；③ `npx dsh-pm-launcher --status` |
+| 打开 3081 是别人的页面 | 端口被非本工具进程占用（工具不会漂移端口） | `npx dsh-drydock --status` 看占用者 pid；结束它，或 `--port` 换端口并同步改浏览器主页/自启 |
+| `--status` 报守护未运行但 3081 能开 | 守护被外部结束过（锁端口已释放） | `npx dsh-drydock --supervise` 重新常驻；日志见 `open-boot-supervisor.log` |
+| 引擎起不来 | 坏 bundle / 坏 patch / 端口被占 | ① 浏览器开 <http://127.0.0.1:3081/> →"运行检查 → 修复 → 启动"；② `npx dsh-drydock-boot --repair-only` 看隔离列表；③ `npx dsh-drydock --status` |
 | 拉起引擎时弹窗 | 设计如此（只有真需要拉起时才弹可见窗口） | `--no-window` 关闭；守护模式默认静默 |
-| 3081 上打不开救援页 | 旧版本（0.9.0）的 `/rescue` 不在 open-boot 上 | 升级到 0.9.1；或临时用 `npx dsh-pm-rescue`（3082） |
-| 自启不生效 | 注册表项被手工删过 / 指向旧包 | `npx dsh-pm-launcher --autostart-status` → `--install-autostart` 重装 |
-| 卸载插件后仍开机弹东西 | 自启项没清 | `npx dsh-pm-launcher --uninstall-autostart` |
+| 3081 上打不开救援页 | 旧版本（0.9.0）的 `/rescue` 不在 open-boot 上 | 升级到 0.9.1；或临时用 `npx dsh-drydock-rescue`（3082） |
+| 自启不生效 | 注册表项被手工删过 / 指向旧包 | `npx dsh-drydock --autostart-status` → `--install-autostart` 重装 |
+| 卸载插件后仍开机弹东西 | 自启项没清 | `npx dsh-drydock --uninstall-autostart` |
 | 第三方网页能触发启动 | 不应该（L11 已拦） | 见 §4；若真被触发，请附 `Origin`/令牌情况报 issue |
-| `--uninstall` 返回 **exit 2**（归属未确认） | `netstat`/`tasklist` 探测不可用（受限会话、安全策略拦命令）→ 不知道进程是不是本 profile 的守护 | 这是**故意的保守行为**：没停任何进程、`.open-boot.pid` 被保留。先 `npx dsh-pm-launcher --status` 人工核对启动器/守护/引擎，再换一个能跑 `netstat`/`tasklist` 的会话重跑 `--uninstall` |
+| `--uninstall` 返回 **exit 2**（归属未确认） | `netstat`/`tasklist` 探测不可用（受限会话、安全策略拦命令）→ 不知道进程是不是本 profile 的守护 | 这是**故意的保守行为**：没停任何进程、`.open-boot.pid` 被保留。先 `npx dsh-drydock --status` 人工核对启动器/守护/引擎，再换一个能跑 `netstat`/`tasklist` 的会话重跑 `--uninstall` |
 | 从 `http://localhost:3081/` 打开启动页 | 0.9.1 起 `localhost` 与 `[::1]` 已在同源白名单内（同机同端口），可正常自动启动 | 若仍 403：确认端口与页面 URL 一致（换端口要用同一个端口打开），并附页面 `Origin` 值报 issue |
 | 命令只打了用法错误就结束（**exit 1**、stdout 为空） | `--profile` 取值缺失 / 被后面的开关占用（以 `-` 开头）/ 全空白 —— 例如 `--uninstall --profile --port 63001` | 这是**用法错误**：什么都没动过（注册表 / pid / 进程 / 日志都没碰）。补上取值，或写成 `--profile=<目录>`，再重跑 |
 | 提示"拒绝安装开机自启 / 拒绝执行"且 exit 1 | 目标闸门没过：`--profile` 指向的目录不存在、不是目录，或缺 `package.json` / `cordis*.yml` | 检查 `--profile` 是否指到了真正的 profile 目录（默认 `~/.dsh/profiles/web`）；闸门在动注册表之前生效，注册表与 shim 未被改动 |
@@ -251,7 +251,7 @@ npx dsh-pm-launcher --status             # 引擎 / 启动器 / 守护的真实�
 
 | 文档条目 | 代码位置（v0.9.1 工作树） |
 |---|---|
-| `dsh-pm-launcher` → `bin/open-boot.mjs`；`dsh-pm-boot` → `bin/dsh-boot.mjs`；`dsh-pm-rescue` → `bin/rescue-daemon.mjs` | `package.json` 的 `bin` 字段 |
+| `dsh-drydock` → `bin/open-boot.mjs`；`dsh-drydock-boot` → `bin/dsh-boot.mjs`；`dsh-drydock-rescue` → `bin/rescue-daemon.mjs` | `package.json` 的 `bin` 字段 |
 | 3081 = open-boot 唯一网页入口；3082 = rescue-daemon | `lib/ports.mjs`（`DEFAULT_LAUNCHER_PORT` / `DEFAULT_RESCUE_PORT` / `launcherPortFromEnv` / `rescuePortFromEnv`）；`bin/open-boot.mjs` 的 `RESCUE_DAEMON_PORT` + `HELP_TEXT` 端口分工段；`bin/rescue-daemon.mjs` 的 `PORT_DEFAULT` |
 | `DSH_ENGINE_PORT` 覆盖引擎端口（默认 3080） | `lib/ports.mjs` 的 `enginePortFromEnv` → `lib/enginectl.mjs` 的 `ENGINE_PORT`；`startEngine` 以 `["web","--port",String(port),"--no-open"]` 拉起 |
 | 锁端口 = `port + 1000` | `lib/ports.mjs` 的 `lockPortOf`（越界返回 null → 明确报错）；`bin/open-boot.mjs` 的 `acquireLock` 调用点、`--status`、`--autostart-status`、`collectOwnedDaemons`、`--uninstall` 输出 |

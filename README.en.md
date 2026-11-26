@@ -151,30 +151,30 @@ Five sections, switching keeps your scroll position:
 
 | Tool | What it does | Usage |
 |---|---|---|
-| `bin/open-boot.mjs` | **The single web entry + resident supervisor** (3081): `/` is the "open the browser and it starts" page, **`/rescue` is the rescue page** (with `/rescue/api/*`). Set it as your home page (`127.0.0.1` / `localhost` / `[::1]` are equivalent as long as the port matches). It stays hidden and only pops a visible progress window when the engine really needs starting (`--no-window` disables that). Health = **HTTP handshake + identity fingerprint**; write endpoints are guarded by **Origin + one-time token**; `--uninstall` cleans everything (stop supervisor → remove autostart → remove shims → clear pid; exit codes 0 = completed / 1 = error / **2 = ownership unconfirmed** — nothing stopped, pid file kept) | `npx dsh-pm-launcher` |
-| `bin/rescue-daemon.mjs` | **Independent backup rescue service** (default port **3082**): self-contained rescue page + `verify/fix/start/stop/status` API, no engine dependency. `stop` first verifies pid and port ownership (`{"force":true}` to force). **No longer competes with the 3081 launcher** (an occupied port is a hard error, never a silent port shift) | `npx dsh-pm-rescue` |
-| `bin/dsh-boot.mjs` / `.cmd` | **Steam-style boot sequence**: verify → auto-quarantine broken plugins → start → wait for health. `--repair-only` (self-check + repair only, no start), `--pause`, `--help`; exit codes 0 = ready / 1 = failed to start / 2 = repair incomplete. Immediate failures (bad command, port conflict) return at once with the absolute log path | `npx dsh-pm-boot` (double-clickable equivalent on Windows: `bin\dsh-boot.cmd` inside the package) |
+| `bin/open-boot.mjs` | **The single web entry + resident supervisor** (3081): `/` is the "open the browser and it starts" page, **`/rescue` is the rescue page** (with `/rescue/api/*`). Set it as your home page (`127.0.0.1` / `localhost` / `[::1]` are equivalent as long as the port matches). It stays hidden and only pops a visible progress window when the engine really needs starting (`--no-window` disables that). Health = **HTTP handshake + identity fingerprint**; write endpoints are guarded by **Origin + one-time token**; `--uninstall` cleans everything (stop supervisor → remove autostart → remove shims → clear pid; exit codes 0 = completed / 1 = error / **2 = ownership unconfirmed** — nothing stopped, pid file kept) | `npx dsh-drydock` |
+| `bin/rescue-daemon.mjs` | **Independent backup rescue service** (default port **3082**): self-contained rescue page + `verify/fix/start/stop/status` API, no engine dependency. `stop` first verifies pid and port ownership (`{"force":true}` to force). **No longer competes with the 3081 launcher** (an occupied port is a hard error, never a silent port shift) | `npx dsh-drydock-rescue` |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam-style boot sequence**: verify → auto-quarantine broken plugins → start → wait for health. `--repair-only` (self-check + repair only, no start), `--pause`, `--help`; exit codes 0 = ready / 1 = failed to start / 2 = repair incomplete. Immediate failures (bad command, port conflict) return at once with the absolute log path | `npx dsh-drydock-boot` (double-clickable equivalent on Windows: `bin\dsh-boot.cmd` inside the package) |
 
 #### Resident launcher and autostart
 
 | Command | Effect |
 |---|---|
-| `npx dsh-pm-launcher --supervise [--interval 60] [--heartbeat-min 10]` | **Resident supervisor**: quietly keeps 3081 alive; a lock port (`port+1000`) guarantees a single instance; only a failed HTTP handshake triggers a start — healthy instances are never killed. Writes four kinds of log lines (state change / heartbeat / exit / uncaught exception) to `profile/open-boot-supervisor.log` |
-| `npx dsh-pm-launcher --ensure` | One-shot: make sure the port has this launcher (exit 0/1) |
-| `npx dsh-pm-launcher --status` | **Status self-check + health trail**: launcher (handshake + identity) / supervisor (lock port ownership) / engine (3080 handshake) / pid file / cwd / logs and last heartbeat; exit 0 = launcher healthy. Reports the occupying pid when the port belongs to someone else. **Appends a `health.log` line every run** (7 days / 1000 lines kept) |
-| `npx dsh-pm-launcher --install-autostart` | **Install autostart** (Windows): writes `HKCU\...\Run\DSHWebFront` plus `open-boot-autostart.vbs` (silent resident on login) and `open-boot-ui.vbs` (ensure 3081 then open the browser). The wrapper scripts are pure ASCII and self-resolve their path, so non-ASCII user names or profile paths with spaces no longer break |
-| `npx dsh-pm-launcher --uninstall-autostart` / `--autostart-status` | Remove / inspect autostart (shim presence, supervisor liveness, whether the port is this launcher). Idempotent (exit 0) when nothing is installed |
-| `npx dsh-pm-launcher --uninstall` | **Uninstall loop (R13)**: stop this profile's supervisor (three-fold ownership check: pid file + lock port `port+1000` + process image; refuses and never touches other processes) → delete **all** `DSHWeb*` Run values (including the legacy `DSHWebRescue`) → delete both `.vbs` shims → clear `.open-boot.pid` (logs kept). Exit codes: **0** = completed (including a confirmed "nothing to clean") / **1** = error / **2** = **ownership unconfirmed** (`netstat`/`tasklist` probes unavailable: no process stopped, pid file kept, never reports "uninstall complete"). Still idempotent; the engine on 3080 is left alone. The manager calls it before uninstalling itself |
-| `npx dsh-pm-launcher --help` / `npx dsh-pm-boot --help` | Show usage (unknown flags are reported, not silently ignored) |
+| `npx dsh-drydock --supervise [--interval 60] [--heartbeat-min 10]` | **Resident supervisor**: quietly keeps 3081 alive; a lock port (`port+1000`) guarantees a single instance; only a failed HTTP handshake triggers a start — healthy instances are never killed. Writes four kinds of log lines (state change / heartbeat / exit / uncaught exception) to `profile/open-boot-supervisor.log` |
+| `npx dsh-drydock --ensure` | One-shot: make sure the port has this launcher (exit 0/1) |
+| `npx dsh-drydock --status` | **Status self-check + health trail**: launcher (handshake + identity) / supervisor (lock port ownership) / engine (3080 handshake) / pid file / cwd / logs and last heartbeat; exit 0 = launcher healthy. Reports the occupying pid when the port belongs to someone else. **Appends a `health.log` line every run** (7 days / 1000 lines kept) |
+| `npx dsh-drydock --install-autostart` | **Install autostart** (Windows): writes `HKCU\...\Run\DSHWebFront` plus `open-boot-autostart.vbs` (silent resident on login) and `open-boot-ui.vbs` (ensure 3081 then open the browser). The wrapper scripts are pure ASCII and self-resolve their path, so non-ASCII user names or profile paths with spaces no longer break |
+| `npx dsh-drydock --uninstall-autostart` / `--autostart-status` | Remove / inspect autostart (shim presence, supervisor liveness, whether the port is this launcher). Idempotent (exit 0) when nothing is installed |
+| `npx dsh-drydock --uninstall` | **Uninstall loop (R13)**: stop this profile's supervisor (three-fold ownership check: pid file + lock port `port+1000` + process image; refuses and never touches other processes) → delete **all** `DSHWeb*` Run values (including the legacy `DSHWebRescue`) → delete both `.vbs` shims → clear `.open-boot.pid` (logs kept). Exit codes: **0** = completed (including a confirmed "nothing to clean") / **1** = error / **2** = **ownership unconfirmed** (`netstat`/`tasklist` probes unavailable: no process stopped, pid file kept, never reports "uninstall complete"). Still idempotent; the engine on 3080 is left alone. The manager calls it before uninstalling itself |
+| `npx dsh-drydock --help` / `npx dsh-drydock-boot --help` | Show usage (unknown flags are reported, not silently ignored) |
 
-After installation the three commands come from the `bin` field of `package.json` (`dsh-pm-launcher` / `dsh-pm-boot` / `dsh-pm-rescue`). `npx` works without installing, and you can always run the file inside the package (path is independent of cwd):
+After installation the three commands come from the `bin` field of `package.json` (`dsh-drydock` / `dsh-drydock-boot` / `dsh-drydock-rescue`). `npx` works without installing, and you can always run the file inside the package (path is independent of cwd):
 
 ```sh
 node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --status
 ```
 
 - **Shared modules**: `lib/preflight.mjs` (standalone self-check/repair, same logic as the host's `verifyProfile`/`fixProfile`), `lib/enginectl.mjs` (engine probing/start/stop/pid management + the write-endpoint guards).
-- **Troubleshooting**: engine will not start → ① open `http://127.0.0.1:3081/` (`http://localhost:3081/` is equivalent) → "check → repair → start"; ② `npx dsh-pm-boot --repair-only` to see the quarantine list; ③ `npx dsh-pm-launcher --status` for the real state of launcher/supervisor/engine plus the last `health.log` line; ④ interactive start with `npx dsh-pm-boot`.
+- **Troubleshooting**: engine will not start → ① open `http://127.0.0.1:3081/` (`http://localhost:3081/` is equivalent) → "check → repair → start"; ② `npx dsh-drydock-boot --repair-only` to see the quarantine list; ③ `npx dsh-drydock --status` for the real state of launcher/supervisor/engine plus the last `health.log` line; ④ interactive start with `npx dsh-drydock-boot`.
 - **Full command/exit-code tables, the four `--uninstall` steps and a troubleshooting table**: [docs/LAUNCHER.md](docs/LAUNCHER.md). Architecture and slot contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 > **Health semantics and the safety of "stop engine"**: ready = **HTTP handshake succeeded and the response carries a DSH identity fingerprint** (a bare TCP listener is never considered healthy). So when 3080, 3081 or 3082 is occupied by something else, the tools **fail loudly instead of pretending to be ready** and never shift ports silently. `stopEngine()` runs three checks first (pid alive / process image is node·dsh / the port owner matches the recorded pid) and refuses otherwise, explaining why on the rescue page (a "force stop" button — or `POST /api/stop {"force":true}` — is available there). Pid files: `.rescue-daemon.pid` (engine) and `.open-boot.pid` (launcher), both JSON.
@@ -222,7 +222,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --statu
 | GitHub API: `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com` | read releases and repository `package.json`, download tgz | same |
 | Catalog `awesome-dsh-plugin.com/plugins.json` | market catalog (10-minute host cache) | same |
 | Loopback ports `3080` / `3081` / `3082` (+ lock `4081 = 3081+1000`) | main UI / launcher + rescue page / backup rescue service / single-instance lock — bound to `127.0.0.1` only | No (never leaves the machine) |
-| Windows registry `HKCU\...\Run\DSHWebFront` + profile `open-boot-autostart.vbs`, `open-boot-ui.vbs` | written **only when you explicitly run `--install-autostart`**; cleaned by `npx dsh-pm-launcher --uninstall-autostart` (or `--uninstall`) | No |
+| Windows registry `HKCU\...\Run\DSHWebFront` + profile `open-boot-autostart.vbs`, `open-boot-ui.vbs` | written **only when you explicitly run `--install-autostart`**; cleaned by `npx dsh-drydock --uninstall-autostart` (or `--uninstall`) | No |
 | Profile `.rescue-daemon.pid`, `.open-boot.pid`, `rescue-daemon.log`, `open-boot-supervisor.log`, `health.log` | pids, logs and the self-check trail (`health.log` keeps 7 days / 1000 lines) | No |
 
 > **What it never touches**: conversation content, `settings.yaml`, `.credentials.yaml` (API keys) — there is no code path reading them in `lib/`.
@@ -264,8 +264,8 @@ Uninstall:
 
 ```sh
 dsh plugin --profile web remove dsh-plugin-manager-pro   # calls --uninstall below to clean autostart/supervisor/shims first
-npx dsh-pm-launcher --uninstall-autostart                # Windows: remove autostart (idempotent)
-npx dsh-pm-launcher --uninstall                          # optional: remove every launcher trace (stop supervisor + delete DSHWeb* + shims + pid)
+npx dsh-drydock --uninstall-autostart                # Windows: remove autostart (idempotent)
+npx dsh-drydock --uninstall                          # optional: remove every launcher trace (stop supervisor + delete DSHWeb* + shims + pid)
 ```
 
 ## Rescue quick reference
@@ -273,13 +273,13 @@ npx dsh-pm-launcher --uninstall                          # optional: remove ever
 | Situation | What to do |
 |---|---|
 | Engine is fine, UI is broken | `http://127.0.0.1:3080/rescue` (rescue page / 🛟 button) |
-| Engine will not start | `http://127.0.0.1:3081/rescue` (the launcher's rescue page; `/` is the "open and it starts" page; `http://localhost:3081/…` is equivalent) → check → repair → start. Independent backup entry: `npx dsh-pm-rescue` (port **3082**) |
-| Want "open the browser and it starts" | Set your home page to `http://127.0.0.1:3081/` (`http://localhost:3081/` is equivalent — same host and port); make it resident with `npx dsh-pm-launcher --install-autostart` |
-| Want 3081 resident without windows | `npx dsh-pm-launcher --supervise` (silent; a visible window appears only when the engine must be started; `--no-window` disables it) |
-| Want the state of 3080/3081/3082/4081 | `npx dsh-pm-launcher --status` (launcher identity / lock ownership / engine handshake / pid files / last heartbeat) and one `health.log` line |
-| Remove every launcher trace | `npx dsh-pm-launcher --uninstall` (exit codes 0 = completed / 1 = error / **2 = ownership unconfirmed**: nothing is stopped and the pid file is kept — re-run from a session where `netstat`/`tasklist` work; the engine on 3080 and the logs stay) |
+| Engine will not start | `http://127.0.0.1:3081/rescue` (the launcher's rescue page; `/` is the "open and it starts" page; `http://localhost:3081/…` is equivalent) → check → repair → start. Independent backup entry: `npx dsh-drydock-rescue` (port **3082**) |
+| Want "open the browser and it starts" | Set your home page to `http://127.0.0.1:3081/` (`http://localhost:3081/` is equivalent — same host and port); make it resident with `npx dsh-drydock --install-autostart` |
+| Want 3081 resident without windows | `npx dsh-drydock --supervise` (silent; a visible window appears only when the engine must be started; `--no-window` disables it) |
+| Want the state of 3080/3081/3082/4081 | `npx dsh-drydock --status` (launcher identity / lock ownership / engine handshake / pid files / last heartbeat) and one `health.log` line |
+| Remove every launcher trace | `npx dsh-drydock --uninstall` (exit codes 0 = completed / 1 = error / **2 = ownership unconfirmed**: nothing is stopped and the pid file is kept — re-run from a session where `netstat`/`tasklist` work; the engine on 3080 and the logs stay) |
 | Port 3081 serves someone else's page | The port belongs to another process: `--status` reports the pid; kill it or change `--port` and update your home page (the tool **never** shifts ports silently) |
-| Command-line check & start | `npx dsh-pm-boot` (start) or `npx dsh-pm-boot --repair-only` (check + repair only); on Windows double-click `bin\dsh-boot.cmd` inside the package |
+| Command-line check & start | `npx dsh-drydock-boot` (start) or `npx dsh-drydock-boot --repair-only` (check + repair only); on Windows double-click `bin\dsh-boot.cmd` inside the package |
 | Installed but the UI is still old | The engine loads client bundles at startup — restart `dsh web` (or let the launcher restart the engine) |
 | Toggling a plugin does not change anything | The engine applies entries at startup: the change is written immediately but needs an engine restart (the UI tells you when) |
 
@@ -324,7 +324,7 @@ Docs: [docs/RELEASING.md](docs/RELEASING.md) (release flow), [docs/ARCHITECTURE.
 | Installed but the UI is still the old one / no new page | Client bundles load at engine startup: **restart `dsh web`** (or let the launcher restart the engine) |
 | Plugin state does not change after toggling | The engine applies entries at startup: written to config immediately, **effective after an engine restart** |
 | `dsh plugin add` says "Already up to date" | pnpm caches tarballs by version: **bump the version** before adding again |
-| Engine will not start (broken bundle in `package.json`) | Open `http://127.0.0.1:3081/rescue` → check → repair → start; or `npx dsh-pm-boot --repair-only` |
+| Engine will not start (broken bundle in `package.json`) | Open `http://127.0.0.1:3081/rescue` → check → repair → start; or `npx dsh-drydock-boot --repair-only` |
 | No `/rescue` on 3081 | 0.9.0 and earlier only had the rescue flow on the launcher's `/` (or on the 3082 service). 0.9.1 serves `/rescue` and `/rescue/api/*` on 3081 — upgrade the plugin |
 | Worried a third-party page can trigger start/stop | It cannot: write endpoints require a **same-origin `Origin`** — same host *and* the same port only, i.e. `127.0.0.1` / `localhost` / `[::1]`, **never derived from the `Host`/`Referer` header** — plus a one-time token (`X-DSH-PM-Token`; a missing `Origin` still needs it, otherwise 401), and they are single-flighted (403 / 401 / 409) — see [docs/LAUNCHER.md](docs/LAUNCHER.md) §4 |
 | Browser reports `waiting for service: remote.xxx` | A client `inject` must not include its own remote (deadlock); inject only keeps `["slots","locale","remote"]` |

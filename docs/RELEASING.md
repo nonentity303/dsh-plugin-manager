@@ -223,13 +223,13 @@ npm run publish:npm:apply  # ④ 真发；发布后自动核对 registry 并打�
 
 | 命令 | 文件 | 用途 |
 |---|---|---|
-| `dsh-pm-launcher` | `bin/open-boot.mjs` | 3081 **唯一网页入口**（启动页 `/` + 救援页 `/rescue` + `/api/*`）+ 常驻守护（`--supervise`/`--ensure`/`--status`/`--autostart-status`/`--install-autostart`/`--uninstall-autostart`）+ `--uninstall` 卸载闭环 |
-| `dsh-pm-boot` | `bin/dsh-boot.mjs` | 启动序列：verify → fix → 拉起引擎 → 健康等待（`--repair-only`） |
-| `dsh-pm-rescue` | `bin/rescue-daemon.mjs` | 独立**备份**救援服务（默认 **3082**；verify/fix/start/stop/status API） |
+| `dsh-drydock` | `bin/open-boot.mjs` | 3081 **唯一网页入口**（启动页 `/` + 救援页 `/rescue` + `/api/*`）+ 常驻守护（`--supervise`/`--ensure`/`--status`/`--autostart-status`/`--install-autostart`/`--uninstall-autostart`）+ `--uninstall` 卸载闭环 |
+| `dsh-drydock-boot` | `bin/dsh-boot.mjs` | 启动序列：verify → fix → 拉起引擎 → 健康等待（`--repair-only`） |
+| `dsh-drydock-rescue` | `bin/rescue-daemon.mjs` | 独立**备份**救援服务（默认 **3082**；verify/fix/start/stop/status API） |
 
 > 端口、退出码、写接口防护与 `--uninstall` 四步的完整口径见 [`LAUNCHER.md`](LAUNCHER.md)（该文件与实现逐条核对，附「文档条目 → 代码位置」核对表）。
 
-安装后可直接 `npx dsh-pm-launcher --help`，或在包目录里 `node node_modules/dsh-drydock/bin/open-boot.mjs --help`。
+安装后可直接 `npx dsh-drydock --help`，或在包目录里 `node node_modules/dsh-drydock/bin/open-boot.mjs --help`。
 **不要在 README/文档里写裸相对路径 `node bin/...`**——那只对"cwd 恰好在包根"的开发者成立。
 
 ## 5. 迁移包 vendor 刷新（审计④ R3/R15 → F5）
@@ -272,9 +272,9 @@ git push && git push --tags
 ```
 
 - npm 已发布版本与仓库 `version` 必须能对上；`git tag` 也要补齐（历史上 tag 停在 v0.6.9，与 npm 上的 0.8.x 脱节）。
-- 自启注册表所有权（审计④ R4/R5）：**只有 `dsh-pm-launcher --install-autostart` 写 `HKCU\...\Run\DSHWebFront`**。
+- 自启注册表所有权（审计④ R4/R5）：**只有 `dsh-drydock --install-autostart` 写 `HKCU\...\Run\DSHWebFront`**。
   迁移包 `deploy.ps1` 不再自建 `.vbs`、也不再写该键，它只调用包内 `--install-autostart`（失败时打印警告，不静默降级）。
-  卸载统一走 `dsh-pm-launcher --uninstall-autostart`。
+  卸载统一走 `dsh-drydock --uninstall-autostart`。
 
 ## 7. 派生补丁包 0.8.3（核心修复回移到 0.8.x UI）
 
@@ -397,7 +397,7 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 #    a. 启动日志里**不出现** `dsh: warning: N entries did not activate`
 #    b. 侧边栏出现「插件管理」，五个分区齐备（截图存证）
 #    c. 第三方配置卡片（如 dsh-free-search 的行内配置）能展开
-#    d. `npx dsh-pm-launcher --status` 对隔离 profile 报三进程正常
+#    d. `npx dsh-drydock --status` 对隔离 profile 报三进程正常
 ```
 
 彩排结论写进 `docs/releases/<版本>.md` 的「验证」段（历史样例见 `RELEASE_NOTES_0.8.3-1.md`：**引擎 0.1.7-rc.2：零条目失败**），

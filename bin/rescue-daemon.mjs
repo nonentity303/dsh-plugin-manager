@@ -40,8 +40,9 @@ import { fileURLToPath } from "node:url";
 import { verifyProfile, fixProfile, isolateFailedEntries } from "../lib/preflight.mjs";
 import { entryUrlOf, launcherPortFromEnv, rescuePortFromEnv } from "../lib/ports.mjs";
 import {
-	ENGINE_PORT, RESCUE_APP, chdirStable, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
-	launcherHealth, newApiToken, portOwner, probe, readPidInfo, startEngineWithQuarantine, stopEngine, validatePortValue
+	ENGINE_PORT, RESCUE_APP, chdirStable, corsPreflightResponse, corsResponseHeaders, createSingleFlight, engineHealth, guardWriteRequest, isAlive,
+	launcherHealth, newApiToken, portOwner, probe, readPidInfo, startEngineWithQuarantine, stopEngine, validatePortValue,
+	writeOriginPolicyFromEnv
 } from "../lib/enginectl.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -79,6 +80,11 @@ const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
   --cwd <dir>       引擎/守护工作目录（默认用户主目录）
   --help            显示本帮助
 
+环境变量：
+  DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1  允许桌面版页面来源 dsh-app://app 的写请求（默认关；网页版不要开）
+  DSH_DRYDOCK_DESKTOP_TOKEN=<48hex>   桌面版令牌（宿主用 mintDesktopToken() 生成，同时交给本服务与桌面页面）
+  DSH_DRYDOCK_ALLOW_NULL_ORIGIN=1     桌面页面确实发 Origin: null 时再开（需同时开上面第一项；只认桌面令牌）
+
 端口分工（v0.9.1 起）：
   3080 = dsh 引擎；3081 = open-boot（唯一网页入口，已含 /rescue 页面 + /rescue/api/* 完整救援能力）；
   3082 = 本守护（独立备份入口）。浏览器主页/桌面快捷方式请指向 3081。
@@ -87,6 +93,10 @@ const HELP_TEXT = `DSH 独立救援守护（默认 3082 = 备用救援入口）
 页面按钮：启动引擎并打开主界面 / 运行检查 / 修复引擎配置 / 状态 / 停止引擎（带校验，可强制）
 
 写接口防护：POST /api/fix|start|stop 需要同源 Origin + 一次性令牌（页面会自动带上）；
+桌面版（1.1.0）页面来源是 dsh-app://app，需显式 DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1 才放行（令牌照旧校验）。
+CORS 预检（1.1.0 M6）：桌面页带 X-DSH-PM-Token 跨源 fetch 时浏览器先发 OPTIONS —— 本守护直接应答
+  204 + Access-Control-Allow-Origin/Methods/Headers/Max-Age（只回显被允许的那个 Origin，绝不 *）；
+  来源不被允许的 OPTIONS → 403 且不回任何 Allow 头；预检排在令牌校验之前（规范要求，预检不带令牌）。
 读取接口 GET /api/status|verify 保持开放，供本地工具探测。
 `;
 
@@ -134,7 +144,9 @@ function readBody(req, limit = 8192) {
  */
 async function handleApi(pathname, method, req, res, url, ctx = args) {
 	const json = (code, body) => {
-		res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+		// v1.1.0 M6（S6）：正式响应补 CORS 头（预检过了、正式响应没带 Access-Control-Allow-Origin 浏览器照样拦）。
+		// 头由调用方（本守护/挂载它的 open-boot）在 handler 入口按同一套 Origin 白名单算好，只回显被允许的 Origin，绝不 *
+		res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", ...(res.dshCorsHeaders || {}) });
 		res.end(JSON.stringify(body));
 	};
 	if (!ctx || typeof ctx !== "object" || !ctx.profile) {
@@ -337,6 +349,10 @@ function main() {
 
 	// L11：一次性令牌（每次启动随机生成）只注入页面 meta 与请求头，**不写日志、不落 profile 文件**
 	const token = newApiToken();
+	// v1.1.0 M2（契约 F1/F2）：桌面版渲染进程的页面来源是自定义协议 `dsh-app://app`，桌面页发来的写请求
+	// Origin 会被同源白名单判成"跨站"→403。默认全关，只有 DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1 才多认这一个
+	// 固定来源；令牌照旧校验（桌面令牌由宿主经 DSH_DRYDOCK_DESKTOP_TOKEN 同时交给服务与桌面页面）。
+	const writeOriginPolicy = writeOriginPolicyFromEnv();
 	const flight = createSingleFlight("rescue-write");
 	const ctx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
 	const entryUrl = entryUrlOf(launcherPortFromEnv()) || "http://127.0.0.1:3081/";
@@ -353,6 +369,19 @@ function main() {
 	const server = createServer(async (req, res) => {
 		const url = new URL(req.url, "http://127.0.0.1");
 		const pathname = url.pathname;
+		// v1.1.0 M6（S6，P0 收尾）：CORS 预检分支 —— 必须排在路由与 `guardWriteRequest` **之前**
+		// （预检请求按 CORS 规范不带令牌；桌面版页面来源 dsh-app://app 带 X-DSH-PM-Token 跨源 fetch 本端口时
+		// 浏览器必定先发 OPTIONS）。来源被允许 → 204 + Allow-*（回显被允许的 Origin，绝不 *）；
+		// 来源不被允许 → 403 且不回任何 Allow 头。既有 guardWriteRequest 判定一行未改。
+		const allowDesktopApp = writeOriginPolicy.allowDesktopApp;
+		const corsHeaders = corsResponseHeaders(req, { port: args.port, allowDesktopApp });
+		if (corsHeaders) res.dshCorsHeaders = corsHeaders; // handleApi 的 json() 复用它给正式响应补 Allow-Origin + Vary
+		const pre = corsPreflightResponse(req, { port: args.port, allowDesktopApp });
+		if (pre) {
+			res.writeHead(pre.status, pre.message ? { "Content-Type": "application/json; charset=utf-8", ...pre.headers } : { ...pre.headers });
+			res.end(pre.message ? JSON.stringify({ ok: false, code: pre.status, error: pre.message }) : "");
+			return;
+		}
 		if (pathname === "/" || pathname === "/rescue") {
 			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
 			res.end(pageHtml);
@@ -360,9 +389,9 @@ function main() {
 		}
 		// 写接口防护①②（L11）：Origin + 一次性令牌；读取接口（GET /api/status|verify）保持可被本地工具探测
 		if (req.method === "POST") {
-			const failure = guardWriteRequest(req, { port: args.port, token });
+			const failure = guardWriteRequest(req, { port: args.port, token, ...writeOriginPolicy });
 			if (failure) {
-				res.writeHead(failure.status, { "Content-Type": "application/json; charset=utf-8" });
+				res.writeHead(failure.status, { "Content-Type": "application/json; charset=utf-8", ...(res.dshCorsHeaders || {}) });
 				res.end(JSON.stringify({ ok: false, code: failure.code, error: failure.message }));
 				return;
 			}

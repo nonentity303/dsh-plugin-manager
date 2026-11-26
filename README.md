@@ -42,6 +42,7 @@
 | 启动页（3081） | `http://127.0.0.1:3081/` | 打开即自检并启动引擎（浏览器主页设为它 = "打开即启动"） |
 | 救援球 🛟 | 3080 右下角浮动按钮 | 可拖动换位（位置持久记忆），单击打开救援页 |
 | 救援页 | `http://127.0.0.1:3081/rescue` | verify / fix / start / stop / status 全套修复能力 |
+| **离线诊断（CLI）** | `npx dsh-drydock-doctor` | v1.1.0：**只读**收集环境 / profile / 桌面锁 / 崩溃报告 / 操作记录 / 端口事实，产出可粘贴的中文报告；不写盘、不启停进程 |
 
 ## ✨ 亮点
 
@@ -144,9 +145,9 @@
 
 | 工具 | 用途 | 用法 |
 |---|---|---|
-| `bin/open-boot.mjs` | **唯一网页入口 + 常驻守护**（3081）：`/` 是"打开即启动"页；**`/plugins` 是兜底管理页**（v1.0）；`/rescue` 是救援页。设为浏览器主页即"打开即启动"。平时完全隐藏，只有引擎需要拉起时才弹一个可见启动窗口（`--no-window` 可关）。健康判定 = HTTP 握手 + 身份指纹；写接口带 Origin + 一次性令牌防护；`--uninstall` 一键清理（退出码 0/1/2，2 = 归属未确认时不动任何进程） | `npx dsh-pm-launcher` |
-| `bin/rescue-daemon.mjs` | **独立备份救援守护**（默认端口 **3082**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。**不与 3081 抢端口**（被占时明确报错退出，不静默漂移） | `npx dsh-pm-rescue`（默认 3082） |
-| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 只自检+修复不启动；退出码 0=就绪 / 1=启动失败 / 2=修复未完成；启动即失败会**立即返回**并打印日志绝对路径 | `npx dsh-pm-boot`（Windows 双击：**包内** `bin\dsh-boot.cmd`） |
+| `bin/open-boot.mjs` | **唯一网页入口 + 常驻守护**（3081）：`/` 是"打开即启动"页；**`/plugins` 是兜底管理页**（v1.0）；`/rescue` 是救援页。设为浏览器主页即"打开即启动"。平时完全隐藏，只有引擎需要拉起时才弹一个可见启动窗口（`--no-window` 可关）。健康判定 = HTTP 握手 + 身份指纹；写接口带 Origin + 一次性令牌防护；`--uninstall` 一键清理（退出码 0/1/2，2 = 归属未确认时不动任何进程） | `npx dsh-drydock` |
+| `bin/rescue-daemon.mjs` | **独立备份救援守护**（默认端口 **3082**）：自包含中文救援页 + `verify/fix/start/stop/status` API，不依赖主引擎。**不与 3081 抢端口**（被占时明确报错退出，不静默漂移） | `npx dsh-drydock-rescue`（默认 3082） |
+| `bin/dsh-boot.mjs` / `.cmd` | **Steam 式启动序列**：verify → 自动隔离坏插件 → 启动 → 健康等待。`--repair-only` 只自检+修复不启动；退出码 0=就绪 / 1=启动失败 / 2=修复未完成；启动即失败会**立即返回**并打印日志绝对路径 | `npx dsh-drydock-boot`（Windows 双击：**包内** `bin\dsh-boot.cmd`） |
 
 > 端口的完整分工、退出码表、写接口防护与 `--uninstall` 四步见 [docs/LAUNCHER.md](docs/LAUNCHER.md)；进程与槽位架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -154,17 +155,115 @@
 
 | 命令 | 作用 |
 |---|---|
-| `npx dsh-pm-launcher --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）单实例；只有 HTTP 握手失败才拉起，绝不误杀健康实例 |
-| `npx dsh-pm-launcher --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
-| `npx dsh-pm-launcher --status` | **状态自检 + 健康留痕**：启动器/守护/引擎/PID/cwd/日志与最后心跳；每次追加一行 `profile/health.log`（保留 7 天 / 1000 行） |
-| `npx dsh-pm-launcher --install-autostart` | **写开机自启**（Windows）：HKCU Run + 登录静默常驻；包装脚本正文纯 ASCII，中文用户名/含空格路径不乱码 |
-| `npx dsh-pm-launcher --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态；未安装时**幂等**（exit 0） |
-| `npx dsh-pm-launcher --uninstall` | **卸载闭环**：三重归属校验停守护 → 删 HKCU\...\Run 下**所有** `DSHWeb*` 值 → 删 shim → 清 pid（**日志保留**）。退出码 0=完成 / 1=出错 / **2=归属未确认**（不动任何进程、保留 pid）；引擎 3080 不动。管理器卸载自身前会自动调用它 |
-| `npx dsh-pm-launcher --help` / `npx dsh-pm-boot --help` | 显示用法（参数不再被静默忽略） |
+| `npx dsh-drydock --supervise [--interval 60] [--heartbeat-min 10]` | **常驻守护**：静默确保 3081 有服务；锁端口（`port+1000`）单实例；只有 HTTP 握手失败才拉起，绝不误杀健康实例 |
+| `npx dsh-drydock --ensure` | 一次性确保 3081（桌面快捷方式用，退出码 0/1） |
+| `npx dsh-drydock --status` | **状态自检 + 健康留痕**：启动器/守护/引擎/PID/cwd/日志与最后心跳；每次追加一行 `profile/health.log`（保留 7 天 / 1000 行） |
+| `npx dsh-drydock --install-autostart` | **写开机自启**（Windows）：HKCU Run + 登录静默常驻；包装脚本正文纯 ASCII，中文用户名/含空格路径不乱码 |
+| `npx dsh-drydock --uninstall-autostart` / `--autostart-status` | 移除自启 / 查看状态；未安装时**幂等**（exit 0） |
+| `npx dsh-drydock --uninstall` | **卸载闭环**：三重归属校验停守护 → 删 HKCU\...\Run 下**所有** `DSHWeb*` 值 → 删 shim → 清 pid（**日志保留**）。退出码 0=完成 / 1=出错 / **2=归属未确认**（不动任何进程、保留 pid）；引擎 3080 不动。管理器卸载自身前会自动调用它 |
+| `npx dsh-drydock --help` / `npx dsh-drydock-boot --help` | 显示用法（参数不再被静默忽略） |
 
 > **健康判定与"停引擎"的安全性**：引擎/启动器就绪 = **HTTP 握手成功且响应带 dsh 身份指纹**（裸 TCP 监听器一律判不健康）。端口被别的进程占用时明确报错，不静默换端口。`stopEngine()` 前三重校验（pid 存活 / 进程镜像 / 端口归属），不过一律拒绝，需要时可在救援页"强制停止"。PID 文件均为 JSON（`profile/.rescue-daemon.pid` / `.open-boot.pid`）。
 >
 > ⚠️ **实现注意**：自启包装脚本一律「wscript → node」，不用隐藏 PowerShell（会被部分杀软误判删除）；守护拉起引擎时刻意不加 `windowsHide`。
+
+## 🖥️ 桌面版（DSH Desktop）支持（v1.1.0 新增）
+
+> **一句话定位**：桌面版不是"加个 target"，而是把 drydock 的**控制面**降级成「编排层 + 只读诊断 + 离线修复」。
+> 网页版保持"我全权负责"，桌面版承认"**应用负责执行，我负责判断、记录、修下一次启动**"。
+
+### 为什么只做灾备，不做接管
+
+桌面版官方已经把安装、启停、更新、卸载、内置运行时、单实例锁、后台任务、崩溃恢复、操作日志、更新协调**全部吃进 app 了**。你在桌面版做管理台，是去跟官方抢同一个正面位置，而且会撞上一条硬约束：
+
+官方 `@deepseek-ai/dsh-official-bundles` 导出的 `PROTECTED_PLUGINS`（17 项）里明确包含 **`@deepseek-ai/dsh-client-ui-plugin-manager`**，注释原文是 *"Plugin packages the plugin manager refuses to disable or remove, because management itself needs them"*。drydock 在网页版接管插件页的核心动作，正是**停用这个包**。网页版靠 patch 层能跑，桌面版一旦失效就是**静默空白**（官方 issue #2403 已证明这类失效不报错）。
+
+而桌面版真正剩下的缺口是：**Electron 起不来 / 插件把引擎拖死时，用户没有任何出路**——他们不会开终端、不知道 `DSH_HOME` 在哪、看不懂 `cordis.patch.yml`、连日志在哪都不知道。官方的 `fatal-recovery` 再完善也在 Electron 进程里；**进程起不来它就不在**。
+
+所以 drydock 在桌面版只做三件官方覆盖不到的事：**离线只读诊断、恢复后自愈、官方通道重建救援 profile**。
+
+### 能力边界（不默默缺失）
+
+| 能力 | 网页版 | 桌面版 | 桌面版为什么这样 |
+|---|:--:|:--:|---|
+| 接管官方插件页 | ✅ | ❌ | 撞 `PROTECTED_PLUGINS`；失效形态是静默空白 |
+| 现跑 pnpm 增删 | ✅ | ⛔ 门控 | Electron 持 `profiles/desktop/lock` 时**一律拒绝**；需完全退出后重开 |
+| 启停/配置热切换 | ✅ | 🟡 分级授权 | 允许 `cordis.patch.yml` 级可逆写（有备份、只动带归属标记的行），**不做** pnpm 级增删 |
+| 开机自启 / 浏览器即启动器 | ✅ | ❌ | 官方托盘 + 后台任务 + 更新协调已覆盖；叠加 = 双份自启抢 `HKCU\Run` |
+| 内置插件市场 | ✅ | ❌ | 交给官方 `dsh-experimental-plugin-market-bundle` + dshmarket |
+| 拉起 / 停止 / 重启引擎 | ✅ | ❌ | 单实例 + 特权 IPC 是应用的；抢了就变成"装了 drydock 桌面版起不来" |
+| **离线只读诊断报告** | ✅ | ✅ **主战场** | 官方没有；普通用户最缺 |
+| **恢复后自愈** | — | ✅ **主战场** | 官方恢复会埋掉运维层（见下） |
+| **官方通道重建救援 profile** | ✅ | ✅ **主战场** | 走 `dsh rescue --from-default-profile web` |
+
+> UI 上被关掉的每一项都能点开看**一句话理由**（"灰着但告诉你为什么"）。"能点但失败"是最差形态。
+
+### 三个桌面版专用入口
+
+```sh
+# ① 离线只读诊断：不写盘、不碰锁、不启停进程；产出可直接粘贴给插件作者/官方的中文报告
+npx dsh-drydock-doctor                 # 人读报告
+npx dsh-drydock-doctor --json          # 机器可读
+npx dsh-drydock-doctor --profile desktop --include-logs
+npx dsh-drydock-doctor --out 诊断.txt   # 显式落盘（默认不落盘）
+
+# ② 官方恢复后自愈：官方恢复把 cordis.patch.yml 改名 .bak-<时间戳> 并建空 patch，
+#    你的归属行/开关行/隔离行全丢 —— 从侧车 plugin-manager.json 与 .rescue-bak-* 重建
+npx dsh-drydock-boot --heal-recovery                      # 默认 dry-run：只打印计划，不动盘
+npx dsh-drydock-boot --heal-recovery --apply --confirm web # 真写（要双确认）
+
+# ③ 走官方通道重建救援 profile（不碰 desktop profile、不需要绕官方门禁）
+npx dsh-drydock-boot --rescue-profile
+```
+
+**自愈的安全边界**：桌面版持锁时**整个目录一个字节都不改**，并明确告诉你"请从系统托盘**完全退出**（不是关窗口）后重开"；只动带归属标记的行；写前 `.rescue-bak-*` 备份、原子写、写完重读复检、失败自动回滚；**不写 `package.json`、不碰 `node_modules`、不写 `state.json`**。
+
+### 官方恢复到底干了什么（这是自愈的存在理由）
+
+官方桌面版的致命故障恢复对话框（"禁用第三方插件、备份 profile patch 并重启"）在官方文档里写得很清楚：
+
+> 原生恢复操作在 profile 事务锁内调用共享 app-boot 恢复函数。它**禁用第三方 bundle**，并将 profile 的 `cordis.patch.yml` **重命名为 `cordis.patch.yml.bak-<timestamp>`**，无需解析；下次启动创建**空 patch**。已安装包和已有备份保留。
+
+→ 官方**救活了引擎**，代价是把 drydock 的运维层一起埋了。
+→ drydock 的差异就在这里：**"它修这次启动，我们修下一次为什么还会坏。"**
+
+### 双端安装（同一份包，各自独立 profile）
+
+```sh
+# 网页版（不变）
+dsh plugin --profile web add dsh-drydock
+
+# 桌面版：官方桌面应用内「插件」页安装（推荐），或
+#   1) 先启动一次桌面版以初始化 profiles/desktop
+#   2) 从系统托盘完全退出桌面版
+#   3) 用桌面版自带的 CLI（不是 npm 的 dsh）执行：
+dsh plugin --profile desktop add dsh-drydock
+#   4) 重开桌面版；在设置里显式确认插件已启用
+```
+
+> ⚠️ **npm 安装的 `dsh` 无法修改桌面版 profile**：官方 CLI 对 `profile "desktop"` 显式报错
+> `profile "desktop" is managed exclusively by the Electron application`，且桌面版独占 `$DSH_HOME/profiles/desktop`、
+> 单实例锁与包管理器状态。drydock 对 desktop profile **只做纯 Node 文件读写**（且要求 Electron 已退出）。
+
+### 兼容性（v1.1.0 实测范围）
+
+| 项 | 状态 |
+|---|---|
+| 已装官方桌面版 | **0.2.2-rc.5 win-x64**（官方 CDN 固定下载，SHA-512 与官方 feed 一致） |
+| 桌面壳与 dsh 版本 | **同一精确版本**（官方规则：升级 dsh 必须发新桌面版） |
+| 静态核对 | 已解包 `resources/app.asar` 逐项核对：来源判定值 `dsh-app://app`、`profiles/desktop` + `lock` 路径、`desktop-runtime.json` 字段、`ELECTRON_RUN_AS_NODE` 启动方式 |
+| 真机验证 | ⏳ **待做**（本机未安装桌面版；全部桌面能力以 fixture + 注入式探测单测覆盖，见 `npm run test:desktop`） |
+
+### 给开发者：能力门控表在哪
+
+运行时探测 → 一张表 → UI 按表渲染，**不散落 `if (isDesktop)`**：
+
+- `lib/envprobe.mjs`：`probeEnv()`（判定 `web`/`desktop`/`unknown` + home 候选 + 桌面锁 + 宿主版本 + 端口候选）
+- `lib/capabilities.mjs`：`CAPABILITIES`（**web 全 true → 网页版零回归**）、`capabilityReason()`、`assertCapability()`
+- `lib/bundles-official.mjs`：直接 import 官方 `PROTECTED_PLUGINS` / `HIDDEN_BUNDLES` / `PROFILE_TEMPLATES`，带静态回落副本
+
+> 设计契约全文：[docs/桌面版移植-1.1.0设计.md](docs/桌面版移植-1.1.0设计.md)；
+> 官方一手事实核查（含真包静态分析证据链）：`桌面移植/官方事实核查-2026-11-26.md`（工作区文档，不在包内）。
 
 ## 环境要求
 
@@ -176,11 +275,17 @@
 
 | 你的 DSH 引擎 | 本管理器版本 | 说明 |
 |---|---|---|
-| **≥ 0.1.7-rc.2**（含 0.2.x，`<0.3.0-0`） | **1.0.0**（推荐）／ 0.9.1 | 独立插件页 + 兜底页 + 救援工具链全套；1.0.0 实测于 0.2.x 引擎（三分区 / 统一口径 / 事务卸载，隔离环境 + 主环境双验证） |
+| **≥ 0.1.7-rc.2**（含 0.2.x，`<0.3.0-0`） | **1.1.0**（推荐）／ 1.0.1 / 0.9.1 | 独立插件页 + 兜底页 + 救援工具链全套；**1.1.0 新增桌面版支持**（能力门控 / 离线诊断 / 恢复后自愈 / 官方 rescue profile 通道），网页版行为与 1.0.x 一致 |
 | 0.1.6 及以后 | 0.9.1 | 官方 0.1.6 起内置插件管理页，本包接管（停用 `ui-plugin-manager` + 自己的行 id） |
 | **0.1.0-rc.6 ~ 0.1.5**（老引擎） | **0.8.2** | 旧「设置 → 插件」tab 路线；0.8.x 在 0.1.7 上不成立（typert strict codec / runtime 依赖移除） |
 
-> **一句话**：引擎越新越要 1.0.0；引擎很老（0.1.6 之前）才需要 0.8.2。回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2`。
+| 运行形态 | 支持情况 | 说明 |
+|---|---|---|
+| 网页版（`dsh web`，默认 3080） | ✅ 全功能 | 本文档上半部分的全部能力 |
+| **官方桌面版（DSH Desktop）** | ✅ **灾备子集** | v1.1.0 起：离线诊断、恢复后自愈、官方通道重建救援 profile、`cordis.patch.yml` 级可逆启停（需 Electron 已退出）。**不接管插件页 / 不自启 / 不抢引擎生命周期**（见 [桌面版支持](#️-桌面版dsh-desktop支持v110-新增)） |
+| 社区壳（Tauri / Wails 等） | ⚠️ 未验证 | 走同一套能力探测；识别不出形态时**退回网页版全能力**并给出中文原因 |
+
+> **一句话**：引擎越新越要 1.1.0；引擎很老（0.1.6 之前）才需要 0.8.2。回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2`。
 
 ## 🔐 权限与数据范围
 
@@ -234,8 +339,8 @@ pnpm update dsh-drydock --latest --dir <profile>
 
 # 卸载：3081 兜底页「卸载」（带备份、验证与失败回滚），或
 dsh plugin --profile web remove dsh-drydock   # 卸载前自动清理自启/守护/shim
-npx dsh-pm-launcher --uninstall-autostart                # Windows：清理开机自启（幂等）
-npx dsh-pm-launcher --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
+npx dsh-drydock --uninstall-autostart                # Windows：清理开机自启（幂等）
+npx dsh-drydock --uninstall                          # 需要时：彻底清理启动器痕迹（引擎 3080 与日志保留）
 ```
 
 ## 救援流程速查
@@ -247,10 +352,10 @@ npx dsh-pm-launcher --uninstall                          # 需要时：彻底清
 | 插件被禁用到界面起不来 | `http://127.0.0.1:3081/plugins` 直接 toggle（该页不依赖引擎） |
 | 某个插件把引擎打挂 | 3081 `/plugins` → mod 体检看 verdict → 禁用观察或卸载（带备份与验证） |
 | 卸载/更新被引擎占用 | 拒绝硬删并引导：先禁用 → 重启引擎 → 再操作 |
-| 需要独立于 3081 的备份救援入口 | `npx dsh-pm-rescue`（默认 3082，不抢端口） |
-| 想知道 3080/3081/3082/4081 到底什么状态 | `npx dsh-pm-launcher --status`（并追加一条 `health.log` 留痕） |
-| 命令行一键自检+启动 | `npx dsh-pm-boot`（启动）或 `npx dsh-pm-boot --repair-only`（只自检+修复） |
-| 彻底移除启动器 | `npx dsh-pm-launcher --uninstall`（退出码 2 = 归属未确认：不动任何进程） |
+| 需要独立于 3081 的备份救援入口 | `npx dsh-drydock-rescue`（默认 3082，不抢端口） |
+| 想知道 3080/3081/3082/4081 到底什么状态 | `npx dsh-drydock --status`（并追加一条 `health.log` 留痕） |
+| 命令行一键自检+启动 | `npx dsh-drydock-boot`（启动）或 `npx dsh-drydock-boot --repair-only`（只自检+修复） |
+| 彻底移除启动器 | `npx dsh-drydock --uninstall`（退出码 2 = 归属未确认：不动任何进程） |
 
 > **已知限制**：入口 token URL 只有在引擎 stdout 落到 `<DSH_HOME>/logs/web.log` 时才取得到（启动器经 `enginectl` 拉起时正常落盘）。若引擎由其他路径拉起（如 `dsh-boot` 的弹窗路径），3081 可能给不出可直接跳转的链接——到 `/rescue` 执行一次「重启引擎」即可恢复。
 
@@ -313,7 +418,7 @@ npm run pack                                 # build + npm pack（产出安装�
 | 装完界面还是旧的 / 新页面不出现 | 客户端 bundle 在引擎启动时加载：**必须重启 `dsh web`**（或让启动器重新拉起引擎） |
 | 启停插件后列表状态没变 | 引擎在启动时套用条目：配置已写入，**重启引擎后生效**（界面会在需要重启时提示） |
 | `dsh plugin add` 报 "Already up to date" 不更新 | pnpm 按版本号缓存 tarball；**修改后必须升版本号**再 add |
-| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/rescue` → 运行检查 → 修复 → 启动；或 `npx dsh-pm-boot --repair-only` |
+| 引擎起不来（坏 bundle 进 package.json） | 开 `http://127.0.0.1:3081/rescue` → 运行检查 → 修复 → 启动；或 `npx dsh-drydock-boot --repair-only` |
 | 想禁用管理器自己 | 3080 界面内不可自禁：去 `http://127.0.0.1:3081/plugins`（独立于引擎存活）或用 `dsh plugin remove`；3080 内允许的是**卸载**（额外警告路径，自动清理自启） |
 | 列表分区和我认知的不一样 | v1.0 起按来源三分区（核心组件 / 引擎内置组件 / 用户插件）；「推荐」只是行内标签，不再是分区 |
 | 担心第三方网页能触发启动/停止 | 不会：写接口要**同源 `Origin` + 一次性令牌**，并发受单飞闸门限制（403 / 401 / 409）——见 [docs/LAUNCHER.md](docs/LAUNCHER.md) §4 |

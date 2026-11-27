@@ -8,11 +8,15 @@ name: Release to npm
 #   2) 本工作流被 tag 触发 → 回归测试 → npm publish（带 provenance 签名）
 #   也可以到 Actions 页面手动 Run workflow（workflow_dispatch）发当前 master 上的版本。
 #
-# 预发布版（版本号形如 0.9.1-rc2，含 `-`）：
-#   · tag 用 `v0.9.1-rc2`；tag 与 package.json 的 version 必须逐字一致（含 `-rc2` 后缀）
-#   · 发布时自动改用 **dist-tag `next`**，`latest` 保持指向最近的正式版 —— 这样
-#     `npm i dsh-drydock` 不会把 RC 发给普通用户；尝鲜用 `@next` 或显式 RC 版本号
+# 预发布版（版本号形如 0.9.1-rc2 / 1.1.0-desktop.2，含 `-`）：
+#   · tag 与 package.json 的 version 必须逐字一致（含 `-rc2` / `-desktop.2` 这类后缀）
+#   · **dist-tag 不再由本文件自己猜**：一律由 `node tools/dev/channels.mjs --print-dist-tag` 派生，
+#     数据源是 `release/channels.json`（网页预发布 → next；桌面通道 → desktop；社区桌面 → community；
+#     正式版 → latest）。通道口径与文档/脚本共享同一份，避免三处各写一遍正则而漂移
 #   · 预发布版不写 GitHub Release 的「Latest」标记（Release 由人工/队长在核对后创建）
+#
+# 多通道（2026-11-27 起）：通道定义、安装命令、Release 标题前缀见 `release/channels.json` +
+# `docs/版本与轨道.md`；发布核对表见 `docs/RELEASING.md` §11。
 #
 # ⚠️ 一次性前置（npm 网站，不在本仓库里）：
 #   npmjs.com → 包 dsh-drydock → Settings → Trusted Publisher → GitHub Actions
@@ -86,20 +90,28 @@ jobs:
       - name: Node 兼容性静态门禁（blocker 级 API 必须清零）
         run: node tools/dev/compat-scan.mjs --root . --quiet
 
-      # 预发布版（版本号含 `-`，如 0.9.1-rc2）必须发到 `next` 标签，否则会把 `latest` 顶成预发布版，
-      # 让 `npm i dsh-drydock` 的用户拿到 RC —— 这是硬红线（见 docs/RELEASING.md §10）。
-      - name: 计算 dist-tag（预发布 → next，正式版 → latest）
+      # 通道配置自我校验（离线）：通道名 / dist-tag / 预发布标识三者不重复，且只有一个 latest。
+      - name: 校验发布通道配置（release/channels.json）
+        run: node tools/dev/channels.mjs --check
+
+      # dist-tag 的唯一事实来源是 release/channels.json（经 tools/dev/channels.mjs 派生），
+      # **不要**在这里再写一遍 `if ($v -match '-')` 之类的正则 —— test-channels.mjs 会拦下来。
+      # 红线不变：任何预发布版都不能发到 latest（把 RC 发给普通用户）。
+      - name: 计算发布通道与 dist-tag（唯一事实来源：release/channels.json）
         id: disttag
         shell: pwsh
         run: |
           $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ($v -match '-') {
-            "dist_tag=next" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-Host "预发布版 $v → dist-tag = next（latest 保持不变）"
-          } else {
-            "dist_tag=latest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-            Write-Host "正式版 $v → dist-tag = latest"
+          $dt = (node tools/dev/channels.mjs --print-dist-tag).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($dt)) {
+            throw "通道解析失败：版本 $v 在 release/channels.json 里没有对应通道（或该通道被禁用），已中止发布"
           }
+          $channel = (node tools/dev/channels.mjs --print-channel).Trim()
+          $label = (node tools/dev/channels.mjs --print-label).Trim()
+          "dist_tag=$dt" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release_label=$label" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "版本 $v → 通道 $channel → dist-tag $dt；GitHub Release 标题请用「[$label] $v — …」"
 
       - name: 发布到 npm（OIDC，无需 token）
         run: npm publish --provenance --access public --tag ${{ steps.disttag.outputs.dist_tag }}

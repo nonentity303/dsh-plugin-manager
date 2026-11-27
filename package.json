@@ -64,7 +64,11 @@
   },
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs && node test-bundle.mjs && node test-admission.mjs && node test-daemon-security.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs && node test-downloader.mjs && node test-security-provenance.mjs && node test-docs.mjs",
+    "prepack": "node build.mjs",
+    "test": "node build.mjs && node test-bundle.mjs && node test-admission.mjs && node test-daemon-security.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs && node test-downloader.mjs && node test-security-provenance.mjs && node test-isolation.mjs && node test-channels.mjs && node test-docs.mjs",
+    "test:isolation": "node test-isolation.mjs",
+    "test:channels": "node test-channels.mjs",
+    "channels": "node tools/dev/channels.mjs",
     "test:admission": "node test-admission.mjs",
     "test:launcher": "node test-launcher.mjs",
     "test:strict": "node test-launcher.mjs --strict",

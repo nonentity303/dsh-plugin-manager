@@ -1,0 +1,47 @@
+name: 功能请求
+description: 想要一个新能力，或希望改变现有行为
+title: "[功能] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: target_channel
+    attributes:
+      label: 这个能力主要给哪个端用
+      description: 通道定义见 `docs/版本与轨道.md`；桌面/社区桌面的差异由运行期能力门控实现，不是两份代码
+      options:
+        - web（网页 / 引擎宿主，track:web）
+        - desktop（官方桌面宿主，track:desktop）
+        - community（社区桌面发行版，track:community）
+        - 不分端（核心能力）
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 你想解决什么场景
+      description: 写"谁、在什么情况下、现在怎么做、哪里难受"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你希望的形态
+      description: 界面/命令/接口都行；有替代方案也写出来
+
+  - type: textarea
+    id: risk
+    attributes:
+      label: 安全与兼容影响（自评）
+      description: 是否新增对外 HTTP 路由、是否放宽下载校验、是否要让桌面端接触 Host 进程或 `node_modules`
+      placeholder: |
+        例：不新增路由；不涉及下载校验；不接管插件页
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已阅 README「能力边界」，确认这不是桌面端**明确不做**的事（接管插件页 / 自启 / 浏览器即启动器 / 内置市场 / 拉起 Host / 写 node_modules）
+          required: true

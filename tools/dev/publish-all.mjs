@@ -39,8 +39,17 @@
  *   node tools/dev/publish-all.mjs --apply --resume          # 断点续传（真执行）
  *   node tools/dev/publish-all.mjs --apply --otp 123456      # token 没有 Bypass 2FA 时
  *   node tools/dev/publish-all.mjs --apply --wait 180        # 发完轮询 registry，等 staged publishing 落库
+ *   node tools/dev/publish-all.mjs --apply --channel desktop  # 走桌面通道（dist-tag 由 release/channels.json 派生）
  *
- * 退出码：0 = 全部 OK/SKIP；1 = 有 FAIL/PENDING；2 = 用法错误（参数互斥 / latest 未确认）
+ * 多通道（2026-11-27 起）：
+ *   · 通道口径的唯一事实来源是 `release/channels.json`（经 tools/dev/channels.mjs 解析）；
+ *     版本号里的预发布标识即通道：`-rc.N` → next、`-desktop.N` → desktop、`-community.N` → community、
+ *     无后缀的正式版 → latest。
+ *   · `--channel <name>` 是**可选**的显式确认：给了就必须与版本号推断出的通道一致，
+ *     且会把 dist-tag 直接对齐到该通道（这时不用再手写 --tag）。
+ *   · 不给 `--channel` 时保持旧行为（默认 --tag next），但会打印推断结果并警告 tag 与通道不一致。
+ *
+ * 退出码：0 = 全部 OK/SKIP；1 = 有 FAIL/PENDING；2 = 用法错误（参数互斥 / latest 未确认 / 通道不符）
  *
  * 设计注记（改之前先看）：
  *   1. 子进程一律 stdio 重定向到临时文件再读回——受限沙箱下 pipe 会 EPERM（见 npm-preflight.mjs 注释）。
@@ -56,6 +65,7 @@ import https from "node:https";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadChannels, resolveVersion } from "./channels.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, "..", "..");
@@ -126,6 +136,7 @@ export function parseArgs(argv = []) {
     yes: has("--yes"),
     json: has("--json"),
     tag: opt("--tag", "next"),
+    channel: opt("--channel", null),
     otp: opt("--otp", null),
     branch: opt("--branch", null),
     cache: opt("--cache", null),
@@ -467,6 +478,12 @@ async function stepPreflight(ctx) {
   if (!isPrerelease(ctx.version) && ctx.tag === "next") {
     notes.push(`ℹ️ 正式版本配 --tag ${ctx.tag}：npm 上 latest 不会跟着更新（需要 --tag latest --yes）`);
   }
+  if (ctx.channelInfo && ctx.tag !== ctx.channelInfo.distTag) {
+    notes.push(
+      `⚠️ 通道 ${ctx.channelInfo.channel} 的既定 dist-tag 是 ${ctx.channelInfo.distTag}，本次用的是 ${ctx.tag} —— ` +
+        `确认后再执行；照口径应当用 --channel ${ctx.channelInfo.channel}`,
+    );
+  }
 
   if (problems.length) {
     return { outcome: "FAIL", detail: `${problems.length} 项前置条件不满足`, errorText: problems.join("\n   ❌ ") };
@@ -706,7 +723,9 @@ async function stepGh(ctx) {
   const notesFile = join(ctx.root, "docs", "releases", `${version}.md`);
   const hasNotes = existsSync(notesFile);
   const prerelease = isPrerelease(version);
-  const createArgs = ["release", "create", tagName, `${tgzPath}#${tgzName} (SHA256 ${String(localHash || "").toUpperCase()})`, "--target", ctx.branch, "--title", version, "-R", slug];
+  // Release 标题：网页主线保持「就是版本号」（历史一致）；其它通道加前缀，让人一眼看出这是给哪个端的。
+  const releaseTitle = ctx.channelInfo && ctx.channelInfo.channel !== "web" ? `[${ctx.channelInfo.releaseLabel}] ${version}` : version;
+  const createArgs = ["release", "create", tagName, `${tgzPath}#${tgzName} (SHA256 ${String(localHash || "").toUpperCase()})`, "--target", ctx.branch, "--title", releaseTitle, "-R", slug];
   if (hasNotes) createArgs.push("--notes-file", notesFile);
   else createArgs.push("--notes", buildReleaseNotes(ctx, tgzName, localHash));
   if (prerelease) createArgs.push("--prerelease", "--latest=false");
@@ -937,6 +956,7 @@ function printHelp(log) {
     "  node tools/dev/publish-all.mjs --apply --resume       断点续传（真执行，只补没做成的步骤）",
     "",
     "其它参数：",
+    "  --channel <名>    发布通道（web|desktop|community）：必须与版本号推断一致，并把 dist-tag 对齐到该通道",
     "  --otp <6位>       npm token 没有 Bypass 2FA 时用",
     "  --wait <秒>       发布后轮询 registry，等 staged publishing 落库（默认 0）",
     "  --branch <名>     gh release --target / verify-triple --ref 用的分支（默认当前分支）",
@@ -1092,7 +1112,42 @@ export async function main(argv = [], deps = {}) {
     return 1;
   }
 
+  // ── 发布通道（唯一事实来源：release/channels.json）────────
+  // 版本号里的预发布标识决定通道；`--channel` 只能"确认"，不能"改写"通道（发错 dist-tag 是不可逆事故）。
+  // 找不到配置时（旧仓库 / 隔离测试的临时目录）降级：跳过通道校验，不阻塞旧的 --tag 用法。
+  const channelsFile = join(root, "release", "channels.json");
+  let channelInfo = null;
+  if (existsSync(channelsFile)) {
+    try {
+      channelInfo = resolveVersion(pkg.version, loadChannels(channelsFile));
+    } catch (error) {
+      log(`✘ 通道解析失败：${error instanceof Error ? error.message : String(error)}`);
+      log("   修法：release/channels.json 里补一条通道，或把版本号改成已登记的形态（见 docs/版本与轨道.md）");
+      return 2;
+    }
+    if (!channelInfo.enabled) {
+      log(`✘ 版本 ${pkg.version} 属于通道 ${channelInfo.channel}，但该通道当前被禁用（release/channels.json enabled=false）`);
+      return 2;
+    }
+  } else if (opts.channel !== null) {
+    log(`✘ 给了 --channel ${opts.channel}，但找不到 ${channelsFile}`);
+    return 2;
+  }
+  if (channelInfo !== null && opts.channel !== null) {
+    if (opts.channel !== channelInfo.channel) {
+      log(`✘ --channel ${opts.channel} 与版本号推断出的通道 ${channelInfo.channel} 不一致（${pkg.version}）`);
+      log("   通道由版本号决定，不能用命令行覆盖：要发桌面通道就发 1.1.0-desktop.N 这样的版本号。");
+      return 2;
+    }
+    if (argv.includes("--tag") && opts.tag !== channelInfo.distTag) {
+      log(`✘ --channel ${opts.channel} 要求 dist-tag = ${channelInfo.distTag}，但显式给了 --tag ${opts.tag}`);
+      return 2;
+    }
+    opts.tag = channelInfo.distTag;
+  }
+
   const ctx = buildContext(opts, deps, pkg, root);
+  ctx.channelInfo = channelInfo;
 
   if (opts.status) return printStatus(ctx);
 
@@ -1112,6 +1167,10 @@ export async function main(argv = [], deps = {}) {
 
   // ── 头部 ────────────────────────────────────────────────
   log(`📦 ${pkg.name}@${pkg.version}  →  npm + GitHub 双平台（dist-tag：${opts.tag}）`);
+  log(`   通道：${channelInfo ? `${channelInfo.channel}（${channelInfo.releaseLabel}）· 配置既定 dist-tag = ${channelInfo.distTag}` : "未配置（缺 release/channels.json，按旧口径只认 --tag）"}`);
+  if (channelInfo && opts.tag !== channelInfo.distTag) {
+    log(`   ⚠️ 本次 --tag ${opts.tag} 与通道既定 dist-tag ${channelInfo.distTag} 不一致 —— 确认这是本意（否则去掉 --tag，改用 --channel ${channelInfo.channel}）`);
+  }
   log(`   模式：${opts.apply ? "🚀 真执行（--apply）" : "🧪 预演（dry-run：不写 registry / 不建 release / 不写状态文件）"}${opts.resume ? " · --resume 断点续传" : ""}`);
   log(`   仓库：${root}`);
   if (opts.skipNpm) log("   --skip-npm：只补 GitHub 侧");
@@ -1127,6 +1186,7 @@ export async function main(argv = [], deps = {}) {
   ctx.state = {
     version: pkg.version,
     tag: opts.tag,
+    channel: channelInfo ? channelInfo.channel : null,
     steps: prev?.steps || {},
     sha256: prev?.sha256 || null,
     tgzPath: prev?.tgzPath || null,

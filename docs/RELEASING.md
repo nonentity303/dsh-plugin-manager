@@ -29,7 +29,8 @@
 
 ## 1. 版本号
 
-- 唯一来源：`package.json` 的 `version`（当前 **1.0.0-rc.2**，未发布；npm 上 `latest` 仍是 0.9.1，`next` 上是旧的 0.9.1-rc2）。构建产物不写版本号，`lib/client.js` 是源码的编译结果。
+- 唯一来源：`package.json` 的 `version`（本文件刻意不写死具体数字，避免与实现漂移）。构建产物不写版本号，`lib/client.js` 是源码的编译结果（**该产物不入库**，见 §3）。
+- **版本号里的预发布标识 = 发布通道**（2026-11-27 起）：`-rc.N` → 网页预发布（dist-tag `next`）、`-desktop.N` → 官方桌面（`desktop`）、`-community.N` → 社区桌面（`community`，当前占位）。通道表、安装命令与判定逻辑见 [`版本与轨道.md`](版本与轨道.md) 与 [`release/channels.json`](../release/channels.json)；**dist-tag 一律由 `node tools/dev/channels.mjs --print-dist-tag` 派生**，不要在 CI / 文档 / 命令行里各写一遍。
 - 每个版本必须有 `docs/releases/<version>.md`（发布说明）。缺它就不算可发布。
 - 预发布段（如 `0.9.0-1`）用于"同一版本的修补"：`dsh plugin add` 按版本号缓存 tarball，
   **内容改了就必须改版本号**，否则 pnpm 会报 "Already up to date"。
@@ -95,6 +96,10 @@ npm run pack           # = node build.mjs && npm pack
 ```
 
 - 产物：`dsh-drydock-<version>.tgz`（仓库根）。
+- **`lib/client.js` 从 1.0.5 起不入库**（已进 `.gitignore`）：它是构建产物，既是合并冲突放大器，也是"产物≠源码"事故的源头。
+  现在由 `prepack`（`npm pack` / `npm publish` 前自动跑 `node build.mjs`）与 `npm test`（先 build）生成；
+  **打包前不必手工 build**，但**发布核对表第 4–8 步仍然要求做一次干净树构建并记录 `lib/client.js` 的 sha256**（§2bis）。
+  校验点：`git ls-files lib/client.js` 必须**为空**；`npm pack --dry-run` 的输出里仍然必须有 `lib/client.js`。
 - 发布物白名单在 `package.json` 的 `files`：`lib/*.js`、`lib/*.mjs`、`bin`、`cordis.patch.yml`、`README.md`、`LICENSE`。
   - **`lib/client.js.map` 故意不发布**（本地调试用，1.6 MB；同时被 `.gitignore` 忽略）。不要为了"体积好看"改回 `"lib"` 整目录。
   - 测试脚本、`tools/`、`docs/` 不发布。
@@ -497,3 +502,59 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 >
 > 发布说明模板：`docs/releases/<版本>.md`（历史样例：`0.9.0.md` 面向用户、`RELEASE_NOTES_0.8.x.md` 按模块分节）。
 > 版本历史汇总由 `node tools/dev/gen-changelog.mjs` 生成 `CHANGELOG.md`，**不要手改**。
+
+---
+
+## 11. 多通道发布（2026-11-27 起）
+
+> 背景：桌面版支持曾经是"另一条产品线"（`1.1.0-rc.x` 走独立分支），宿主动一下就要顶动整个版本号，
+> npm 的 `next` 槽被抢、GitHub 只有一个 Latest。现在把"给哪个端"从核心版本号里拆出来，**放进预发布段 + dist-tag**。
+> 通道定义见 [`release/channels.json`](../release/channels.json)（机器）与 [`版本与轨道.md`](版本与轨道.md)（人）。
+
+### 11.1 事实来源与派生关系（只有一处定义）
+
+```
+release/channels.json
+   ├─ tools/dev/channels.mjs --print-dist-tag   → .github/workflows/release.yml（CI 发布）
+   │                                            → tools/dev/publish-all.mjs --channel <名>（本机双平台发布）
+   └─ test-channels.mjs                          → 校验上面两处 + docs/版本与轨道.md + package.json 不漂移
+```
+
+**禁止**：在 CI YAML、文档、口头约定里再写一遍 `if 版本号含 - 就用 next` 这类判断（`test-channels.mjs` 会拦）。
+**禁止**：用 `--tag` 覆盖通道 —— 通道由版本号决定，`--tag` 只能在不给 `--channel` 的旧路径上用。
+
+### 11.2 三种通道怎么发
+
+| 场景 | 版本号 | 命令（本机） | dist-tag |
+|---|---|---|---|
+| 网页正式版 | `1.0.5` | `node tools/dev/publish-all.mjs --apply --tag latest --yes` | `latest` |
+| 网页预发布 | `1.1.0-rc.1` | `node tools/dev/publish-all.mjs --apply --channel web` | `next` |
+| 桌面通道（宿主升版适配） | `1.1.0-desktop.2` | `node tools/dev/publish-all.mjs --apply --channel desktop` | `desktop` |
+| 社区桌面 | `1.1.0-community.1` | **当前禁用**（`enabled:false`）→ 命令会被拒绝 | `community` |
+
+CI 路径不变：`git tag v<version>` + push → `release.yml` 自己派生 dist-tag（同一份 `channels.mjs`）。
+
+### 11.3 通道专项核对（在 §10 的 18 步之外追加）
+
+| # | 项 | 判据 |
+|---|---|---|
+| C1 | 通道与版本号一致 | `node tools/dev/channels.mjs --print-channel` 的输出 == 你预期的通道 |
+| C2 | 通道配置自身合法 | `node tools/dev/channels.mjs --check` exit 0 |
+| C3 | 跨文件不漂移 | `node test-channels.mjs` 全绿 |
+| C4 | 网页运行时没被桌面代码污染 | `node test-isolation.mjs` 全绿（热文件改动超 +80/−20 时另需在 PR 写"web 影响面"） |
+| C5 | GitHub Release 标记正确 | 网页正式版 → **Latest**；任何预发布 → **Pre-release** 且 `--latest=false`；标题：网页主线就是版本号，其它通道加前缀 `[桌面] ` / `[社区桌面] ` |
+| C6 | 桌面通道必须真机验证 | 在真桌面运行时跑一遍「离线诊断 → 能力表快照 → 救援 profile 预演」；**未验证就在 Release 正文写"未真机验收"**，不得暗示已验收 |
+| C7 | 用户装得上 | 桌面通道用 `dsh-drydock@desktop` 或显式版本号；**不要**写"装最新版"（26 小时冷静期见 §8） |
+
+### 11.4 迁移口径（历史怎么处理）
+
+- `1.1.0-rc.1` / `1.1.0-rc.2` 已发布，**不撤、不重发**，在 `版本与轨道.md` 里登记为"桌面通道的旧命名前身"。
+- 首个桌面通道版本（`1.1.0-desktop.N`）发布时才创建 dist-tag `desktop`：
+  `npm dist-tag add dsh-drydock@<版本> desktop`（属发布动作，**需用户明确确认**后才执行）。
+- `next` 现有指向（`1.1.0-rc.2`）保持不动；等网页线出下一个预发布时自然前移。
+
+### 11.5 分支与 Issue / PR 流程
+
+- 分支只表达轨道，**不要在分支名里写版本号**：`track/desktop`、`track/community`、`release/<线>`；发布前另开 `release/<版本>` 或直接在当前线打 tag。
+- Issue / PR 模板见 `.github/ISSUE_TEMPLATE/` 与 `.github/pull_request_template.md`；流程规范见 `.github/CONTRIBUTING.md`。
+  兼容性问题请用 **宿主兼容性报告** 模板（它把 `dsh-drydock-doctor --json` 的输出列为必填 —— 让 issue 自带可复现证据）。

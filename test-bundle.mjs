@@ -4,7 +4,7 @@
 // 参数处理（t13）：只认**位置参数** <path-to-client.js>。`-` 开头的开关一律忽略并提示一行 ——
 // 旧写法 `process.argv[2] ?? "lib/client.js"` 会把 `--strict`（test-launcher.mjs 的开关）当成文件路径，
 // 于是 `node test-bundle.mjs --strict` → ENOENT → exit 1，把下游（CI/人肉复核）带沟里。
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 
@@ -20,6 +20,11 @@ if (unknownFlags.length > 0) {
 	console.warn("用法: node test-bundle.mjs [path-to-client.js]（默认 lib/client.js）");
 }
 const file = argv.find((a) => !a.startsWith("-")) ?? "lib/client.js";
+// lib/client.js 是**构建产物，从 1.0.5 起不入库**（.gitignore）：新克隆的仓库直接单跑本文件会缺产物。
+if (file === "lib/client.js" && !existsSync(file)) {
+	console.error("[错误] 缺 lib/client.js：它是构建产物、已不入库。先跑 `node build.mjs`（或直接 `npm test`，会先构建）。");
+	process.exit(1);
+}
 const code = readFileSync(file, "utf8");
 
 let handoff = null;

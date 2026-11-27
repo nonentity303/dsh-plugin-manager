@@ -1,0 +1,77 @@
+name: Bug 报告
+description: 功能不符合预期、报错、界面异常
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先看 README 的「装不到 / 装完还是旧版？」与 `docs/FAQ.md` —— 发版后 **24 小时冷静期**（pnpm `minimumReleaseAge`）
+        会让"不带版本号"的安装拿到旧版，这不是 bug。
+        如果是**某个宿主形态**下的兼容问题，请改用「宿主兼容性报告」模板（它要求贴 doctor 输出）。
+
+  - type: input
+    id: drydock_version
+    attributes:
+      label: dsh-drydock 版本
+      placeholder: "例：1.0.4"
+    validations:
+      required: true
+
+  - type: input
+    id: host_version
+    attributes:
+      label: 引擎 / 宿主版本
+      placeholder: "例：dsh 0.2.2-rc.5（网页宿主）"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: 从哪个通道装的
+      options:
+        - latest（正式版，`dsh plugin add dsh-drydock`）
+        - next（网页预发布）
+        - desktop（桌面通道）
+        - 本地 tgz / 源码目录
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: 现象与期望
+      placeholder: |
+        实际：
+        期望：
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 报错原文
+      description: 引擎启动日志（`~/.dsh/logs/`）、3081 启动页的控制台输出、或 `dsh-drydock --status` 的结果
+      render: shell
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已用显式版本号确认装的是这一版（不是 24 小时冷静期导致的旧版）
+          required: true
+        - label: 粘贴内容里不含凭据（API Key / token / `.npmrc` 内容）
+          required: true

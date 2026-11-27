@@ -39,6 +39,14 @@ const opt = (n, d) => {
 
 const CACHE = resolve(opt("--cache", process.env.DSH_NPM_CACHE || join(PKG_ROOT, ".npm-cache")));
 const JSON_OUT = flag("--json");
+/**
+ * dry-run 也要带 `--tag`：**npm 对所有预发布版本（版本号含 `-`）强制要求显式 `--tag`**，
+ * 否则连 `npm publish --dry-run` 都会报
+ * 「You must specify a tag using --tag when publishing a prerelease version」
+ * —— 体检就会在"tarball 文件清单"一步看到 0 个文件并误判 FAIL（2026-11-27 实测踩到）。
+ * 通道标签（desktop / next）现在也是合法 tag，所以这里必须把真实的 tag 传进来。
+ */
+const TAG = opt("--tag", /-/.test(String(JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "")) ? "next" : "latest");
 
 const resolveNpmCli = () => {
   if (process.env.npm_execpath && /npm-cli\.js$/i.test(process.env.npm_execpath)) return process.env.npm_execpath;
@@ -213,7 +221,7 @@ const main = async () => {
     else record("包级写权限（服务器端确认）", "fail", `无法确认写权限：${(collab.out + collab.err).trim().split("\n")[0]}`);
 
     // 2FA：只能"如实说明无法提前判定"，真正的判定发生在 publish 那一刻。
-    const dry = npm(["publish", "--dry-run"]);
+    const dry = npm(["publish", "--dry-run", "--tag", TAG]);
     blob = dry.out + "\n" + dry.err;
     if (dry.code === 0) {
       record(

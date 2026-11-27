@@ -91,7 +91,7 @@ if (!existsSync(CACHE)) mkdirSync(CACHE, { recursive: true });
 // ── 1) 前置体检 ──────────────────────────────────────────────
 if (!flag("--skip-preflight")) {
   console.log("① 发布前体检（tools/dev/npm-preflight.mjs）");
-  const pf = spawnSync(process.execPath, [join(HERE, "npm-preflight.mjs")], {
+  const pf = spawnSync(process.execPath, [join(HERE, "npm-preflight.mjs"), "--tag", TAG], {
     cwd: PKG_ROOT,
     stdio: "inherit",
     env: { ...process.env, DSH_NPM_CACHE: CACHE },

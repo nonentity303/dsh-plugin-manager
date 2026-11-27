@@ -26,6 +26,7 @@
 - **普通包不再吃 `next`**：只有 `@deepseek-ai/*` 才优先 `next`；其余包只取 `latest`，且 `latest` 是预发布时视为"无可用版本"——再不会把 RC 推给你。
 - **下载目录里的手工归档不再被自动安装**：必须能对上管理器自己生成的来源记录（包名 + 版本 + 来源 + 摘要，7 天有效）；对不上的写 `.failed`，确认可信后删掉再重试。
 - **3081 只接受回环 Host 头**：用 `127.0.0.1:3081` / `localhost:3081` 访问；把非回环域名指到 3081 会拿到 421（这是有意的）。
+- **救援路由需要浏览器会话**：引擎内 `/rescue` 与 `/plugins-launcher` 现在要求同源已认证（先在同一浏览器打开 3080 完成 `?token=` 登录，未认证得到 401）；无 Connection 服务的宿主/无头部署按旧行为放行。3081 启动器自带的救援页不受影响——引擎完全起不来时它仍是独立入口。
 
 ### Fixed · 修复
 
@@ -54,6 +55,11 @@
 - **Host 头校验**：请求入口只接受 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`（大小写不敏感），不匹配 → `421` + JSON `{ok:false,error:"Host 不被允许（仅接受回环地址）"}`，且在路由之前。
 - **统一安全响应头**：所有响应（`sendHtml` / `sendJson` / 救援页）带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、CSP（保留 `unsafe-inline` 以便页内脚本/样式与 `/plugins` 同源 fetch 照常工作）；`frame-ancestors 'none'`、`base-uri 'none'`。
 - **`GET /plugins/api/bundles` 也要令牌**：GET 也走 `rejectWrite`（Origin + token），页面内联 `api()` 同步带 token 头。
+- 两条路由在方法/参数处理之前先走宿主准入：`ctx.connection.requestRejection({headers})`，与 `/api` 同一套 Host/Origin fence + 浏览器会话认证。
+- 结论映射：`401` 未认证 / `403` 来源不符 / `undefined` 放行；判定本身抛错时 **fail-closed 403**，避免"校验坏了就敞开"。
+- **降级**：宿主没有 Connection 服务（headless、或引擎早于该服务）时保持旧行为（放行，仅适用于回环部署），只记一次日志——不因缺少可选服务让救援页整体不可用。
+- 新增 `test-admission.mjs`（15 项，已挂进 `scripts.test`）：无服务降级、401/403、headers 原样透传、抛错 fail-closed、先准入后 405、告警只记一次。
+- **实测（隔离测试引擎 33080 + 本版 tgz）**：未认证 `GET /rescue` → **401**、`GET /plugins-launcher` → **401**；用 `?token=` 建立浏览器 cookie 后 → `/rescue` **200**（HTML）、`/plugins-launcher` **200**（JSON）、认证后 `POST /rescue` → **405**。
 
 > 完整发布说明：[`docs/releases/1.0.3.md`](docs/releases/1.0.3.md)
 

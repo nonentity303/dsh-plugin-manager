@@ -149,6 +149,7 @@ Five sections, switching keeps your scroll position:
 ### Rescue
 
 - **Standalone rescue page `/rescue`**: self-contained HTML that talks straight to the host gateway, usable even when the UI is broken (diagnose / quarantine / repair / restart / uninstall).
+- **Host admission (1.0.3)**: the in-engine `/rescue` and `/plugins-launcher` routes go through the host's own admission (`ctx.connection.requestRejection`): Host/Origin mismatch → 403, unauthenticated browser → 401, and a throwing check fails closed (403). Hosts without a Connection service (headless / older engines) keep the legacy behaviour (served, loopback deployments only) with a single log line.
 - **Floating rescue button** (🛟, bottom right) as an entry point when the settings page is broken.
 - **Auto-quarantine**: optional (**off by default**) and only for plugins that fail repeatedly; UI skeleton and infrastructure entries are protected and never disabled automatically.
 - **Pre-boot self-check**: `verifyProfile` / `fixProfile` — broken bundles can take the engine down at boot; one-click check and quarantine repair.

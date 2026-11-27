@@ -43,6 +43,12 @@
 | `desktop` | 官方桌面宿主（Windows / macOS，`dsh-app://app`） | ⚠️ 预发布通道 | **代码完成、真机未验收**（能力门控 / 离线诊断 / 救援 profile / CORS 均有测试，但未在真桌面运行时跑过完整链路） |
 | `community` | 社区桌面发行版 | ⛔ **占位**（`enabled: false`） | 未定义形态；恢复前需先补宿主定义与核对表 |
 
+**首启环境探测（1.1.0 起）**：装完第一次启动会把判定结果写进 `<DSH_HOME>/.drydock/host-profile.json`
+（证据 + 能力表 id + TTL 30 天）。环境专属模块按能力表**惰性装载**，不适用的一律不 `import`；
+`npx dsh-drydock-modules --audit` 打印"本环境永远不会执行的文件 + 行数"。
+显式覆盖：`DSH_DRYDOCK_HOST=web|desktop`（测试/运维用）；关掉探测：`DSH_DRYDOCK_NO_HOST_PROBE=1`。
+详见 [`环境自适应与剥离.md`](环境自适应与剥离.md)。
+
 ## 三、旧版本（0.9.1 之前）为什么不支持
 
 - `dsh-plugin-manager-pro` 的 0.9.1 之前版本（含 `0.9.1-rc2`）**已淘汰**：存在已知供应链风险，且 Node < 22.14 加载即崩；npm 上已挂**强化弃用提示**（不删包，历史版本仍可安装，但不要用）。

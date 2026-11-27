@@ -188,6 +188,15 @@
 | `lib/preflight.mjs` | standalone 自检/修复/隔离（无引擎依赖） |
 | `lib/enginectl.mjs` | 引擎探测/拉起/停止、PID 文件、写接口防护共享件 |
 | `bin/open-boot.mjs` / `bin/dsh-boot.mjs` / `bin/rescue-daemon.mjs` | 三个命令行入口（见 [LAUNCHER.md](LAUNCHER.md)） |
+| `lib/capabilities.mjs` | 形态能力表（web / desktop 各一张，键集合一致 + 每项一句中文理由）—— **唯一的能力开关事实来源** |
+| `lib/envprobe.mjs` | 环境探测：形态判定（`web`/`desktop`/`unknown`）+ home 候选 + 桌面锁 + 宿主版本 + 端口候选 |
+| `lib/host-profile.mjs` | **首启探测与画像持久化**：`<DSH_HOME>/.drydock/host-profile.json`（模式/证据/时间，TTL 30 天，原子写、坏缓存自愈） |
+| `lib/host-registry.mjs` | **环境专属模块登记 + 惰性装载 + 剥离清单**：能力不满足的模块不 `import`；`auditModules()` 出行数 |
+| `lib/bundles-official.mjs` | 官方 bundle 目录（保护集 / 隐藏集 / 模板）：纯函数 + 静态回落副本，host 侧唯一允许新增的静态依赖 |
+| `lib/diagnostics.mjs` | 离线只读诊断报告（不写盘、不碰锁、不启停进程） |
+| `lib/rescue-profile.mjs` | 走官方通道重建救援 profile + 官方恢复后的自愈（**桌面形态整体剥离**，见 [环境自适应与剥离.md](环境自适应与剥离.md)） |
+| `bin/drydock-doctor.mjs` / `bin/drydock-modules.mjs` | 诊断报告 CLI；环境剥离审计 CLI（`--audit` / `--json` / `--refresh` / `--load`） |
+| `release/channels.json` | 发布通道单一事实来源（dist-tag / 预发布标识 / 安装命令），见 [版本与轨道.md](版本与轨道.md) |
 | `cordis.patch.yml` | 包内 patch 层（停用内置页 + 插入自己的行） |
 
 ## 9. 相关文档

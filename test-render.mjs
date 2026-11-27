@@ -879,6 +879,86 @@ try {
 	process.exitCode = 1;
 }
 
-if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError && !originSectionError && !marketError3) {
+// ---- 1.1.0：管理器自身更新卡片（有 pending → 「现在 / 稍后」；桌面形态 → 只提示；点了要调决策）
+let selfUpdateError = null;
+try {
+	const decisions = [];
+	const pendingSelf = {
+		ok: true,
+		message: "",
+		currentVersion: "1.1.0-desktop.1",
+		channel: "desktop",
+		form: "web",
+		canApply: true,
+		prompt: "",
+		pending: {
+			targetVersion: "1.1.0-desktop.2",
+			currentVersion: "1.1.0-desktop.1",
+			channel: "desktop",
+			phase: "pending",
+			decision: null,
+			stagedFile: "C:/tmp/dsh-drydock-1.1.0-desktop.2.tgz",
+			source: "registry",
+			fetchedAt: null
+		}
+	};
+	const root15 = document.createElement("div");
+	document.body.appendChild(root15);
+	const root15Instance = createRoot(root15);
+	await act(async () => {
+		root15Instance.render(React.createElement(PluginManagerTab, {
+			...api,
+			t,
+			selfUpdateStatus: async () => pendingSelf,
+			selfUpdatePrepare: async () => pendingSelf,
+			selfUpdateDecide: async (decision) => {
+				decisions.push(decision);
+				return { ...pendingSelf, message: `decided:${decision}` };
+			}
+		}));
+	});
+	await settle(20);
+	const banner = root15.querySelector("[data-self-update-banner]");
+	if (banner === null) throw new Error("self-update banner missing（有 pending 时必须出现）");
+	if (!banner.textContent.includes("1.1.0-desktop.1") || !banner.textContent.includes("1.1.0-desktop.2")) {
+		throw new Error(`banner 没写版本对比：${banner.textContent.slice(0, 200)}`);
+	}
+	const nowBtn = Array.from(banner.querySelectorAll("button")).find((b) => b.textContent.includes("selfUpdateNow"));
+	const laterBtn = Array.from(banner.querySelectorAll("button")).find((b) => b.textContent.includes("selfUpdateLater"));
+	if (!nowBtn || !laterBtn) throw new Error(`「现在 / 稍后」按钮缺失：${banner.textContent.slice(0, 200)}`);
+	await act(async () => {
+		laterBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	});
+	await settle(20);
+	if (decisions.length !== 1 || decisions[0] !== "later") throw new Error(`点「稍后」没调到 selfUpdateDecide("later")：${JSON.stringify(decisions)}`);
+	if (!root15.textContent.includes("decided:later")) throw new Error("决策后的反馈没渲染");
+	console.log("RESULT: PASS - self-update banner（现在/稍后 → 调 selfUpdateDecide）");
+
+	// 桌面形态：canApply=false → 只给提示，不给「现在」按钮
+	const root16 = document.createElement("div");
+	document.body.appendChild(root16);
+	const root16Instance = createRoot(root16);
+	await act(async () => {
+		root16Instance.render(React.createElement(PluginManagerTab, {
+			...api,
+			t,
+			selfUpdateStatus: async () => ({ ...pendingSelf, form: "desktop", canApply: false }),
+			selfUpdatePrepare: async () => pendingSelf,
+			selfUpdateDecide: async () => pendingSelf
+		}));
+	});
+	await settle(20);
+	const banner16 = root16.querySelector("[data-self-update-banner]");
+	if (banner16 === null) throw new Error("桌面形态也应显示更新卡片（只是不给安装按钮）");
+	if (banner16.textContent.includes("selfUpdateNow")) throw new Error("桌面形态不应出现「现在升级」按钮");
+	if (!banner16.textContent.includes("selfUpdateDesktopOnly")) throw new Error("桌面形态缺提示文案");
+	console.log("RESULT: PASS - self-update banner（桌面形态只提示、不自动装）");
+} catch (error) {
+	selfUpdateError = error;
+	console.error("SELF-UPDATE BANNER ERROR:", error && error.stack ? error.stack : error);
+	process.exitCode = 1;
+}
+
+if (!renderError && !failError && !marketError && !marketError2 && !configCardsError && !officialError && !impactError && !originSectionError && !marketError3 && !selfUpdateError) {
 	console.log("ALL RENDER TESTS PASSED");
 }

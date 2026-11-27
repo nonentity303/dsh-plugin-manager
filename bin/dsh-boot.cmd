@@ -36,6 +36,10 @@ if "%EXITCODE%"=="0" (
 ) else if "%EXITCODE%"=="2" (
   echo [dsh-boot] REPAIR INCOMPLETE - run: dsh-boot.cmd --repair-only
   echo            and fix the listed issues manually.
+) else if "%EXITCODE%"=="3" (
+  echo [dsh-boot] REFUSED BY SAFETY GATE - nothing was changed.
+  echo            locked desktop profile / missing --confirm / missing --allow-desktop / desktop spawn refused.
+  echo            Details: dsh-boot.cmd --help   (exit code 3 is documented there)
 ) else (
   echo [dsh-boot] UNKNOWN - exit code %EXITCODE%
 )

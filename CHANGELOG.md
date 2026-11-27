@@ -89,6 +89,59 @@
 
 > 完整发布说明：[`docs/releases/1.0.3.md`](docs/releases/1.0.3.md)
 
+## [1.1.0-rc.2] - 2026-11-26（预发布）
+
+> 一句话：1.1.0-rc.2 让 drydock 能装上 DSH 官方桌面版（Electron），但只做官方覆盖不到的那一块——引擎外灾备：离线只读诊断、官方恢复后自愈、走官方通道重建救援 profile。网页版行为一行未改。 ⚠️ 这是预发布版（rc.2），npm dist-tag 为 `next`，`latest` 仍是 1.0.2。 桌面版能力未在真实桌面环境做完整验收（本机未安装官方桌面版），详见 §⑧。
+
+### Added · 新增
+
+- **拿到一份能直接粘贴的诊断报告** — `npx dsh-drydock-doctor` — **只读**：不写盘、不碰锁、不启停进程。收集环境 / DSH_HOME 候选 / profile 清单 / 桌面锁 / 崩溃报告（`crash-<UTC>-<source>.log`）/ 插件操作记录 / 端口事实 / 引擎日志尾部；**自动脱敏**（令牌、用户名、`~` 缩写）
+- **让官方恢复不只是"救活",还能"回到原样"** — `npx dsh-drydock-boot --heal-recovery` — 官方恢复会禁用第三方 bundle + 把 `cordis.patch.yml` 改名 `.bak-<时间戳>` + 建**空 patch** → 你的归属行/开关行/隔离行**全丢**。本命令从侧车与 `.rescue-bak-*` **重建**。默认 dry-run，`--apply --confirm <profile>` 才真写
+- **走官方通道重建救援 profile** — `npx dsh-drydock-boot --rescue-profile` — 用官方 `dsh rescue --from-default-profile web`（官方 help 自己推荐的用法），**不碰 desktop profile**、不需要绕官方的 `rejectElectronProfile` 门禁
+- 接管官方插件页 — ✅ — ❌ — 撞 `PROTECTED_PLUGINS`，失效形态是静默空白
+- 现跑 pnpm 增删 — ✅ — ⛔ 门控 — Electron 持 `profiles/desktop/lock` 时**一律拒绝**
+- 启停/配置热切换 — ✅ — 🟡 分级授权 — 允许 patch 级可逆写（有备份、只动归属行）；不做 pnpm 级
+- 开机自启 / 浏览器即启动器 — ✅ — ❌ — 官方托盘/后台任务已覆盖，叠加=双份自启
+- 内置插件市场 — ✅ — ❌ — 交给官方 market bundle + dshmarket
+- 拉起/停止/重启引擎 — ✅ — ❌ — 单实例 + 特权 IPC 属应用；抢了就是"装了起不来"
+- **离线只读诊断** — ✅ — ✅ **主战场** — 官方没有，普通用户最缺
+- **恢复后自愈** — — — ✅ **主战场** — 官方恢复会埋掉运维层
+- **官方通道重建救援 profile** — ✅ — ✅ **主战场** — 官方推荐的合法通道
+- `probeEnv()` 判定 `web` / `desktop` / `unknown`，带 `confidence` 与中文 `reason`（多档证据全量记录，未命中项也记）；
+- **不再假设 `~/.dsh`**：`--home` > `$DSH_HOME`（空白视为未设置）> `~/.dsh`；检测到多个候选 home 时**全部报出**并给 warning；
+- **不再假设端口**：桌面版默认监听**系统分配的随机端口**（官方文档明示），所以端口只产**有序候选**（上限 8），实际健康判定仍用 **HTTP 握手 + dsh 身份指纹**——**裸 TCP 通过绝不算引擎就绪**；
+- 宿主版本优先从 app 侧 `desktop-runtime.json` 的 `release.version` 读（含 `hostProtocolVersion`），**跟 npm 版本分开报**，且能原样处理 4 段测试版号。
+- 新增**显式开关** `DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1`（默认关）——理由是同机 web + desktop 共存是常态，"存在 desktop profile"不等于"这次请求来自桌面页面"，写接口不能靠猜来放行；
+- 放行后**只接受固定白名单** `dsh-app://app`（与桌面自己校验自家来源用的字面量逐字一致），**任何 `http(s)` 第三方源仍然 403**；
+- 新增**桌面令牌通道**（`mintDesktopToken()` / `guardDesktopToken()`）：令牌只在内存与请求头，不写日志、不写 profile；
+- **补上 CORS 预检**：`OPTIONS` 返回 `Access-Control-Allow-Origin`（回显精确 Origin，**不用 `*`**）+ `Allow-Headers: content-type, x-dsh-pm-token` + `Vary: Origin`，预检合法的请求在正式响应里也带 Allow 头——否则浏览器端会把预检拦掉，服务端根本收不到请求；
+- "没有 Origin 就放行"那条既有路径**一行未动**（它是非浏览器本地工具的通道，也是 DNS rebinding 面的老防线）。
+- `--heal-recovery` **默认 dry-run**（只打印计划，不动盘）；真写要 `--apply` + `--confirm <profileName>` 双确认；
+- 桌面持锁 → **整个目录一个字节都不改**，退出码 `3`，并给"请从系统托盘完全退出后重开"的明确指引；
+- 写前 `.rescue-bak-*` 备份 → 原子写（tmp + rename）→ **重读盘复检**（逐条核对 id/name/disabled + YAML 可解析 + 无 BOM）→ 任一步失败**自动回滚**；
+- `cordis.patch.yml` 写盘一律**无 BOM**；读到 BOM 会剥离并**报告**（不静默）；
+- **不写 `package.json`、不碰 `node_modules`、不写 `state.json`**（桌面场景）。
+
+### Changed · 变更
+
+- `package.json`：版本 `1.1.0-rc.1 → 1.1.0-rc.2`；新增 bin **`dsh-drydock-doctor`**；新增 `test:capabilities` / `test:origin` / `test:cors` / `test:diagnostics` / `test:rescue-profile` / **`test:desktop`**；`test` 串联全部新测试；
+- npm `description` 首句改为**灾备语义**（"引擎外灾备与坞修"），把"插件管理"往后放——与定位一致；
+- 桌面 profile 首次初始化用 **web 模板**的 bundle 列表（官方行为），因此三分区判定在 desktop profile 上与 web 一致。
+- `npx dsh-pm-launcher` — **`npx dsh-drydock`** — 主入口：唯一网页入口 + 常驻守护（3081）
+- `npx dsh-pm-boot` — **`npx dsh-drydock-boot`** — Steam 式启动序列 / `--heal-recovery` / `--rescue-profile`
+- `npx dsh-pm-rescue` — **`npx dsh-drydock-rescue`** — 独立备份救援守护（3082）
+- —（本版新增） — **`npx dsh-drydock-doctor`** — 离线只读诊断报告
+- 旧命令**全部保留为别名**（`package.json` 的 `bin` 里两条指向同一文件），已写进脚本/快捷方式/文档的老命令**不会失效**。
+- **启动链不受影响**：本机实测开机自启链（`HKCU\Run` → `open-boot-autostart.vbs` → `scripts\dsh-open-boot.cmd`）用的是**绝对文件路径** `node_modules\dsh-drydock\bin\open-boot.mjs`，不经过 bin 名。
+- **有意不改**的旧标识（改了会断数据或断契约）：sidecar `plugin-manager.json`、备份目录 `.plugin-manager`、一次性令牌头 `X-DSH-PM-Token` / `<meta name="dsh-pm-token">`、环境变量 `DSH_PM_*`、RPC 命名空间 `pluginManagerPro`、类名 `PluginManagerPro`。
+
+### Fixed · 修复
+
+- **`test-launcher.mjs` 的高位端口假失败**（既存 flake，本版定位并修掉）：`freePort()` 可能取到 >64535 的临时端口，而守护锁端口 = 启动器端口 + 1000 越过 65535 → `lockPortOf()` 返回 `null` → open-boot 报"探测不可用"，3 条 F2 断言偶发假失败。现在 `freePort()` 按产品约束重取（≤64535）。
+- `bin/dsh-boot.cmd` 补退出码 `3`（安全门拒绝）的提示分支；原先会显示 `UNKNOWN - exit code 3`。
+
+> 完整发布说明：[`docs/releases/1.1.0-rc.2.md`](docs/releases/1.1.0-rc.2.md)
+
 ## [1.1.0-rc.1] - 2026-11-26（预发布）
 
 > 一句话：把 1.0.1 更名时有意保留的那一半命名债补齐（命令名 `dsh-pm-*` → `dsh-drydock*`，旧名留别名），并集中修掉一批"用户感知不到工具在干活"的兜底页问题。 ⚠️ 请先读这条：本版未在任何真实用户环境做完整验收。 自动化测试（bundle / render / integration / launcher / 端口隔离 等 452+ 项）全绿，兜底页在隔离环境做过点击验证； 但没有在你的多插件真实 profile、也没有在 Windows 之外的平台上人工跑过全部入口。 想稳…
@@ -429,6 +482,23 @@
 - `src/client.jsx`：`run()` 的滚动恢复改为 `restoreScroll()` 辅助函数，对 `requestAnimationFrame` / `window.scrollTo` 做 `typeof` 守卫——浏览器行为不变，SSR/VM sandbox 不再 ReferenceError
 
 > 完整发布说明：[`docs/releases/RELEASE_NOTES_0.7.3.md`](docs/releases/RELEASE_NOTES_0.7.3.md)
+
+## [1.1.0-desktop.2]（预发布·桌面通道）
+
+> 发布日期：待发布（本文件随合并先落盘；真机验收结论回填后再发） 通道：desktop（`npm dist-tag desktop`）；本版本不会动 `latest`。 版本口径见 [`../版本与轨道.md`](../版本与轨道.md)：桌面适配/迭代走预发布后缀，不顶动核心版本号。 相对 `1.1.0-desktop.1` 的增量：自更新（含 3080 界面上的「现在 / 稍后」弹窗）＋ 首启环境探测与自动剥离的收口。
+
+### Added · 新增
+
+- **首启环境探测 + 自动剥离**（`lib/envprobe.mjs` / `lib/capabilities.mjs` / `lib/host-profile.mjs`）：安装后首次启动探测宿主形态（`web` / `desktop` / `unknown`），把结论与证据原子写入 host profile； **非本环境的模块不会被加载**（惰性装载 + 剥离清单），`dsh-drydock-modules` 可随时审计"本环境永远不会执行的代码"。
+- **能力门控**（M1）：一张能力表 + 中文理由，UI 按表渲染，**不散落 `if (isDesktop)`**；被关掉的入口可点开看理由。
+- **来源防护 + CORS**（M2/M6）：桌面页面来源 `dsh-app://app` 走单独白名单；正式响应补 `Access-Control-Allow-Origin`/`Vary`；安全响应头与 1.0.3 的 `applySecurityHeaders` 合并（桌面与网页同一套）。
+- **离线只读诊断**（M4）：`dsh-drydock-doctor`（人读 / `--json` / `--include-logs` / `--out`），不写盘、不碰锁、不启停进程。
+- **官方目录三分区**（M3）：`lib/bundles-official.mjs` 直接读官方 `PROTECTED_PLUGINS`(17) / `HIDDEN_BUNDLES`(8) / `PROFILE_TEMPLATES`(5)，带静态回落副本。
+- **恢复后自愈**（M5）：`dsh-drydock-boot --heal-recovery`（默认 dry-run，真写需双确认），从侧车与 `.rescue-bak-*` 重建被官方恢复埋掉的归属行。
+- **官方通道救援 profile**（M5）：`dsh-drydock-boot --rescue-profile`（**桌面形态下拒绝执行**——绝不 spawn/kill 宿主）。
+- **自更新**（`bin/drydock-update.mjs` + `lib/self-update.mjs`）：从权威源（npm https + `dist.integrity` SRI）或用户显式确认的本地 tgz 取包 → 校验 → 暂存 → **「现在 / 稍后」** → detached worker（停引擎 → 装 → 健康检查 → 重启，失败自动回滚）。桌面形态**不自动装**（profile 由 Electron 独占），只提示；选了「稍后」下次启动由 3081 启动器再提醒。对应 RPC：`selfUpdateStatus` / `selfUpdatePrepare` / `selfUpdateDecide`；**3080 插件页工具栏下方新增「管理器自身」卡片** （有 pending 出「现在升级 / 稍后」两个按钮；桌面形态只显示提示文案；升级中显示"引擎会重启，完成后刷新本页"）。 → [docs/自更新.md](../自更新.md)
+
+> 完整发布说明：[`docs/releases/1.1.0-desktop.2.md`](docs/releases/1.1.0-desktop.2.md)
 
 ## [0.7.2]
 

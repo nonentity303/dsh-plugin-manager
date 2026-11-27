@@ -79,11 +79,15 @@ import { removePatchEntriesFor } from "../lib/patch-clean.mjs";
 import { DRYDOCK_FAVICON_LINK, drydockLogoMarkSvg, handleApi as handleRescueApi, rescuePageHtml } from "./rescue-daemon.mjs";
 import { entryUrlOf, launcherPortFromEnv, lockPortOf, rescuePortFromEnv } from "../lib/ports.mjs";
 import {
-	ENGINE_PORT, LAUNCHER_APP, bootWindowPlan, chdirStable, createSingleFlight, detectAvailableTerminals, engineHealth,
+	ENGINE_PORT, LAUNCHER_APP, bootWindowPlan, chdirStable, corsPreflightResponse, corsResponseHeaders, createSingleFlight, detectAvailableTerminals, engineHealth,
 	guardWriteRequest, isAlive, killTreeForce, launchViaCandidates, launcherHealth, looksLikeProfileDir, newApiToken, portOwner,
 	portOwnerProbe, probe, processImage, processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine, stopEngine,
-	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine
+	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine, writeOriginPolicyFromEnv
 } from "../lib/enginectl.mjs";
+// 1.1.0：首启环境探测（把宿主形态写进 `<DSH_HOME>/.drydock/host-profile.json`，供各进程按形态剥离模块）。
+import { ensureHostProfile } from "../lib/host-profile.mjs";
+// 1.1.0：自更新提醒（只读状态；executing 永远在 bin/drydock-update.mjs 里，不在启动器里）。
+import { readState as readSelfUpdateState, resolveDshHome as resolveSelfUpdateHome } from "../lib/self-update.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SELF = fileURLToPath(import.meta.url);
@@ -361,6 +365,9 @@ const HELP_TEXT = `浏览器启动器 / 3081 常驻入口（dsh-drydock 引擎�
   DSH_RESCUE_PORT        rescue-daemon 备份入口端口（默认 3082）
   DSH_PM_SCRIPTS_DIR     生成的启动脚本目录（默认 <DSH_HOME>/scripts；测试隔离用）
   DSH_PM_NO_SCRIPTS=1    跳过 dsh-launcher.cmd 生成（只读/受限环境）
+  DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1  允许桌面版页面来源 dsh-app://app 的写请求（默认关；网页版不要开）
+  DSH_DRYDOCK_DESKTOP_TOKEN=<48hex>   桌面版令牌（宿主用 mintDesktopToken() 生成，同时交给本服务与桌面页面）
+  DSH_DRYDOCK_ALLOW_NULL_ORIGIN=1     桌面页面确实发 Origin: null 时再开（需同时开上面第一项；只认桌面令牌）
 守护单实例锁端口 = 启动器端口 + 1000（默认 3081 → 4081；--supervise 用它保证单实例）。
 
 --uninstall 语义（冻结契约，供管理器卸载钩子调用）：
@@ -381,6 +388,11 @@ const HELP_TEXT = `浏览器启动器 / 3081 常驻入口（dsh-drydock 引擎�
 
 写接口同源白名单（L11）：http://127.0.0.1:<port> ／ http://localhost:<port> ／ http://[::1]:<port>
   （同机同端口的等价主机名；其他 Origin 一律 403。端口取本服务监听端口。）
+  桌面版（1.1.0）：显式设 DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1 时额外允许 dsh-app://app（Electron 页面来源，
+  大小写不敏感、允许末尾 "/"），令牌照旧校验；其他 dsh-app 页面与任何 http(s) 第三方源仍然 403。
+  CORS 预检（1.1.0 M6）：桌面页带自定义头 X-DSH-PM-Token 跨源 fetch 时浏览器先发 OPTIONS —— 启动器直接
+  应答 204 + Access-Control-Allow-Origin/Methods/Headers/Max-Age（只回显被允许的那个 Origin，绝不 *）；
+  来源不被允许的 OPTIONS 一律 403 且不回任何 Allow 头。预检排在令牌校验之前（规范要求，不带令牌）。
 
 输入校验（表驱动解析：t14-F1 / t18-F1 / t21-F1 三次实测的"静默回落默认目标"家族）：
   取值开关（--profile / --port / --dsh / --cwd / --interval / --wait-ms / --heartbeat-min）的取值：
@@ -2984,18 +2996,27 @@ function startServer(args) {
 	const launcherCmdPath = ensureLauncherCmd(args);
 	// L11 ②：一次性令牌（每次启动随机生成）——只注入页面 meta 与请求头，**不写日志、不落 profile 文件**
 	const token = newApiToken();
+	// v1.1.0 M2（契约 F1/F2）：桌面版渲染进程的页面来源是自定义协议 `dsh-app://app`（Electron 从打包
+	// 静态资源加载，不是 HTTP 源），桌面页发来的写请求 Origin 会被同源白名单判成"跨站"→403。默认全关，
+	// 只有显式设置 DSH_DRYDOCK_ALLOW_DESKTOP_ORIGIN=1 才多认这一个固定来源；令牌照旧校验（桌面拿不到页面
+	// meta 里的令牌 → 宿主进程经 DSH_DRYDOCK_DESKTOP_TOKEN 把桌面令牌同时交给本服务与桌面页面）。
+	// 不设环境变量 = 与 1.0.x 完全一致（web 零回归）。只改调用点，判定逻辑在 lib/enginectl.mjs。
+	const writeOriginPolicy = writeOriginPolicyFromEnv();
 	// L11 ③：boot 与救援 /api/start 共用同一个单飞闸门
 	const flight = createSingleFlight("open-boot:boot");
 	// rc.2 P2-1：插件更新/卸载事务共用第二个单飞闸门（并发第二个请求 → 409，不再并行跑两条 pnpm）
 	const pluginsFlight = createSingleFlight("open-boot:plugins");
 	const rescueCtx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
 	const sendJson = (res, code, body) => {
-		res.writeHead(code, applySecurityHeaders(res, { "Content-Type": "application/json; charset=utf-8" }));
+		// v1.1.0 M6（S6）：正式响应也要带 Access-Control-Allow-Origin + Vary（预检过了、正式响应没带
+		// 浏览器照样拦）；只回显被允许的 Origin（由 handler 入口按同一套白名单算好），来源不允许时为空。
+		// 1.0.3 起安全响应头统一走 applySecurityHeaders（CSP/XFO/nosniff），两者合并成一次 writeHead。
+		res.writeHead(code, applySecurityHeaders(res, { "Content-Type": "application/json; charset=utf-8", ...(res.dshCorsHeaders || {}) }));
 		res.end(JSON.stringify(body));
 	};
 	/** L11 ①②：写接口的 Origin + 令牌检查。返回 true 表示已拒绝并应答。 */
 	const rejectWrite = (req, res) => {
-		const failure = guardWriteRequest(req, { port: args.port, token });
+		const failure = guardWriteRequest(req, { port: args.port, token, ...writeOriginPolicy });
 		if (!failure) return false;
 		sendJson(res, failure.status, { ok: false, code: failure.code, error: failure.message });
 		return true;
@@ -3015,6 +3036,21 @@ function startServer(args) {
 		}
 		const url = new URL(req.url, "http://127.0.0.1");
 		const pathname = url.pathname;
+		// v1.1.0 M6（S6，P0 收尾）：CORS 预检分支 —— 必须排在路由与 `guardWriteRequest` **之前**
+		// （预检请求按 CORS 规范不带令牌；排在令牌校验之后会永远 401，正式请求根本发不出去）。
+		// 真包证据：桌面把 dsh-app 注册为 corsEnabled:true，桌面页面（来源 dsh-app://app）带自定义头
+		// X-DSH-PM-Token 跨源 fetch 本端口时浏览器必定先发 OPTIONS。这里来源被允许 → 204 + Allow-*
+		// （Allow-Origin 回显被允许的那个 Origin，绝不 *）；来源不被允许 → 403 且不回任何 Allow 头。
+		// 只新增这个分支，不改变 guardWriteRequest 的任何既有判定（POST/GET 与令牌逻辑原样）。
+		const allowDesktopApp = writeOriginPolicy.allowDesktopApp;
+		const corsHeaders = corsResponseHeaders(req, { port: args.port, allowDesktopApp });
+		if (corsHeaders) res.dshCorsHeaders = corsHeaders; // sendJson 复用它给正式响应补 Allow-Origin + Vary
+		const pre = corsPreflightResponse(req, { port: args.port, allowDesktopApp });
+		if (pre) {
+			res.writeHead(pre.status, pre.message ? { "Content-Type": "application/json; charset=utf-8", ...pre.headers } : { ...pre.headers });
+			res.end(pre.message ? JSON.stringify({ ok: false, code: pre.status, error: pre.message }) : "");
+			return;
+		}
 		if (pathname === "/") {
 			sendHtml(res, bootPageHtml({ token, enginePort: ENGINE_PORT }));
 			return;
@@ -3243,6 +3279,35 @@ async function main(argv = process.argv.slice(2)) {
 	if (!lightRun) {
 		installCrashLogging(args);
 		chdirStable(args.cwd);
+	}
+
+	// 1.1.0 首启环境探测：装完第一次启动就把宿主形态 + 证据写进 `<DSH_HOME>/.drydock/host-profile.json`。
+	// 只做一次（有新鲜缓存就跳过）；**探测/写盘失败绝不阻塞启动** —— 引擎起不来的机器上更要把启动页拉起来。
+	// 想彻底关掉：`DSH_DRYDOCK_NO_HOST_PROBE=1`（测试与纯净环境用）。
+	if (!lightRun && process.env.DSH_DRYDOCK_NO_HOST_PROBE !== "1") {
+		try {
+			const probed = ensureHostProfile();
+			if (probed.firstLaunch) {
+				const where = probed.write?.ok === false ? `（画像写入失败：${probed.write.error}）` : "";
+				console.log(`[open-boot] 首启环境探测：${probed.profile.form} · ${String(probed.profile.reason).slice(0, 80)}${where}`);
+			}
+		} catch (error) {
+			console.log(`[open-boot] 环境探测跳过（不影响启动）：${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	// 1.1.0：自更新提醒 —— 上次选了「稍后」的更新，在下次启动时再提示一次（只打印，不动任何东西；
+	// 真正的执行永远是 `dsh-drydock-update --now` 或 GUI 上点「现在」）。
+	if (!lightRun && process.env.DSH_DRYDOCK_NO_UPDATE_PROMPT !== "1") {
+		try {
+			const pending = readSelfUpdateState({ dshHome: resolveSelfUpdateHome() });
+			if (pending !== null && pending.phase === "pending" && pending.decision !== "now") {
+				console.log(`[open-boot] 有待安装的 drydock 更新：${pending.currentVersion} → ${pending.targetVersion}（通道 ${pending.channel}）`);
+				console.log("[open-boot]   现在装：node <包>/bin/drydock-update.mjs --now    稍后再说：--later（不再提示用 DSH_DRYDOCK_NO_UPDATE_PROMPT=1）");
+			}
+		} catch {
+			// 更新提醒失败绝不影响启动（读状态是纯读，失败只可能是路径/权限问题）
+		}
 	}
 
 	if (args.uninstall) { const r = await uninstallLauncher(args); console.log(r.message); return r.exitCode ?? (r.ok ? 0 : 1); }

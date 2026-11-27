@@ -649,6 +649,7 @@ function buildReleaseNotes(ctx, tgzName, localHash) {
 
 async function stepGh(ctx) {
   const { version, opts } = ctx;
+  ensureBranch(ctx); // --resume 跳过 preflight 时 ctx.branch 会是 null（见 ensureBranch 注释）
   const slug = ctx.resolveSlug();
   if (!slug) return { outcome: "FAIL", detail: "无法确定 owner/repo（git remote / package.json.repository）" };
   const tagName = `v${version}`;
@@ -725,7 +726,12 @@ async function stepGh(ctx) {
   const prerelease = isPrerelease(version);
   // Release 标题：网页主线保持「就是版本号」（历史一致）；其它通道加前缀，让人一眼看出这是给哪个端的。
   const releaseTitle = ctx.channelInfo && ctx.channelInfo.channel !== "web" ? `[${ctx.channelInfo.releaseLabel}] ${version}` : version;
-  const createArgs = ["release", "create", tagName, `${tgzPath}#${tgzName} (SHA256 ${String(localHash || "").toUpperCase()})`, "--target", ctx.branch, "--title", releaseTitle, "-R", slug];
+  // ⚠️ `--target` 只在**本次新建 tag** 时给：tag 已存在时再传 target_commitish，GitHub 会回
+  // 「422 Validation Failed: Release.target_commitish is invalid」（2026-11-27 实测，1.0.4 那次也踩过）。
+  // 幂等重跑（tag 已推、只补 Release）时直接省略 --target，让 Release 跟着已存在的 tag 走。
+  const createArgs = ["release", "create", tagName, `${tgzPath}#${tgzName} (SHA256 ${String(localHash || "").toUpperCase()})`];
+  if (!tagState.exists) createArgs.push("--target", ctx.branch);
+  createArgs.push("--title", releaseTitle, "-R", slug);
   if (hasNotes) createArgs.push("--notes-file", notesFile);
   else createArgs.push("--notes", buildReleaseNotes(ctx, tgzName, localHash));
   if (prerelease) createArgs.push("--prerelease", "--latest=false");
@@ -735,7 +741,7 @@ async function stepGh(ctx) {
     plan.push(`git tag -a ${tagName} -m "release ${tagName}"`);
     plan.push(`git push origin ${tagName}`);
   }
-  plan.push(`gh release create ${tagName} ${tgzName} --target ${ctx.branch}${hasNotes ? " --notes-file docs/releases/" + version + ".md" : " --notes <生成>"}${prerelease ? " --prerelease --latest=false" : ""}`);
+  plan.push(`gh release create ${tagName} ${tgzName}${tagState.exists ? "" : ` --target ${ctx.branch}`}${hasNotes ? " --notes-file docs/releases/" + version + ".md" : " --notes <生成>"}${prerelease ? " --prerelease --latest=false" : ""}`);
 
   if (ctx.dry) {
     return { outcome: "DRY", detail: `将执行：${plan.join("；然后 ")}` };
@@ -774,6 +780,19 @@ async function stepGh(ctx) {
     detail: `已建 Release ${tagName}${prerelease ? "（pre-release）" : ""} 并上传 ${tgzName}`,
     extra: { releaseUrl: (() => { try { return JSON.parse(cr.stdout).url; } catch { return null; } })() },
   };
+}
+
+/**
+ * 确保 `ctx.branch` 有值。
+ * 坑（2026-11-27 实测）：分支只在 **preflight** 步骤里解析，而 `--resume` 会跳过 preflight →
+ * `ctx.branch` 保持 null → `verify-triple --ref null` → gh 404 → verify 永远失败。
+ * 任何用到分支的步骤（gh / verify）都必须自己先确保它。
+ */
+function ensureBranch(ctx) {
+  if (typeof ctx.branch === "string" && ctx.branch.trim() !== "") return ctx.branch;
+  const br = ctx.run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: ctx.root });
+  ctx.branch = br.code === 0 && String(br.stdout || "").trim() !== "" ? String(br.stdout).trim() : "master";
+  return ctx.branch;
 }
 
 async function stepVerify(ctx) {
@@ -832,11 +851,16 @@ async function stepVerify(ctx) {
   if (opts.skipNpm) {
     notes.push("verify-triple 跳过：npm 侧未发布，没有可比对的线上 tgz");
   } else {
+    ensureBranch(ctx);
     const vt = ctx.run(process.execPath, [script, "--ref", ctx.branch], { cwd: ctx.root, timeoutMs: 900000 });
+    // 把实际用的 ref 打印出来：ref 写错时报的是「gh 404」，看不出是 ref 的问题（2026-11-27 实测）
+    console.log(`        verify-triple --ref ${JSON.stringify(ctx.branch)}（退出码 ${vt.code}）`);
     const out = `${vt.stdout}\n${vt.stderr}`;
     const conclusion = (out.split("\n").find((l) => l.includes("结论：")) || "").trim();
     if (vt.code !== 0 || !conclusion) {
-      problems.push(`verify-triple 异常退出（${vt.code}）${conclusion ? "：" + conclusion : ""}`);
+      // 把子进程的真实输出尾巴带出来：否则只看到"异常退出（1）"根本没法定位（2026-11-27 实测踩到）
+      const tail = out.split("\n").filter(Boolean).slice(-8).join("\n        ");
+      problems.push(`verify-triple 异常退出（${vt.code}）${conclusion ? `：${conclusion}` : ""}${tail ? `\n        子进程输出尾部：${tail}` : ""}`);
     } else if (!conclusion.includes("✅")) {
       problems.push(`verify-triple 结论不一致：${conclusion}`);
     } else {

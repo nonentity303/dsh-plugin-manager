@@ -10,8 +10,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
@@ -41,8 +41,14 @@ function readTar(buf) {
 
 // ---------- 用 gh 打 GitHub API（Node 的 fetch 在本机常被 TLS 掐断，gh 更稳） ----------
 function ghApi(path) {
-	const raw = execFileSync("gh", ["api", path], { maxBuffer: 1e9 });
-	return JSON.parse(raw.toString("utf8"));
+	try {
+		const raw = execFileSync("gh", ["api", path], { maxBuffer: 1e9 });
+		return JSON.parse(raw.toString("utf8"));
+	} catch (error) {
+		// 把**失败的接口路径**带出来：只报 "gh: Not Found (HTTP 404)" 根本没法定位（2026-11-27 实测）
+		const msg = error instanceof Error ? error.message : String(error);
+		throw new Error(`gh api 失败：${path}\n${msg}`);
+	}
 }
 function ghApiRaw(path) {
 	return execFileSync("gh", ["api", path], { maxBuffer: 1e9 });
@@ -59,14 +65,48 @@ const remoteBlobs = new Map();
 for (const e of tree.tree || []) if (e.type === "blob") remoteBlobs.set(e.path, e.sha);
 console.log(`   远端 HEAD = ${headSha.slice(0, 12)}，blob 数 = ${remoteBlobs.size}`);
 
-// 发布白名单（package.json 的 files）
-const whitelist = [
-	"lib/aggregate.js", "lib/client.js", "lib/compare-versions.js", "lib/downloader.js",
-	"lib/enginectl.mjs", "lib/index.js", "lib/platform.js", "lib/preflight.mjs",
-	"lib/readme-intro.js", "lib/remote.js", "lib/rescue.js",
-	"bin/dsh-boot.cmd", "bin/dsh-boot.mjs", "bin/open-boot.mjs", "bin/rescue-daemon.mjs",
-	"cordis.patch.yml", "README.md", "LICENSE", "package.json",
-];
+/**
+ * **构建产物**：不入库（`.gitignore` 里），所以 git 侧必然缺失。
+ * 它们是 `prepack` 现场构建的（同一 lockfile 下字节确定），核对时按"npm 线上 == 本地"比，
+ * 不要求 git 侧存在 —— 否则每次发布会误报一处差异（2026-11-27 `lib/client.js` 实测）。
+ * 新增不入库的产物时，往这里加一行。
+ */
+const BUILD_ARTIFACTS = new Set(["lib/client.js"]);
+
+/**
+ * 发布白名单：**从 package.json 的 `files` 展开**（不再手写死清单 —— 手写清单会漏新文件：
+ * 1.1.0 新增的 `bin/drydock-doctor|modules|update.mjs`、`lib/*.mjs` 就不在旧清单里）。
+ * 支持 `dir/*.ext`、`dir`（递归整个目录）、具体文件名三种写法。
+ */
+function expandPublishFiles(patterns) {
+	const out = new Set();
+	const walk = (absDir) => {
+		for (const entry of readdirSync(absDir)) {
+			const abs = join(absDir, entry);
+			if (statSync(abs).isDirectory()) walk(abs);
+			else out.add(relative(ROOT, abs).split(sep).join("/"));
+		}
+	};
+	for (const raw of patterns) {
+		const pattern = String(raw);
+		if (pattern.includes("*")) {
+			const dir = join(ROOT, dirname(pattern));
+			const suffix = pattern.slice(pattern.indexOf("*") + 1);
+			if (!existsSync(dir)) continue;
+			for (const entry of readdirSync(dir)) {
+				const rel = `${dirname(pattern)}/${entry}`.split(sep).join("/");
+				if (suffix === "" || entry.endsWith(suffix)) out.add(rel);
+			}
+			continue;
+		}
+		const abs = join(ROOT, pattern);
+		if (!existsSync(abs)) continue;
+		if (statSync(abs).isDirectory()) walk(abs);
+		else out.add(pattern);
+	}
+	return [...out].sort();
+}
+const whitelist = expandPublishFiles(JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"))?.files ?? []);
 
 // 远端文件内容（按 blob sha 取，走 git blob API —— 用 base64 解码，避免编码问题）
 const remoteFiles = new Map();
@@ -116,14 +156,21 @@ for (const rel of whitelist) {
 	const g = h(remoteFiles.get(rel));
 	const n = h(pubFiles.get(rel));
 	const l = h(localFiles.get(rel));
-	const same = g === n && n === l;
+	// 构建产物不入库：git 侧必然缺失，只要求 npm 线上 == 本地（字节确定性由 prepack 保证）
+	const isArtifact = BUILD_ARTIFACTS.has(rel);
+	const same = isArtifact ? n === l && n !== "—— 缺失 ——" : g === n && n === l;
 	if (!same) allSame = false;
-	console.log(rel.padEnd(24) + g.padEnd(24) + n.padEnd(24) + l.padEnd(24) + (same ? "✅" : "❌"));
+	console.log(rel.padEnd(24) + (isArtifact ? "（构建产物·不入库）".padEnd(24) : g.padEnd(24)) + n.padEnd(24) + l.padEnd(24) + (same ? "✅" : "❌"));
 }
 
 console.log("\n大小对照（git远端 / npm线上 / 本地）:");
 for (const rel of whitelist) {
 	const g = size(remoteFiles.get(rel)), n = size(pubFiles.get(rel)), l = size(localFiles.get(rel));
+	// 构建产物 git 侧本来就空（不入库），不算"大小不同"
+	if (BUILD_ARTIFACTS.has(rel)) {
+		if (n !== l) console.log(`  ${rel.padEnd(24)} （构建产物）${"".padStart(4)} / ${n.padStart(8)} / ${l.padStart(8)}   ← 大小不同`);
+		continue;
+	}
 	if (g !== n || n !== l) console.log(`  ${rel.padEnd(24)} ${g.padStart(8)} / ${n.padStart(8)} / ${l.padStart(8)}   ← 大小不同`);
 }
 

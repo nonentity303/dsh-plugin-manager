@@ -657,3 +657,254 @@ console.log("AGGREGATE OK: highest version + tie distribution across sources");
 	}
 	console.log(`P-05 OK: 搜索过滤防抖 ${SEARCH_DEBOUNCE_MS}ms（输入即时、列表重建延后；纯函数 + 产物常量双断言）`);
 }
+
+// ---- M3（1.1.0 桌面版移植）：官方保护集 + 三分区（lib/bundles-official.mjs 与 lib/index.js 的集成）
+// 可证伪点：
+//  ① 1.0.x 的三分区是 client 里的硬编码白名单（CORE_PACKAGE_NAMES = dsh-base / dsh-web-app），
+//     官方 17 项 PROTECTED_PLUGINS / 8 项 HIDDEN_BUNDLES 一个都没用上；→ 本块断言 host 侧已走官方目录。
+//  ② 官方包解析不到时必须用静态回落副本，且**集合仍完整**（不许静默返回空集）。
+//  ③ web 侧现有分区必须零回归：以**改前 client 的真实实现**（lib/client.js 导出的 sectionKeyOfEntry）
+//     为参照，逐条目对照 host 的新判定。
+{
+	const m3Checks = [];
+	const M = await import("./lib/bundles-official.mjs");
+	const H = await import("./lib/index.js");
+	const internals = H.__internals;
+
+	// 官方 0.2.2-rc.5 的逐字期望值（与 lib/bundles-official.mjs 的静态回落副本互相钉死：
+	// 写错一个字符，要么回落断言失败，要么真官方对照失败）
+	const EXPECTED_PROTECTED = M.FALLBACK_PROTECTED_PLUGINS;
+	const EXPECTED_HIDDEN = M.FALLBACK_HIDDEN_BUNDLES;
+	const EXPECTED_TEMPLATE_NAMES = ["acp", "web", "headless", "sdk", "sdk-minimal"];
+	const sameSet = (actual, expected) =>
+		actual.length === expected.length && expected.every((name) => actual.includes(name));
+	const sorted = (list) => [...list].sort();
+
+	// ---- 3a. 静态回落副本本身必须是官方 0.2.2-rc.5 的逐字副本（17 / 8 / 5 / 1）
+	if (M.FALLBACK_PROTECTED_PLUGINS.length !== 17) m3Checks.push(`静态回落 PROTECTED 应为 17 项，实为 ${M.FALLBACK_PROTECTED_PLUGINS.length}`);
+	if (M.FALLBACK_HIDDEN_BUNDLES.length !== 8) m3Checks.push(`静态回落 HIDDEN 应为 8 项，实为 ${M.FALLBACK_HIDDEN_BUNDLES.length}`);
+	if (sorted(Object.keys(M.FALLBACK_PROFILE_TEMPLATES)).join(",") !== sorted(EXPECTED_TEMPLATE_NAMES).join(",")) {
+		m3Checks.push(`静态回落模板应为 ${EXPECTED_TEMPLATE_NAMES.join("/")}，实为 ${Object.keys(M.FALLBACK_PROFILE_TEMPLATES).join("/")}`);
+	}
+	if (JSON.stringify(M.FALLBACK_DEFAULT_PROFILE_BUNDLES) !== JSON.stringify(["@deepseek-ai/dsh-base"])) {
+		m3Checks.push(`静态回落 DEFAULT_PROFILE_BUNDLES 应为 ["@deepseek-ai/dsh-base"]，实为 ${JSON.stringify(M.FALLBACK_DEFAULT_PROFILE_BUNDLES)}`);
+	}
+	// 任务点名的 3 个 protected 名字 + 3 个 hidden 名字（逐字比对，不许简写）
+	for (const name of ["@deepseek-ai/dsh-client-ui-plugin-manager", "@deepseek-ai/dsh-plugin-manager", "@deepseek-ai/dsh-api-gateway"]) {
+		if (!M.FALLBACK_PROTECTED_PLUGINS.includes(name)) m3Checks.push(`PROTECTED_PLUGINS 缺 ${name}`);
+	}
+	for (const name of ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@deepseek-ai/dsh-headless"]) {
+		if (!M.FALLBACK_HIDDEN_BUNDLES.includes(name)) m3Checks.push(`HIDDEN_BUNDLES 缺 ${name}`);
+	}
+
+	// ---- 3b. 坏 loader（抛异常）→ 必须回落，且三项集合完整
+	const badThrow = await M.officialCatalog({ loader: async () => { throw new Error("模拟：官方包没装"); } });
+	if (badThrow.source !== "fallback") m3Checks.push(`注入抛错 loader 应回落（source=${badThrow.source}）`);
+	if (badThrow.protected.size !== 17 || badThrow.hidden.size !== 8) {
+		m3Checks.push(`回落集合不完整（protected=${badThrow.protected.size} hidden=${badThrow.hidden.size}）`);
+	}
+	if (Object.keys(badThrow.templates).length !== 5) m3Checks.push(`回落模板不完整（${Object.keys(badThrow.templates).length} 个）`);
+	if (typeof badThrow.reason !== "string" || !badThrow.reason.includes("模拟：官方包没装")) {
+		m3Checks.push(`回落必须带可读原因（reason=${JSON.stringify(badThrow.reason)}）`);
+	}
+
+	// ---- 3c. 官方包"在但导出是空集"→ 也不许静默采信空集
+	const badEmpty = await M.officialCatalog({
+		loader: async () => ({
+			PROTECTED_PLUGINS: new Set(),
+			HIDDEN_BUNDLES: new Set(),
+			PROFILE_TEMPLATES: {},
+			DEFAULT_PROFILE_BUNDLES: []
+		})
+	});
+	if (badEmpty.source !== "fallback") m3Checks.push(`空集导出应回落（source=${badEmpty.source}）`);
+	if (badEmpty.protected.size !== 17 || badEmpty.hidden.size !== 8) {
+		m3Checks.push(`空集导出触发的回落集合不完整（protected=${badEmpty.protected.size} hidden=${badEmpty.hidden.size}）`);
+	}
+
+	// ---- 3d. 官方包"缺导出"（老版本形状）→ 整包回落（不许半官方半回落让 source 说谎）
+	const badPartial = await M.officialCatalog({ loader: async () => ({ PROTECTED_PLUGINS: new Set(EXPECTED_PROTECTED) }) });
+	if (badPartial.source !== "fallback") m3Checks.push(`缺导出应整包回落（source=${badPartial.source}）`);
+	if (typeof badPartial.reason !== "string" || !/HIDDEN_BUNDLES/.test(badPartial.reason)) {
+		m3Checks.push(`缺导出的 reason 应点名缺哪项（reason=${JSON.stringify(badPartial.reason)}）`);
+	}
+
+	// ---- 3e. 注入"完整官方模块"→ source === "official"（可注入 loader 的契约）
+	const fakeOfficial = {
+		PROTECTED_PLUGINS: new Set(EXPECTED_PROTECTED),
+		HIDDEN_BUNDLES: new Set(EXPECTED_HIDDEN),
+		PROFILE_TEMPLATES: JSON.parse(JSON.stringify(M.FALLBACK_PROFILE_TEMPLATES)),
+		DEFAULT_PROFILE_BUNDLES: [...M.FALLBACK_DEFAULT_PROFILE_BUNDLES]
+	};
+	const injectedOk = await M.officialCatalog({ loader: async () => fakeOfficial });
+	if (injectedOk.source !== "official") m3Checks.push(`完整官方模块应判 official（source=${injectedOk.source}）`);
+	if (!sameSet([...injectedOk.protected], EXPECTED_PROTECTED)) m3Checks.push("official 分支的 PROTECTED_PLUGINS 与静态副本不一致");
+	if (!sameSet([...injectedOk.hidden], EXPECTED_HIDDEN)) m3Checks.push("official 分支的 HIDDEN_BUNDLES 与静态副本不一致");
+	const wireInjected = M.wireOfficialCatalog(injectedOk);
+	if (wireInjected.source !== "official" || !Array.isArray(wireInjected.protected) || wireInjected.templates.headless === void 0) {
+		m3Checks.push("wireOfficialCatalog 形状不对（source/protected/模板）");
+	}
+
+	// ---- 3f. 真·官方 import（本机已装 → official；解析不到时明确标注，不静默）
+	const realCatalog = await M.officialCatalog();
+	if (realCatalog.source === "official") {
+		if (!sameSet([...realCatalog.protected], EXPECTED_PROTECTED)) {
+			m3Checks.push(`真·官方 PROTECTED_PLUGINS 与静态副本不一致：${[...realCatalog.protected].join(",")}`);
+		}
+		if (!sameSet([...realCatalog.hidden], EXPECTED_HIDDEN)) {
+			m3Checks.push(`真·官方 HIDDEN_BUNDLES 与静态副本不一致：${[...realCatalog.hidden].join(",")}`);
+		}
+		if (realCatalog.reason !== null) m3Checks.push("official 分支的 reason 应为 null");
+		console.log(`M3 OK: 真·官方 import 成功 source=official（origin=${realCatalog.origin}；17 protected / 8 hidden / 5 模板，与静态副本逐字一致）`);
+	} else {
+		console.log(`M3 SKIP: 本机解析不到 ${M.OFFICIAL_BUNDLES_PACKAGE} → source=fallback（静态副本完整性已由 3a/3b 断言）。reason=${realCatalog.reason}`);
+	}
+
+	// ---- 3g. 三个便捷函数（officialProtectedPlugins / officialHiddenBundles / officialProfileTemplates）
+	const p3 = await M.officialProtectedPlugins({ loader: async () => fakeOfficial });
+	const h3 = await M.officialHiddenBundles({ loader: async () => fakeOfficial });
+	const t3 = await M.officialProfileTemplates({ loader: async () => fakeOfficial });
+	if (p3.source !== "official" || !sameSet(p3.items, EXPECTED_PROTECTED)) m3Checks.push("officialProtectedPlugins() 结果不符");
+	if (h3.source !== "official" || !sameSet(h3.items, EXPECTED_HIDDEN)) m3Checks.push("officialHiddenBundles() 结果不符");
+	if (t3.source !== "official" || Object.keys(t3.templates).length !== 5 || t3.defaultProfileBundles.length !== 1) {
+		m3Checks.push("officialProfileTemplates() 结果不符");
+	}
+
+	// ---- 3h. 纯函数三分区：官方视角下 base / web-app / headless 都是"引擎内置组件"
+	const officialHidden = realCatalog.hidden;
+	const officialProtected = realCatalog.protected;
+	for (const name of ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@deepseek-ai/dsh-headless", "@deepseek-ai/dsh-sdk-app", "@deepseek-ai/dsh-acp-app"]) {
+		const got = M.classifyBundle(name, { protectedSet: officialProtected, hiddenSet: officialHidden });
+		if (got !== "builtin") m3Checks.push(`官方向量：${name} 应判 builtin（实为 ${got}）`);
+	}
+	for (const name of ["@deepseek-ai/dsh-plugin-manager", "@deepseek-ai/dsh-api-gateway", "@deepseek-ai/dsh-client-ui-plugin-manager"]) {
+		const got = M.classifyBundle(name, { protectedSet: officialProtected, hiddenSet: officialHidden });
+		if (got !== "core") m3Checks.push(`官方向量：${name} 应判 core（实为 ${got}）`);
+	}
+	const userThirdParty = M.classifyBundle("@angelky7/dsh-browser-control", { protectedSet: officialProtected, hiddenSet: officialHidden, origin: "user" });
+	if (userThirdParty !== "user") m3Checks.push(`官方向量：第三方用户插件应判 user（实为 ${userThirdParty}）`);
+
+	// ---- 3i. 生产路径（lib/index.js 的 sectionOfEntry）：web 现有分区零回归
+	// 参照物 = 改前 client 的真实实现（打包产物 lib/client.js 导出的 sectionKeyOfEntry）。
+	if (typeof exported?.sectionKeyOfEntry !== "function") {
+		m3Checks.push("client bundle 未导出 sectionKeyOfEntry，无法做分区回归对照");
+	} else {
+		// 真实 web profile 会出现的行：dsh-base / dsh-web-app 的成员包（含 17 项官方保护集）+ 两个 bundle 根
+		// + 用户装的第三方件（package.json dependencies 里的真实包名）
+		const webEntries = [
+			["@deepseek-ai/dsh-base", "builtin"],
+			["@deepseek-ai/dsh-web-app", "builtin"],
+			["@deepseek-ai/dsh-plugin-manager", "builtin"],
+			["@deepseek-ai/dsh-plugin-manager/tools", "builtin"],
+			["@deepseek-ai/cordis-plugin-loader", "builtin"],
+			["@deepseek-ai/cordis-plugin-include", "builtin"],
+			["@deepseek-ai/dsh-api-gateway", "builtin"],
+			["@deepseek-ai/dsh-host-webserver", "builtin"],
+			["@deepseek-ai/dsh-client-modules", "builtin"],
+			["@deepseek-ai/dsh-client-ui-settings-plugin-inventory", "builtin"],
+			["@deepseek-ai/dsh-client-ui-plugin-manager", "builtin"],
+			["@deepseek-ai/dsh-host-plugin-inventory", "builtin"],
+			["@deepseek-ai/dsh-typert-registry", "builtin"],
+			["@deepseek-ai/dsh-api-remotes", "builtin"],
+			["@deepseek-ai/dsh-api-remote-access", "builtin"],
+			["@deepseek-ai/cordis-plugin-timer", "builtin"],
+			["@deepseek-ai/dsh-client-connection", "builtin"],
+			["@deepseek-ai/dsh-host-frontend-static", "builtin"],
+			["@deepseek-ai/dsh-tools", "builtin"],
+			["@deepseek-ai/dsh-hmr", "builtin"],
+			["@deepseek-ai/dsh-agent", "builtin"],
+			["@deepseek-ai/dsh-client-ui-theme", "builtin"],
+			["dsh-drydock", "user"],
+			["dsh-free-search", "user"],
+			["dsh-office-tools", "user"],
+			["dsh-vision-router", "user"],
+			["dsh-whale-widget", "user"],
+			["dshmarket", "user"],
+			["@angelky7/dsh-browser-control", "user"],
+			["@linxin666/dsh-client-ui-skill-explorer", "user"],
+			["@delthin/dsh-agent-roles", "user"]
+		];
+		let mismatched = 0;
+		for (const [packageName, origin] of webEntries) {
+			const before = exported.sectionKeyOfEntry({ packageName, origin });
+			const after = internals.sectionOfEntry(packageName, origin);
+			if (before !== after) {
+				mismatched += 1;
+				m3Checks.push(`web 分区回归：${packageName}（origin=${origin}）改前=${before} 改后=${after}`);
+			}
+		}
+		if (mismatched === 0) {
+			console.log(`M3 OK: web 现有分区零回归 —— ${webEntries.length} 个条目逐个与改前 client 实现（sectionKeyOfEntry）一致（核心区仍是 dsh-base/dsh-web-app）`);
+		}
+
+		// 现有语义等价：host 的生产路径仍然把 dsh-base / dsh-web-app 判 core（drydock 自用锁定项，
+		// 不是官方保护集——官方把这两个放在 HIDDEN_BUNDLES，纯官方视角是 builtin，见 3h）。
+		for (const name of ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"]) {
+			if (internals.sectionOfEntry(name, "builtin") !== "core") {
+				m3Checks.push(`生产路径：${name} 应保持 core（drydock 自用锁定项，1.0.x 语义）`);
+			}
+		}
+
+		// 本模块的冲突修正：dsh-headless 一旦被写进 profile 依赖（origin=user），旧实现会把它当"用户插件"，
+		// 新实现必须归"引擎内置组件"（= 改前漏判点）。
+		const headlessBefore = exported.sectionKeyOfEntry({ packageName: "@deepseek-ai/dsh-headless", origin: "user" });
+		const headlessAfter = internals.sectionOfEntry("@deepseek-ai/dsh-headless", "user");
+		if (headlessBefore !== "user") m3Checks.push(`回归对照前提不成立：改前 client 应把 headless+user 判 user（实为 ${headlessBefore}）`);
+		if (headlessAfter !== "builtin") m3Checks.push(`漏判修复失败：headless 作为 profile 依赖应判 builtin（实为 ${headlessAfter}）`);
+		if (internals.sectionOfEntry("@deepseek-ai/dsh-headless", "builtin") !== "builtin") {
+			m3Checks.push("漏判修复失败：headless（origin=builtin）应判 builtin");
+		}
+	}
+
+	// ---- 3j. 远程快照暴露：snapshot().official 四项齐全 + entry.section 落在条目上
+	{
+		const { pathToFileURL, fileURLToPath } = await import("node:url");
+		const { dirname, join } = await import("node:path");
+		const HERE = dirname(fileURLToPath(import.meta.url));
+		const m3Entries = [
+			{ id: "m3-e1", options: { id: "m3-cfg-base", name: "@deepseek-ai/dsh-base" }, fiber: void 0, _initTask: void 0 },
+			{ id: "m3-e2", options: { id: "m3-cfg-headless", name: "@deepseek-ai/dsh-headless" }, fiber: void 0, _initTask: void 0 },
+			{ id: "m3-e3", options: { id: "m3-cfg-gw", name: "@deepseek-ai/dsh-api-gateway" }, fiber: void 0, _initTask: void 0 }
+		];
+		const m3Ctx = {
+			loader: {
+				ctx: { baseUrl: pathToFileURL(join(HERE, "package.json")).href },
+				entries: () => m3Entries,
+				resolve: (id) => m3Entries.find((e) => e.id === id)
+			},
+			on: () => {}, inject: (s, okCb, failCb) => { if (typeof failCb === "function") failCb(); },
+			logger: { info: () => {}, warn: () => {}, error: () => {} },
+			reflect: { provide: () => {} }
+		};
+		const m3Svc = new H.PluginManagerPro(m3Ctx, { protectedEntries: [], settleTimeoutMs: 200 });
+		const m3Snap = m3Svc.snapshot();
+		const officialWire = m3Snap.official;
+		if (officialWire === void 0 || officialWire === null) {
+			m3Checks.push("snapshot() 未暴露 official 目录（client 后续拿不到保护集/隐藏集）");
+		} else {
+			if (officialWire.source !== "official" && officialWire.source !== "fallback") m3Checks.push(`official.source 非法：${officialWire.source}`);
+			if (officialWire.protected.length !== 17) m3Checks.push(`snapshot().official.protected 应为 17 项（实为 ${officialWire.protected.length}）`);
+			if (officialWire.hidden.length !== 8) m3Checks.push(`snapshot().official.hidden 应为 8 项（实为 ${officialWire.hidden.length}）`);
+			if (Object.keys(officialWire.templates).length !== 5) m3Checks.push(`snapshot().official.templates 应为 5 个模板（实为 ${Object.keys(officialWire.templates).length}）`);
+			if (officialWire.source === "fallback" && (typeof officialWire.reason !== "string" || officialWire.reason === "")) {
+				m3Checks.push("official.source=fallback 时必须带 reason");
+			}
+		}
+		const sectionOf = (configId) => m3Snap.entries.find((e) => e.configId === configId)?.section;
+		if (sectionOf("m3-cfg-base") !== "core") m3Checks.push(`snapshot 条目 section（dsh-base）应为 core（实为 ${sectionOf("m3-cfg-base")}）`);
+		if (sectionOf("m3-cfg-headless") !== "builtin") m3Checks.push(`snapshot 条目 section（dsh-headless）应为 builtin（实为 ${sectionOf("m3-cfg-headless")}）`);
+		if (sectionOf("m3-cfg-gw") !== "builtin") m3Checks.push(`snapshot 条目 section（api-gateway，origin=builtin）应为 builtin（实为 ${sectionOf("m3-cfg-gw")}）`);
+		// 只读快照：official 目录是 JSON 安全的（远程传输不炸），且不得把 Set 直接塞进快照
+		try {
+			JSON.stringify(m3Snap);
+		} catch (error) {
+			m3Checks.push("snapshot() 不是 JSON 安全的：" + (error instanceof Error ? error.message : String(error)));
+		}
+	}
+
+	if (m3Checks.length > 0) {
+		console.error("M3 FAIL:\n - " + m3Checks.join("\n - "));
+		process.exit(1);
+	}
+	console.log("M3 OK: 官方目录（17 protected / 8 hidden / 5 模板）动态 import + 静态回落 + 三分区纯函数全部通过");
+}

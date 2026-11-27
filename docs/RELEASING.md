@@ -545,6 +545,8 @@ CI 路径不变：`git tag v<version>` + push → `release.yml` 自己派生 dis
 | C5 | GitHub Release 标记正确 | 网页正式版 → **Latest**；任何预发布 → **Pre-release** 且 `--latest=false`；标题：网页主线就是版本号，其它通道加前缀 `[桌面] ` / `[社区桌面] ` |
 | C6 | 桌面通道必须真机验证 | 在真桌面运行时跑一遍「离线诊断 → 能力表快照 → 救援 profile 预演」；**未验证就在 Release 正文写"未真机验收"**，不得暗示已验收 |
 | C7 | 用户装得上 | 桌面通道用 `dsh-drydock@desktop` 或显式版本号；**不要**写"装最新版"（26 小时冷静期见 §8） |
+| C8 | 环境剥离清单可读 | `npx dsh-drydock-modules --audit`：确认本环境被剥离的文件/行数与预期一致；`node test-host-strip.mjs` 全绿（新增环境专属模块必须先在 `lib/host-registry.mjs` 登记，否则它不会被剥离、也不会出现在清单里） |
+| C9 | README 首屏未被手册化 | `node test-docs.mjs` 有硬上限（`README.md` ≤ 180 行、前 80 行必须含「安装」「升级自查」）；桌面/剥离细节一律进 `docs/` |
 
 ### 11.4 迁移口径（历史怎么处理）
 

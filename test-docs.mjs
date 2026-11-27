@@ -44,6 +44,8 @@ const pkg = JSON.parse(readText("package.json", "package.json"));
 const version = String(pkg.version ?? "");
 
 // ── (a) README / README.en 里的版本号必须等于 package.json 的 version（动态，不写死）──────
+// 2026-11-27：版本号可能带**通道后缀**（如 `1.1.0-desktop.1`），所以下面的正则认完整 semver 预发布段，
+// 不能只认 `x.y.z` —— 否则新通道一上线，"版本一致"这条断言就永久红（属于断言本身过时，不是文档错）。
 const readme = readText("README.md", "README.md");
 const readmeEn = readText("README.en.md", "README.en.md");
 
@@ -54,13 +56,13 @@ function versionFrom(text, re, label) {
 }
 
 check("README.md 版本号 == package.json version", () => {
-	const got = versionFrom(readme, /本页对应版本[：:]\s*(\d+\.\d+\.\d+)/, "README.md");
+	const got = versionFrom(readme, /本页对应版本[：:]\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)/, "README.md");
 	if (got !== version) throw new Error(`README.md 写的是 ${got}，package.json 是 ${version}`);
 	return `package.json ${version} → README.md ${got}`;
 });
 
 check("README.en.md 版本号 == package.json version", () => {
-	const got = versionFrom(readmeEn, /Current version[：:]\s*(\d+\.\d+\.\d+)/i, "README.en.md");
+	const got = versionFrom(readmeEn, /Current version[：:]\s*(\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?)/i, "README.en.md");
 	if (got !== version) throw new Error(`README.en.md 写的是 ${got}，package.json 是 ${version}`);
 	return `package.json ${version} → README.en.md ${got}`;
 });

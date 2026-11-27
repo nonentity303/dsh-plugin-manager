@@ -10,8 +10,9 @@
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包已挂弃用提示、不删包，仅保留供历史版本安装）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **本页对应版本：1.0.4**（核对：`npm view dsh-drydock version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>）
+> **本页对应版本：1.1.0-desktop.1**（桌面通道；`npm view dsh-drydock dist-tags` 可核对；标签见 <https://github.com/nonentity303/dsh-drydock/tags>）
 > ⚠️ 刚发布的版本会被 pnpm 的 **24 小时冷静期**（`minimumReleaseAge`）挡住：装不到或装完还是旧版时，**显式写版本号**（见下方安装）。
+> 版本与通道口径见 [docs/版本与轨道.md](docs/版本与轨道.md)：`-desktop.N` = 桌面通道、`-rc.N` = 网页预发布、无后缀 = 正式版。
 
 ## 四个主打特色
 
@@ -30,14 +31,18 @@
 ## 安装（30 秒）
 
 ```sh
-# 推荐：显式版本号，不会被 24 小时冷静期挡住
+# 网页版（正式版通道，= npm latest）
 dsh plugin --profile web add dsh-drydock@1.0.4
-
-# 发版满 24 小时后，也可以用 latest
+# 发版满 24 小时后，也可以不带版本号
 dsh plugin --profile web add dsh-drydock
 
+# 桌面版（DSH Desktop，独立 profile；桌面通道 = npm dist-tag desktop）
+#   1) 先启动一次桌面版以初始化 profiles/desktop → 2) 从系统托盘**完全退出**
+#   3) 用桌面版自带 CLI（不是 npm 的 dsh）执行，4) 重开桌面版并在设置里确认插件已启用
+dsh plugin --profile desktop add dsh-drydock@desktop
+
 # 离线 tgz（GitHub Release 页下载，或 npm pack 自建）
-dsh plugin --profile web add ./dsh-drydock-1.0.4.tgz
+dsh plugin --profile web add ./dsh-drydock-<版本>.tgz
 
 # 回退上一个正式版（1.0.x 之间回退走同一包名）
 dsh plugin --profile web add dsh-drydock@1.0.3
@@ -50,6 +55,23 @@ dsh web
 
 - **不想装进 profile？** `npx dsh-drydock` 起 3081 启动器、`npx dsh-drydock-boot --repair-only` 命令行自检 + 修复、`npx dsh-drydock-rescue` 起 3082 备份救援——都无需安装。
 - **装不到 / 装完还是旧版？** ① 客户端 bundle 只在引擎启动时加载，**必须重启 `dsh web`**；② 24 小时冷静期内务必写显式版本号（或把 `dsh-drydock@1.0.4` 加入 profile `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。完整安装 / 更新 / 卸载 / 回退 / 离线 tgz / 开机自启见 [docs/INSTALL.md](docs/INSTALL.md)。
+
+## 桌面版（DSH Desktop）支持（1.1.0 新增）
+
+> 桌面版官方已把安装 / 启停 / 更新 / 卸载 / 崩溃恢复吃进 app，所以 drydock 在桌面只做**官方覆盖不到**的三件事：
+> **离线只读诊断、官方恢复后自愈、走官方通道重建救援 profile**（不接管插件页 / 不自启 / 不拉起或停止 Host / 不写 `node_modules`）。
+
+```sh
+npx dsh-drydock-doctor                                     # ① 离线只读诊断（--json 可贴进 issue）
+npx dsh-drydock-boot --heal-recovery [--apply --confirm web] # ② 官方恢复后自愈（默认 dry-run）
+npx dsh-drydock-boot --rescue-profile                       # ③ 官方通道重建救援 profile（桌面形态拒绝执行）
+npx dsh-drydock-modules --audit                             # ④ 本环境永远不会执行的文件 + 行数（首启已自动探测）
+```
+
+**首启环境探测 + 自动剥离（本版新增）**：装完第一次启动即探测宿主形态（web / desktop / unknown）并落盘，
+**不属于本形态的模块连 `import` 都不发生**（实测桌面形态整体剥离 `lib/rescue-profile.mjs` 1331 行）。
+→ [docs/环境自适应与剥离.md](docs/环境自适应与剥离.md) · [docs/桌面版移植-1.1.0设计.md](docs/桌面版移植-1.1.0设计.md)
+> ⚠️ 桌面能力有 fixture + 注入式单测覆盖，但**真机链路未验收**：首次请先跑 `dsh-drydock-doctor`。
 
 ## 升级自查（0.9.1 之前的老用户必看）
 
@@ -127,9 +149,11 @@ dsh web                                                   # 重启生效
 | [docs/FAQ.md](docs/FAQ.md) | 常见问题与排错（含旧包升级问题） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 三进程架构、槽位契约、侧车字段、卸载事务数据流 |
 | [docs/LAUNCHER.md](docs/LAUNCHER.md) | 三个 bin 的全部命令与退出码、`--uninstall` 闭环、写接口防护 |
-| [docs/RELEASING.md](docs/RELEASING.md) | 发布流程 |
+| [docs/RELEASING.md](docs/RELEASING.md) | 发布流程（§11 多通道发布：dist-tag 由 `release/channels.json` 派生） |
+| [docs/版本与轨道.md](docs/版本与轨道.md) | 三条发布通道（web / desktop / community）、版本号怎么升、各通道安装命令 |
+| [docs/环境自适应与剥离.md](docs/环境自适应与剥离.md) | 首启环境探测、能力表、环境专属模块的惰性装载与剥离清单（死代码审查输入） |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史（脚本生成） |
-| [docs/releases/](docs/releases/) | 每版发布说明（本页对应 [1.0.4](docs/releases/1.0.4.md)） |
+| [docs/releases/](docs/releases/) | 每版发布说明（本页对应 [1.1.0-desktop.1](docs/releases/1.1.0-desktop.1.md)） |
 | [docs/README-full.md](docs/README-full.md) | 0.9.1 时代完整存档（能力对比 / 兼容矩阵全文），**非当前手册** |
 
 ## 许可证

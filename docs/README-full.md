@@ -2,7 +2,8 @@
 
 > **档案说明（2026-11-25）**：本文是 **v0.9.1 时代的完整中文正文存档**，不是当前版本手册——
 > 文中"当前版本 0.9.1 / npm 最新"等表述指写作时点。1.0.0 起包名已改为 **`dsh-drydock`**（旧包 `dsh-plugin-manager-pro` 将加弃用标记、不删包）；
-> 当前中文手册见根目录 [README.md](../README.md)，英文存档见 [README.en.md](README.en.md)，发布流程见 [RELEASING.md](RELEASING.md)。
+> **0.9.1 存档说明（2026-11-27 复核）**：本文是 **v0.9.1 时代**的完整中文正文存档，**不是当前版本手册**（1.0.4 起根 README 已拆成「特色 + 安装 + 升级自查」入口页）。
+> 当前中文入口见根目录 [README.md](../README.md)，英文精简入口见 [README.en.md](../README.en.md)，拆分后的用户详解见 [docs 索引](README.md)（INSTALL / USAGE / SECURITY / RESCUE / COMPATIBILITY / FAQ），发布流程见 [RELEASING.md](RELEASING.md)。
 
 > **归档提示（2026-11-24）**：本文是 **v0.9.1 时代的完整全文**，不是当前版本的说明书——文中"当前版本 0.9.1""npm 最新"等表述都是写作当时的事实。
 > 当前工作副本 **1.0.0-rc.2**（未发布）的口径见仓库根 [README.md](../README.md)；发版流程见 [RELEASING.md](RELEASING.md)。

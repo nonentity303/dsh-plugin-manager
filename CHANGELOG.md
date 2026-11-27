@@ -12,6 +12,32 @@
 
 > 尚未发布的改动不在本文件；开发中的版本号见 `package.json` 的 `version`（发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)）。
 
+## [1.0.4] - 2026-11-27
+
+> 一句话：把"雷霆大 README"拆成第一屏就能看懂（特色 + 安装 + 升级自查）的入口页，细节移进 `docs/`；同时给 0.9.1 之前的旧包旧版加强弃用提示，并把 1.0.3 攻击测试发现的两处安全残留收口。
+
+### Changed · 变更
+
+- 第一屏 hero — 名称 + 「当引擎起不来的时候，它还在」+ 2 句价值 + badges
+- 四个主打特色 — ① 独立救援工具链（3081/3082）② 事务化卸载/回滚/一键撤销 ③ 更新源信任模型 + 下载 provenance ④ 3081 兜底页 + 跨平台中文 UI
+- 安装（30 秒） — `dsh plugin --profile web add dsh-drydock@1.0.4`（+ npx 备用、重启生效、24h 冷静期显式版本）
+- 升级自查 — 0.9.1 之前旧版已淘汰 → 一条升级命令
+- 入口速查 — 3080 插件管理 / 3081 `/plugins` / 3081 `/` / 3081 `/rescue` / 救援球
+- 文档索引 — INSTALL / USAGE / SECURITY / RESCUE / COMPATIBILITY / FAQ / ARCHITECTURE / LAUNCHER / RELEASING / CHANGELOG / releases
+- `docs/INSTALL.md` — 安装 / 更新 / 卸载 / 回退 / 离线 tgz / 24h 冷静期 / 自启 / 端口 / 重启生效
+- `docs/USAGE.md` — 载体、管理台三分区与页签、事务化卸载、操作历史、场景方案、更新与下载、市场、兜底页
+- `docs/SECURITY.md` — 权限与数据范围、更新源信任模型（1.0.3 口径）、下载 provenance、3081 防护、引擎救援路由准入、已知限制/威胁模型
+- `docs/RESCUE.md` — 独立救援工具链、救援流程速查、3081 API 参考、工作原理、3082 说明
+- `docs/COMPATIBILITY.md` — 环境要求、引擎兼容矩阵、Node 版本、平台
+- `docs/FAQ.md` — 常见问题与排错
+- `docs/README.md` — 文档索引（已更新）
+- **README 变短**：根 README 只保留定位/特色/安装/升级/入口/文档索引；细节看 `docs/`。
+- **0.9.1 之前版本在 npm 上显示更强弃用提示**，安装旧版会看到明确升级指引。
+- **3082**：非回环 Host 访问返回 421（此前 200）；页面/API 响应新增安全头。
+- **引擎内 `/rescue` 与 `/plugins-launcher`**：响应新增安全头；准入语义不变（应用内进入 200，地址栏直开 403，3081 救援页不受影响）。
+
+> 完整发布说明：[`docs/releases/1.0.4.md`](docs/releases/1.0.4.md)
+
 ## [1.0.3] - 2026-11-27
 
 > 一句话：把"谁有资格裁决版本"从源类型改成显式权威层——自定义源默认只作降级兜底、`http://` 默认标"明文 · 仅兜底"、`next` 只给 `@deepseek-ai/*`；顺手补掉下载目录 provenance 缺口、下载器两处收紧、救援页 XSS，以及 3081 启动器的一批加固与性能问题。

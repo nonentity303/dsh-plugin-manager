@@ -11,6 +11,12 @@
  *   POST /api/stop      → 按 PID 结束引擎（多重校验；拒绝时可用 {"force":true} 强制）
  *   GET  /api/status    → { app, engineUp, port, pid, ... }（app 字段供身份校验）
  *
+ * v1.0.4（攻击测试残留收口）：
+ *  - 请求入口加 Host 白名单（`127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，
+ *    大小写不敏感、必须带端口；不匹配 → 421 JSON），放在路由之前（防 DNS rebinding）。
+ *  - 所有响应（页面 / API / 421 / 写接口 401/403）统一附加安全头（CSP / XFO / nosniff / Referrer）。
+ *  - 既有 Origin + 一次性令牌写接口判定保持不变。
+ *
  * v0.9.1（审计③ R7 端口分工 + L11 写接口防护）：
  *  - **默认端口 3081 → 3082**：3081 由 `bin/open-boot.mjs` 独家占用（唯一网页入口，且它已内建
  *    完整救援能力：`/rescue` 页面 + `/rescue/api/*`）。本守护退化为**独立备份入口**，
@@ -47,6 +53,37 @@ import {
 const SELF = fileURLToPath(import.meta.url);
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SERVER_LOG = "rescue-daemon-server.log";
+/**
+ * 救援入口统一安全响应头（1.0.4 安全残留收口）。
+ *
+ * **必须与 lib/index.js 的 RESCUE_SECURITY_HEADERS 保持一致**：3082 是独立进程，
+ * 不导入插件模块（也不应依赖 @deepseek-ai/* 运行时依赖），因此在这里定义一份副本。
+ *  - CSP：救援页脚本/样式都是内联的 → 保留 unsafe-inline；`connect-src 'self'` 放行
+ *    页面 fetch 同源 `/api/*`；`frame-ancestors 'none'` / `base-uri 'none'` 防嵌套/base 劫持。
+ *  - XFO / nosniff / Referrer-Policy 同引擎侧救援路由。
+ * 所有响应（页面 200、API、Host 校验失败 421、写接口 401/403）都带这一套头。
+ */
+const RESCUE_SECURITY_HEADERS = Object.freeze({
+	"content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+	"x-frame-options": "DENY",
+	"x-content-type-options": "nosniff",
+	"referrer-policy": "no-referrer"
+});
+/** 把安全头预设到响应上；Node 会在后续 writeHead 时合并（writeHead 同名头优先）。 */
+function applySecurityHeaders(res) {
+	for (const [name, value] of Object.entries(RESCUE_SECURITY_HEADERS)) res.setHeader(name, value);
+}
+/**
+ * Host 白名单：只接受回环地址 + **本守护端口**，大小写不敏感、必须带端口。
+ * 覆盖 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`；
+ * 其余（含无端口、外部域名、DNS rebinding 形式）一律 421。
+ */
+function isAllowedHost(hostHeader, port) {
+	if (typeof hostHeader !== "string") return false;
+	const value = hostHeader.trim().toLowerCase();
+	const expected = String(port);
+	return value === `127.0.0.1:${expected}` || value === `localhost:${expected}` || value === `[::1]:${expected}`;
+}
 /**
  * v0.9.1：3081 归 open-boot（唯一网页入口），本守护退到 3082。
  * 端口可用 `DSH_RESCUE_PORT` 覆盖（默认 3082）；`--port` 优先。
@@ -386,7 +423,14 @@ function main() {
 	process.on("exit", (code) => serverLog(`进程退出：code ${code}（pid ${process.pid}，cwd ${process.cwd()}）`));
 
 	const server = createServer(async (req, res) => {
+		// 1.0.4：先预设安全头（页面/API/421/401/403 全部生效），再做 Host 校验，最后才路由。
+		applySecurityHeaders(res);
 		const url = new URL(req.url, "http://127.0.0.1");
+		if (!isAllowedHost(req.headers.host, args.port)) {
+			res.writeHead(421, { "Content-Type": "application/json; charset=utf-8" });
+			res.end(JSON.stringify({ ok: false, code: 421, error: "Host 不被允许（仅接受回环地址）" }));
+			return;
+		}
 		const pathname = url.pathname;
 		if (pathname === "/" || pathname === "/rescue") {
 			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });

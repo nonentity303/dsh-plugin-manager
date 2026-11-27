@@ -54,6 +54,7 @@ dsh web
 装好后两个入口：**3080 侧边栏「插件管理」**（接管引擎内置插件页）与 **3081 兜底页** `http://127.0.0.1:3081/plugins`。浏览器主页设为 `http://127.0.0.1:3081/` = 打开即自检 → 修复 → 启动 → 跳转主界面。
 
 - **不想装进 profile？** `npx dsh-drydock` 起 3081 启动器、`npx dsh-drydock-boot --repair-only` 命令行自检 + 修复、`npx dsh-drydock-rescue` 起 3082 备份救援——都无需安装。
+- **它自己怎么升级？** `npx dsh-drydock-update --check` 查、`--fetch` 校验暂存、`--now` 现在装（停引擎→装→健康检查→重启，失败自动回滚）、`--later` 稍后（下次启动再提示）。只认 https + SRI 摘要，桌面形态不自动装。→ [docs/自更新.md](docs/自更新.md)
 - **装不到 / 装完还是旧版？** ① 客户端 bundle 只在引擎启动时加载，**必须重启 `dsh web`**；② 24 小时冷静期内务必写显式版本号（或把 `dsh-drydock@1.0.4` 加入 profile `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。完整安装 / 更新 / 卸载 / 回退 / 离线 tgz / 开机自启见 [docs/INSTALL.md](docs/INSTALL.md)。
 
 ## 桌面版（DSH Desktop）支持（1.1.0 新增）
@@ -152,6 +153,7 @@ dsh web                                                   # 重启生效
 | [docs/RELEASING.md](docs/RELEASING.md) | 发布流程（§11 多通道发布：dist-tag 由 `release/channels.json` 派生） |
 | [docs/版本与轨道.md](docs/版本与轨道.md) | 三条发布通道（web / desktop / community）、版本号怎么升、各通道安装命令 |
 | [docs/环境自适应与剥离.md](docs/环境自适应与剥离.md) | 首启环境探测、能力表、环境专属模块的惰性装载与剥离清单（死代码审查输入） |
+| [docs/自更新.md](docs/自更新.md) | 自更新：权威源 + SRI 校验 + 现在/稍后 + detached worker（停引擎→装→健康检查→重启→失败回滚） |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史（脚本生成） |
 | [docs/releases/](docs/releases/) | 每版发布说明（本页对应 [1.1.0-desktop.1](docs/releases/1.1.0-desktop.1.md)） |
 | [docs/README-full.md](docs/README-full.md) | 0.9.1 时代完整存档（能力对比 / 兼容矩阵全文），**非当前手册** |

@@ -86,6 +86,8 @@ import {
 } from "../lib/enginectl.mjs";
 // 1.1.0：首启环境探测（把宿主形态写进 `<DSH_HOME>/.drydock/host-profile.json`，供各进程按形态剥离模块）。
 import { ensureHostProfile } from "../lib/host-profile.mjs";
+// 1.1.0：自更新提醒（只读状态；executing 永远在 bin/drydock-update.mjs 里，不在启动器里）。
+import { readState as readSelfUpdateState, resolveDshHome as resolveSelfUpdateHome } from "../lib/self-update.mjs";
 
 const PROFILE_DEFAULT = join(homedir(), ".dsh", "profiles", "web");
 const SELF = fileURLToPath(import.meta.url);
@@ -3291,6 +3293,20 @@ async function main(argv = process.argv.slice(2)) {
 			}
 		} catch (error) {
 			console.log(`[open-boot] 环境探测跳过（不影响启动）：${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	// 1.1.0：自更新提醒 —— 上次选了「稍后」的更新，在下次启动时再提示一次（只打印，不动任何东西；
+	// 真正的执行永远是 `dsh-drydock-update --now` 或 GUI 上点「现在」）。
+	if (!lightRun && process.env.DSH_DRYDOCK_NO_UPDATE_PROMPT !== "1") {
+		try {
+			const pending = readSelfUpdateState({ dshHome: resolveSelfUpdateHome() });
+			if (pending !== null && pending.phase === "pending" && pending.decision !== "now") {
+				console.log(`[open-boot] 有待安装的 drydock 更新：${pending.currentVersion} → ${pending.targetVersion}（通道 ${pending.channel}）`);
+				console.log("[open-boot]   现在装：node <包>/bin/drydock-update.mjs --now    稍后再说：--later（不再提示用 DSH_DRYDOCK_NO_UPDATE_PROMPT=1）");
+			}
+		} catch {
+			// 更新提醒失败绝不影响启动（读状态是纯读，失败只可能是路径/权限问题）
 		}
 	}
 

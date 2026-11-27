@@ -13,6 +13,7 @@
 | [RELEASING.md](RELEASING.md) | **发布流程**：版本号、构建、打包、`vendor` 刷新与断言、lockfile/包管理器约定、publish 与 2FA/OIDC、24 小时冷静期、引擎升级彩排、发布核对表、**§11 多通道发布**（dist-tag 由 `release/channels.json` 派生） |
 | [版本与轨道.md](版本与轨道.md) | **多端发布口径**：三条通道（web / desktop / community）、版本号怎么升（宿主动了只动后缀）、各通道安装命令、semver 排序坑（`-desktop.N < -rc.N`）、为什么不用 GitHub Packages 当主发行面 |
 | [环境自适应与剥离.md](环境自适应与剥离.md) | **首启环境探测 + 自动剥离**：三层结构（探测落盘 / 能力表 / 模块登记与惰性装载）、剥离清单与行数、三条硬边界（文件级剥离 / 不 import / 不写别人的东西）、新增环境专属模块的做法 |
+| [自更新.md](自更新.md) | **drydock 升级自己**：权威源 + SRI 校验 + 暂存 + 「现在/稍后」+ detached worker（停引擎→装→健康检查→重启→失败回滚）、门禁表与状态机、哪部分还没接（客户端弹窗） |
 | [README-full.md](README-full.md) | **v0.9.1 时代的完整全文存档**（能力对比 / 兼容矩阵 / 权限与数据范围 / 故障排查 / 救砖速查），**不是当前手册**；当前中文入口见仓库根 [README.md](../README.md) |
 | [发布清单-rc2.md](发布清单-rc2.md) | **1.0.0 发布检查清单**（发 npm 前必跑项、dist-tag、回滚方案、发布后验证 URL、当日实测快照、一致性扫描结果；以 1.0.0-rc.2 名义起草，正式发行为 1.0.0）；口径仍以 RELEASING.md 为准 |
 | [releases/](releases/) | 每个版本的发布说明（当前版本以 `docs/releases/` 中最新文件为准；历史 `RELEASE_NOTES_*.md` 原样归档；`0.9.0-verify.md` 是干净环境装机验收报告）。预发布版由 `gen-changelog.mjs` 一并收录，段头带「（预发布）」标注 |

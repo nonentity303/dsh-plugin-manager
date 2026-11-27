@@ -84,6 +84,10 @@ import {
 	portOwnerProbe, probe, processImage, processImageProbe, readPidInfo, resolveEngineCwd, startEngineWithQuarantine, stopEngine,
 	validateCliValue, validateIntegerValue, validatePortValue, waitForEngine, writeOriginPolicyFromEnv
 } from "../lib/enginectl.mjs";
+// 1.1.0：官方 bundle 目录（三分区）+ 核心组件判定，与 3080 管理台同源（不再两页各算一套）。
+import { DRYDOCK_LOCKED_CORE_PACKAGES, FALLBACK_HIDDEN_BUNDLES, bundleNameOf, classifyBundle, isEngineProvidedBundle, officialCatalog } from "../lib/bundles-official.mjs";
+// 1.1.0：启动配置快照 + 启动前差异告警（对齐 docs/review/DESIGN_1.0.5_启动配置差异感知.md）
+import { captureEngineState, classifyDiff, diffEngineState, engineKeyOf, readBootSnapshot, updateEngineSnapshot, writeBootSnapshot } from "../lib/boot-snapshot.mjs";
 // 1.1.0：首启环境探测（把宿主形态写进 `<DSH_HOME>/.drydock/host-profile.json`，供各进程按形态剥离模块）。
 import { ensureHostProfile } from "../lib/host-profile.mjs";
 // 1.1.0：自更新提醒（只读状态；executing 永远在 bin/drydock-update.mjs 里，不在启动器里）。
@@ -713,7 +717,11 @@ async function boot(args, onLog = () => {}) {
 	}
 
 	if (!args.window || !windowInfo.ok) {
+		// 1.1.0（DESIGN_1.0.5 A/D）：拉起前先跟"上次成功启动"比对一次配置，有差异只告警、不拦启动。
+		recordPreStartDiff(args);
 		const start = await startEngineWithQuarantine({ profileDir: args.profile, dshCmd: args.dsh, isolateFailedEntries, waitMs: args.waitMs, cwd: args.cwd });
+		// 起来之后才写快照：只有真正成功的启动才是下次 diff 的地面真值。
+		recordStartedSnapshot(args, { ok: start.ok });
 		return {
 			ok: start.ok, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 			window: windowInfo, quarantined: start.quarantined, quarantineMessage: start.quarantineMessage,
@@ -725,6 +733,7 @@ async function boot(args, onLog = () => {}) {
 
 	// 窗口模式：等窗口里的启动序列把引擎拉起来（同样用 HTTP 健康判定）
 	const up = await waitForEngine(ENGINE_PORT, args.waitMs, 300, engineHealth);
+	recordStartedSnapshot(args, { ok: up });
 	return {
 		ok: up, alreadyRunning: false, verifyOk: verify.ok, issues: verify.issues, fixed,
 		window: windowInfo, quarantined: [], logPath: engineLogPathOf(args),
@@ -1626,10 +1635,162 @@ function goEntry(r){
 
 // ---------------------------------------------------------------- 1.0.0-rc.1：启动器内置插件管理 + 用户可控启停
 
-/** 引擎 UI 的核心组件 bundle：禁用它们等于把 3080 的网页入口拆了 → 拒绝一键禁用，提示走救援中心。 */
-const CORE_BUNDLES = ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app"];
+/**
+ * 引擎 UI 的核心组件 bundle（drydock 自用锁定项）：禁用它们等于把 3080 的网页入口拆了。
+ * 判定与 3080 管理台**同源**：`DRYDOCK_LOCKED_CORE_PACKAGES` + `classifyBundle`（见 lib/bundles-official.mjs）。
+ */
+const CORE_BUNDLES = [...DRYDOCK_LOCKED_CORE_PACKAGES];
 const BUNDLES_BACKUP_NAME = "package.json.bundles-backup.json";
 const BUNDLES_BACKUP_KEEP = 5;
+
+/**
+ * 官方 bundle 目录（PROTECTED_PLUGINS / HIDDEN_BUNDLES）的运行时副本。
+ *
+ * 为什么要它：3080 管理台的三分区（核心 / 引擎内置 / 用户）是拿官方目录判的；3081 兜底页以前只用
+ * 一份硬编码 `CORE_BUNDLES` 并且只标"核心"——**同一份 profile 两页分组对不上**。现在两页共用同一套纯函数。
+ * 取值顺序：启动时 `refreshOfficialCatalog()` 尽力动态 import 官方包；拿不到就用静态回落副本（并记来源）。
+ */
+let OFFICIAL_HIDDEN = new Set(FALLBACK_HIDDEN_BUNDLES);
+let OFFICIAL_META = { source: "fallback", reason: "尚未加载官方目录（使用静态回落副本）" };
+
+/** 启动时刷新一次官方目录（失败不抛：兜底页不能因为读不到官方包就打不开）。 */
+async function refreshOfficialCatalog() {
+	try {
+		const catalog = await officialCatalog();
+		const hidden = catalog?.hidden instanceof Set ? catalog.hidden : new Set(Array.isArray(catalog?.hidden) ? catalog.hidden : []);
+		if (hidden.size > 0) OFFICIAL_HIDDEN = hidden;
+		OFFICIAL_META = { source: catalog?.source === "official" ? "official" : "fallback", reason: catalog?.reason ?? null };
+	} catch (error) {
+		OFFICIAL_META = { source: "fallback", reason: `动态 import 官方目录失败：${error instanceof Error ? error.message : String(error)}` };
+	}
+}
+
+/** 是不是核心组件（与 3080 同一口径：包名归一后查 drydock 锁定集）。 */
+function isCoreBundle(name) {
+	return classifyBundle(name, { coreSet: DRYDOCK_LOCKED_CORE_PACKAGES, hiddenSet: OFFICIAL_HIDDEN, origin: "builtin" }) === "core";
+}
+
+/**
+ * 把 profile 清单分类成与 3080 管理台**同一套语义**的行（纯函数，导出给 test-mod-list 对拍）。
+ *
+ * 两页数据源不同是事实：3080 只有 loader entries（= 已启用的），3081 只能读清单。
+ * 所以这里把三态显式写出来，避免"看起来像 bug"的差异：
+ *   - `enabled`  装且声明 → 引擎会加载（3080 有这一行）
+ *   - `disabled` 装但没声明 → 引擎不加载（3080 那一侧现在也补了只读行）
+ *   - `dangling` 声明了但没装 → 引擎加载报错（两页都该标红）
+ */
+function classifyProfileBundles(manifest, { hiddenSet = OFFICIAL_HIDDEN } = {}) {
+	const declared = Array.isArray(manifest?.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : [];
+	const deps = manifest?.dependencies ?? {};
+	const installed = Object.keys(deps);
+	const rows = [];
+	for (const raw of [...new Set([...installed, ...declared])]) {
+		const name = bundleNameOf(raw) || raw;
+		const inDeps = installed.includes(raw);
+		const isDeclared = declared.includes(raw);
+		const origin = inDeps ? "user" : "builtin";
+		const section = classifyBundle(name, { coreSet: DRYDOCK_LOCKED_CORE_PACKAGES, protectedSet: null, hiddenSet, origin });
+		// 引擎自带的 bundle（core / hidden）本来就不在 dependencies 里 —— 不能因此判成悬空。
+		const provided = isEngineProvidedBundle(name, { hiddenSet });
+		rows.push({
+			name,
+			enabled: isDeclared,
+			core: section === "core",
+			section,
+			origin,
+			installed: inDeps,
+			declared: isDeclared,
+			engineProvided: provided,
+			state: isDeclared ? (inDeps || provided ? "enabled" : "dangling") : "disabled"
+		});
+	}
+	return rows.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * 数 `cordis.patch.yml` 的顶层行数（数组项 `- ` 或映射键）。只作为"配置变没变"的粗信号，
+ * 不解析语义 —— 两边（写快照 / 算 diff）用的是同一个函数，比较的是相等性。
+ */
+function readPatchRowCount(profile) {
+	try {
+		const file = join(profile, "cordis.patch.yml");
+		if (!existsSync(file)) return 0;
+		const text = readFileSync(file, "utf8");
+		if (text.trim() === "") return 0;
+		let count = 0;
+		for (const line of text.split(/\r?\n/)) {
+			if (/^-\s/.test(line)) count += 1;
+			else if (/^[A-Za-z0-9_"'@./*-][^:]*:\s*(#.*)?$/.test(line)) count += 1;
+		}
+		return count;
+	} catch {
+		return null;
+	}
+}
+
+/** 该 profile 里 3080 宿主写的 history（`plugin-manager.json` 侧车）——只用于给差异**定性**。 */
+function readHostHistory(profile) {
+	try {
+		const file = join(profile, "plugin-manager.json");
+		if (!existsSync(file)) return [];
+		const parsed = JSON.parse(readFileSync(file, "utf8"));
+		return Array.isArray(parsed?.history) ? parsed.history : [];
+	} catch {
+		return [];
+	}
+}
+
+/** 当前要启动的那份配置（纯数据，给快照用）。 */
+function currentBootState(args, { pid = null } = {}) {
+	return captureEngineState({
+		manifest: readProfileManifest(args.profile),
+		patchRows: readPatchRowCount(args.profile),
+		port: ENGINE_PORT,
+		pid,
+		now: Date.now
+	});
+}
+
+/**
+ * 启动**前**：与上次成功启动的配置比对（DESIGN_1.0.5 方案 A/D）。
+ * 有差异只**告警** + 记进快照的 `lastDiff`（供兜底页展示），**绝不拦启动** —— 引擎起不来的机器上更要能启动。
+ */
+function recordPreStartDiff(args) {
+	try {
+		const snapshot = readBootSnapshot({ profileDir: args.profile });
+		const previous = snapshot?.engines?.[engineKeyOf(ENGINE_PORT)] ?? null;
+		const current = currentBootState(args);
+		const diff = diffEngineState(previous, current);
+		if (diff.empty) return { diff, verdict: null, firstRun: previous === null };
+		const verdict = classifyDiff(diff, readHostHistory(args.profile));
+		console.log(`[open-boot] 启动配置变更：${diff.summary} —— ${verdict.text}`);
+		if (snapshot !== null) {
+			writeBootSnapshot(updateEngineSnapshot(snapshot, { port: ENGINE_PORT, diff: { ...diff, tone: verdict.tone, text: verdict.text } }), { profileDir: args.profile });
+		}
+		return { diff, verdict, firstRun: previous === null };
+	} catch {
+		return null; // 快照自身的问题永不拦启动
+	}
+}
+
+/** 启动**成功后**：把本次状态写成该端口的快照（下次 diff 的"地面真值"）。 */
+function recordStartedSnapshot(args, { ok } = {}) {
+	if (ok !== true) return null;
+	try {
+		const snapshot = readBootSnapshot({ profileDir: args.profile });
+		const pid = (() => {
+			try {
+				return readPidInfo(args.profile)?.pid ?? null;
+			} catch {
+				return null;
+			}
+		})();
+		const state = currentBootState(args, { pid });
+		return writeBootSnapshot(updateEngineSnapshot(snapshot, { port: ENGINE_PORT, state, diff: null }), { profileDir: args.profile });
+	} catch {
+		return null;
+	}
+}
 
 function readProfileManifest(profile) {
 	try { return JSON.parse(readFileSync(join(profile, "package.json"), "utf8")); }
@@ -1656,16 +1817,22 @@ function backupProfileManifest(profile) {
 	return target;
 }
 
-/** 列出 profile 里安装的所有 bundle：enabled 来自 dsh.profile.bundles（0.2.x 的唯一加载开关）。 */
+/**
+ * 列出 profile 里安装的所有 bundle（与 3080 管理台**同一套成员与分区语义**）。
+ * 成员 = dependencies ∪ dsh.profile.bundles；每行带 `state`（enabled / disabled / dangling）与 `section`。
+ */
 function listBundles(profile) {
 	const manifest = readProfileManifest(profile);
 	if (!manifest) return { ok: false, error: `无法读取 profile 清单：${join(profile, "package.json")}` };
-	const enabled = manifest?.dsh?.profile?.bundles ?? [];
-	const installed = Object.keys(manifest.dependencies ?? {});
-	const names = [...new Set([...installed, ...enabled])].sort();
+	const rows = classifyProfileBundles(manifest);
 	return {
-		ok: true, profile,
-		bundles: names.map((name) => ({ name, enabled: enabled.includes(name), core: CORE_BUNDLES.includes(name) })),
+		ok: true,
+		profile,
+		catalog: { source: OFFICIAL_META.source, reason: OFFICIAL_META.reason, hiddenCount: OFFICIAL_HIDDEN.size },
+		// 1.1.0（DESIGN_1.0.5）：最近一次"启动前发现配置变了"的记录，供兜底页展示（没有则为 null）
+		bootDiff: readBootSnapshot({ profileDir: profile })?.lastDiff ?? null,
+		// 兼容旧客户端/页面：继续给 name / enabled / core；新增字段供页面显示状态与分区
+		bundles: rows,
 		backup: existsSync(bundlesBackupPathOf(profile)) ? bundlesBackupPathOf(profile) : null
 	};
 }
@@ -1674,7 +1841,7 @@ function listBundles(profile) {
 function setBundleEnabled(profile, name, enabled) {
 	if (typeof name !== "string" || !name.trim()) return { ok: false, error: "bundle 名缺失" };
 	name = name.trim();
-	if (!enabled && CORE_BUNDLES.includes(name)) {
+	if (!enabled && isCoreBundle(name)) {
 		return { ok: false, error: `${name} 是引擎必需的核心组件，不允许从这里禁用（否则引擎 ${ENGINE_PORT} 无法再打开页面）。如确需操作请手工改 profile 的 package.json，或走救援中心。` };
 	}
 	const manifest = readProfileManifest(profile);
@@ -1716,7 +1883,7 @@ function patchFilePathOf(profile) { return join(profile, "cordis.patch.yml"); }
 function userBundleNames(profile) {
 	const manifest = readProfileManifest(profile);
 	if (!manifest) return [];
-	return Object.keys(manifest.dependencies ?? {}).filter((name) => !CORE_BUNDLES.includes(name)).sort();
+	return Object.keys(manifest.dependencies ?? {}).filter((name) => !isCoreBundle()).sort();
 }
 
 /**
@@ -1888,7 +2055,7 @@ async function uninstallPackageTransactional(args, pkgName) {
 	const steps = [];
 	const step = (action, status, detail, rollback = null) => steps.push({ action, status, detail, rollback });
 	if (!PKG_NAME_RE.test(pkgName)) return { ok: false, error: `非法包名：${pkgName}`, steps };
-	if (CORE_BUNDLES.includes(pkgName)) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，不允许卸载。`, steps };
+	if (isCoreBundle()) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，不允许卸载。`, steps };
 	const manifest = readProfileManifest(profile);
 	if (!manifest || !(pkgName in (manifest.dependencies ?? {}))) {
 		return { ok: false, error: `profile 里没有安装 ${pkgName}，无事可做。`, steps };
@@ -2070,7 +2237,7 @@ async function checkUpdates(args, { run = runPnpm, now = Date.now } = {}) {
 async function updatePackage(args, pkgName) {
 	const profile = args.profile;
 	if (!PKG_NAME_RE.test(pkgName)) return { ok: false, error: `非法包名：${pkgName}` };
-	if (CORE_BUNDLES.includes(pkgName)) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，更新请走引擎侧（主界面 → 插件管理）。` };
+	if (isCoreBundle()) return { ok: false, error: `${pkgName} 是引擎必需的核心组件，更新请走引擎侧（主界面 → 插件管理）。` };
 	const manifest = readProfileManifest(profile);
 	if (!manifest || !(pkgName in (manifest.dependencies ?? {}))) return { ok: false, error: `profile 里没有安装 ${pkgName}` };
 	const gate = await engineBusyGate();
@@ -2437,6 +2604,11 @@ button.busy{cursor:progress;opacity:.65}
 	<div class="rows" id="stepRows"></div>
 </div>
 
+<div class="card" id="bootDiffCard" style="display:none">
+	<p class="sect">与上次启动相比的配置变更</p>
+	<div class="hint" id="bootDiffHint"></div>
+</div>
+
 <div class="card">
 	<p class="sect">核心组件（引擎必需，不允许禁用）</p>
 	<div class="rows" id="coreRows"></div>
@@ -2609,10 +2781,15 @@ function el(tag, cls, text){
 }
 function toggleHtml(b){
 	var label = document.createElement("label");
+	var dangling = b.state === "dangling";
 	label.className = "toggle";
-	label.title = b.core ? "核心组件：不允许从这里禁用（否则引擎 " + ENGINE_PORT + " 无法打开页面）" : (b.name + (b.enabled ? "：点击禁用" : "：点击启用"));
+	label.title = b.core
+		? "核心组件：不允许从这里禁用（否则引擎 " + ENGINE_PORT + " 无法打开页面）"
+		: dangling
+			? "已在 dsh.profile.bundles 声明但没安装：先装包或先摘声明，否则引擎加载会报错"
+			: (b.name + (b.enabled ? "：点击禁用" : "：点击启用"));
 	var input = document.createElement("input");
-	input.type = "checkbox"; input.checked = b.enabled; input.disabled = Boolean(b.core);
+	input.type = "checkbox"; input.checked = b.enabled; input.disabled = Boolean(b.core) || dangling;
 	input.setAttribute("aria-label", b.name + (b.enabled ? " 禁用" : " 启用"));
 	input.dataset.name = b.name;
 	var knob = document.createElement("span"); knob.className = "knob";
@@ -2623,11 +2800,31 @@ function toggleHtml(b){
 			ev.preventDefault();
 			toast(b.name + " 是引擎必需的核心组件，不能在这里禁用；确需停用请走救援中心 /rescue 或手工改 profile。", "warn");
 		});
+	} else if (dangling) {
+		label.addEventListener("click", function(ev){
+			ev.preventDefault();
+			toast(b.name + " 已在 dsh.profile.bundles 里声明，但 profile 没有安装它：请先安装该包，或把这条声明摘掉（否则引擎加载会报错）。", "warn");
+		});
 	}
 	return label;
 }
-function renderRows(){
-	var kw = document.getElementById("q").value.trim().toLowerCase();
+function renderBootDiff(diff){
+	var card = document.getElementById("bootDiffCard");
+	var hint = document.getElementById("bootDiffHint");
+	if (!card || !hint) return;
+	if (!diff || !diff.summary) { card.style.display = "none"; hint.textContent = ""; return; }
+	card.style.display = "";
+	var tone = diff.tone === "unmanaged"
+		? "来源未确认：配置是在插件管理器之外改的（dsh CLI / 手工编辑 / 其他工具），请确认是谁改的。"
+		: diff.tone === "user-action"
+			? "来源：插件管理器（管理台操作后没有重启引擎）。"
+			: "";
+	var when = "";
+	try { when = diff.at ? new Date(diff.at).toLocaleString() + " · " : ""; } catch (e) { when = ""; }
+	hint.textContent = when + diff.summary + (diff.text ? " —— " + diff.text : "") + (tone ? "（" + tone + "）" : "");
+}
+
+function renderRows(){	var kw = document.getElementById("q").value.trim().toLowerCase();
 	var coreRows = document.getElementById("coreRows");
 	var userRows = document.getElementById("userRows");
 	coreRows.textContent = ""; userRows.textContent = "";
@@ -2642,16 +2839,24 @@ function renderRows(){
 		var meta = el("div", "meta");
 		var nameLine = el("div", "name");
 		nameLine.textContent = b.name;
-		if (b.core) nameLine.appendChild(el("span", "badge b-core", " 核心"));
+		// 1.1.0：分区徽章与 3080 管理台同一套语义（core / builtin / user）
+		if (b.section === "core" || b.core) nameLine.appendChild(el("span", "badge b-core", " 核心"));
+		else if (b.section === "builtin") nameLine.appendChild(el("span", "badge", " 引擎内置"));
+		else if (b.section === "user") nameLine.appendChild(el("span", "badge", " 用户"));
+		// 三态显式标出来：否则"两页数量对不上"看起来就像 bug
+		if (b.state === "disabled") nameLine.appendChild(el("span", "badge", " 未启用"));
+		if (b.state === "dangling") nameLine.appendChild(el("span", "badge b-upd", " 声明未安装"));
 		if (b.self) nameLine.appendChild(el("span", "badge b-self", " 管理器·本页可禁用/可卸载（引擎 ${enginePort} 界面内不可自禁）"));
 		if (updMap[b.name] && updMap[b.name].needsUpdate) nameLine.appendChild(el("span", "badge b-upd", " 有新版 " + updMap[b.name].latest));
 		meta.appendChild(nameLine);
 		var desc = b.description || (b.core ? "引擎必需的核心组件" : (b.self ? "本管理台对应的插件包（禁用后引擎 ${enginePort} 的插件页消失，启动器 ${launcherPort} 本页不受影响）" : ""));
+		if (b.state === "disabled") desc = (desc ? desc + " · " : "") + "已安装但未启用：不在 dsh.profile.bundles 里，引擎本次没有加载它（3080 管理台会把它显示成只读行）";
+		if (b.state === "dangling") desc = (desc ? desc + " · " : "") + "已在 dsh.profile.bundles 声明但包没装：引擎加载会报错，请先安装或把声明摘掉";
 		if (updMap[b.name] && updMap[b.name].current) desc = (desc ? desc + " · " : "") + "当前 " + updMap[b.name].current;
 		if (desc) meta.appendChild(el("div", "desc", desc));
 		row.appendChild(meta);
 		row.appendChild(toggleHtml(b));
-		if (!b.core) {
+		if (!b.core && b.state !== "dangling") {
 			if (updMap[b.name] && updMap[b.name].needsUpdate) {
 				var ub = el("button", null, "更新");
 				ub.title = "pnpm update（引擎占用时会引导先禁用）";
@@ -2758,7 +2963,9 @@ async function loadBundles(announce){
 	return guard(async function(){
 		var r = await api("/plugins/api/bundles");
 		if (!r.ok) { toast(failText("读取插件列表失败", r), "bad"); return; }
-		bundles = (r.bundles || []).map(function(b){ return { name: b.name, enabled: b.enabled, core: b.core, self: b.name === "dsh-drydock" }; });
+		bundles = (r.bundles || []).map(function(b){ return { name: b.name, enabled: b.enabled, core: b.core, section: b.section, state: b.state, self: b.name === "dsh-drydock" }; });
+	// 1.1.0（DESIGN_1.0.5）：上次启动前发现的配置变更（快照 diff），有就显示一张卡片
+	renderBootDiff(r.bootDiff || null);
 		renderRows();
 		if (announce) {
 			var users = bundles.filter(function(b){ return !b.core; }).length;
@@ -3281,6 +3488,17 @@ async function main(argv = process.argv.slice(2)) {
 		chdirStable(args.cwd);
 	}
 
+	// 1.1.0：读一次官方 bundle 目录（PROTECTED_PLUGINS / HIDDEN_BUNDLES）——
+	// 兜底页的"核心 / 引擎内置 / 用户"三分区与 3080 管理台必须同源，否则两页分组对不上。
+	// 读不到就用静态回落副本（只影响分区标注，不影响启停功能本身）。
+	if (!lightRun) {
+		try {
+			await refreshOfficialCatalog();
+		} catch {
+			// refreshOfficialCatalog 内部已兜底；这里再兜一层，保证启动不受影响
+		}
+	}
+
 	// 1.1.0 首启环境探测：装完第一次启动就把宿主形态 + 证据写进 `<DSH_HOME>/.drydock/host-profile.json`。
 	// 只做一次（有新鲜缓存就跳过）；**探测/写盘失败绝不阻塞启动** —— 引擎起不来的机器上更要把启动页拉起来。
 	// 想彻底关掉：`DSH_DRYDOCK_NO_HOST_PROBE=1`（测试与纯净环境用）。
@@ -3350,6 +3568,8 @@ export {
 	main, parseArgs, reportStatus, startServer, uninstallAutostart, writeShim,
 	// rc.2 测试面：单测直接驱动这些函数（不经过 HTTP）
 	CORE_BUNDLES, MANAGER_SELF_NAME, PKG_NAME_RE, runPnpm, writeFileAtomic, engineBusyGate,
+	// 1.1.0 测试面：3081 兜底页的列表分类（必须与 3080 管理台同口径，见 test-mod-list.mjs）
+	classifyProfileBundles, isCoreBundle, listBundles, setBundleEnabled, refreshOfficialCatalog,
 	uninstallPackageTransactional, updatePackage, checkUpdates, healthReport, restartEngine, ensureLauncherCmd,
 	// 1.0.3 任务 C 测试面：Host 校验 / 安全响应头 / 有界缓冲 / updates 缓存
 	isAllowedHost, SECURITY_HEADERS, PNPM_OUTPUT_CAP, createBoundedBuffer, lockfileStamp, resetUpdatesCacheForTests,

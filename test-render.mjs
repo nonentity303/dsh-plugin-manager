@@ -1,6 +1,6 @@
 // test-render.mjs — 在 jsdom 中真实渲染 PluginManagerTab，复现「搜索 + 点开关」交互
 // 用法: node test-render.mjs
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import { JSDOM } from "jsdom";
@@ -37,6 +37,12 @@ const sandbox = {
 	clearTimeout
 };
 vm.createContext(sandbox);
+// lib/client.js 是**构建产物，从 1.0.5 起不入库**（.gitignore）：新克隆的仓库直接单跑本文件会缺产物。
+// 给一条能照做的提示，不要抛出难懂的 ENOENT。
+if (!existsSync("lib/client.js")) {
+	console.error("[错误] 缺 lib/client.js：它是构建产物、已不入库。先跑 `node build.mjs`（或直接 `npm test`，会先构建）。");
+	process.exit(1);
+}
 const code = readFileSync("lib/client.js", "utf8");
 vm.runInContext(code, sandbox, { filename: "lib/client.js" });
 if (!handoff) throw new Error("bundle did not register");

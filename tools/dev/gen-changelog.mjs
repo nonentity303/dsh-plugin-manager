@@ -22,7 +22,8 @@
  *      **已知局限**：同日没有时刻信息 —— 将来若某个 rc 是正式版**之前**发的（正常节奏），同日同族时它也会
  *      在上面；要精确就让发布说明的日期写**实际发布日**（跨日自然分先后）。
  *   4. **预发布版必须有可见标注**：段头写成 `## [0.9.1-rc2] - 2026-10-07（预发布）`，别让读者
- *      把它当正式版。带预发布标签的形态：`-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`；
+ *      把它当正式版。带预发布标签的形态：`-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`
+ *      （2026-11-27 起另有 `-desktop.N` / `-community.N`，段头写成「（预发布·桌面通道）」）；
  *      历史形态 `x.y.z-<n>`（如 `0.8.3-1`）段头保持不变（既有 CHANGELOG 零变化）。
  *   5. **不允许静默漏版**：`docs/releases/` 下任何"版本号打头"的文件都必须被识别成发布说明，
  *      否则 `main()` 直接 **exit 1**（见 `uncollectedVersionFiles`）。只有 `NON_RELEASE_SUFFIXES`
@@ -112,12 +113,21 @@ function joinContinuation(prev, next) {
 	return bothCjk ? prev + next : `${prev} ${next}`;
 }
 
-/** 版本号语法（t32）：`x.y.z` / `x.y.z-<n>`（历史"第 4 段"形态）/ `-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`。 */
-const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-(\d+)|-(rc|alpha|beta)[.-]?(\d+)?)?$/i;
+/**
+ * 版本号语法（t32 + 多通道）：
+ * `x.y.z` / `x.y.z-<n>`（历史"第 4 段"形态）/ `-rcN` / `-rc.N` / `-alpha.N` / `-beta.N`
+ * / `-desktop.N` / `-community.N`（2026-11-27 起：预发布标识即发布通道，见 release/channels.json）。
+ */
+const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-(\d+)|-(rc|alpha|beta|desktop|community)[.-]?(\d+)?)?$/i;
 /** 发布说明文件名（同上形态；历史命名 `RELEASE_NOTES_<version>.md` 另见 `collectReleaseFiles`）。 */
-const RELEASE_FILE_RE = /^(\d+\.\d+\.\d+(?:-\d+|-(?:rc|alpha|beta)[.-]?\d*)?)\.md$/i;
-/** 预发布标签的先后（semver：alpha < beta < rc < 正式版）；数字越大越"新"。 */
-const PRE_RANK = { alpha: 1, beta: 2, rc: 3, official: 9 };
+const RELEASE_FILE_RE = /^(\d+\.\d+\.\d+(?:-\d+|-(?:rc|alpha|beta|desktop|community)[.-]?\d*)?)\.md$/i;
+/**
+ * 预发布标签的先后（**按 semver 的标识符字典序**：alpha < beta < community < desktop < rc < 正式版）；
+ * 数字越大越"新"。加通道时保持这个相对次序，才能和 semver 的 `1.1.0-desktop.2 < 1.1.0-rc.2` 对齐。
+ */
+const PRE_RANK = { alpha: 1, beta: 2, community: 3, desktop: 4, rc: 5, official: 9 };
+/** 段头标注用的中文通道名（`rc` 保持历史写法「（预发布）」）。 */
+const PRERELEASE_LABEL = { rc: "（预发布）", desktop: "（预发布·桌面通道）", community: "（预发布·社区桌面通道）" };
 /**
  * 明确**不算**发布说明的「版本号打头」文件名后缀（验收 / 内部 / 操练报告等，故意不进 CHANGELOG）。
  * 出现没列在这里的"版本号打头"文件名 → `uncollectedVersionFiles` 会拦下并 exit 1。
@@ -127,7 +137,7 @@ const NON_RELEASE_SUFFIXES = ["verify", "internal", "notes", "report", "audit", 
 /**
  * 解析版本号 → `{ parts, prerelease, preRank, preNum }`；不可解析返回 `null`。
  * - `parts` 沿用历史口径：第 4 段是 `-<n>` 形态的数字（`0.8.3-1` → `[0,8,3,1]`，比 `0.8.3` 新）。
- * - `prerelease`：`"rc" | "alpha" | "beta"`；**正式版与历史 `-<n>` 形态都是 `null`**（段头不带标注）。
+ * - `prerelease`：`"rc" | "alpha" | "beta" | "desktop" | "community"`；**正式版与历史 `-<n>` 形态都是 `null`**（段头不带标注）。
  * - `preRank`：按 semver 排序用（rc 3 > beta 2 > alpha 1，正式版 9）。注意**同一日期**的先后由
  *   `compareSameDateDesc` 决定（本项目预发布是正式版之后补发的 → 同日同族时预发布版在上），
  *   这里的 `preRank` 只在"预发布 vs 预发布"以及无日期分组里起作用。
@@ -359,7 +369,10 @@ function render() {
 	for (const release of releases) {
 		const { date, summary, entries } = release;
 		// 预发布版必须一眼可见（t32）：`## [0.9.1-rc2] - 2026-10-07（预发布）`
-		const label = isPrerelease(release.version) ? "（预发布）" : "";
+		// 多通道：桌面/社区桌面的预发布段头额外标出通道，例如 `## [1.1.0-desktop.2] - 2026-11-28（预发布·桌面通道）`
+		const parsedVersion = parseVersion(release.version);
+		const preTag = parsedVersion === null ? null : parsedVersion.prerelease;
+		const label = preTag === null ? "" : (PRERELEASE_LABEL[preTag] ?? "（预发布）");
 		out.push(`## [${release.version}]${date === null ? "" : ` - ${date}`}${label}`);
 		out.push("");
 		if (summary !== "") {

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安装 / 升级 / 救援 / 回滚（先看文档）
+    url: https://github.com/nonentity303/dsh-drydock#readme
+    about: README 与 docs/ 覆盖安装、升级自检、救援 profile、事务化卸载与回滚的完整口径。
+  - name: 版本与轨道（我该装哪个版本？）
+    url: https://github.com/nonentity303/dsh-drydock/blob/master/docs/版本与轨道.md
+    about: 三条发布通道（web / desktop / community）、版本号规则与各通道安装命令。
+  - name: 现有 issue 里搜一下
+    url: https://github.com/nonentity303/dsh-drydock/issues?q=is%3Aissue
+    about: 兼容性问题多数已经有人报过；搜索能省你一次等待。

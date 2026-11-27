@@ -12,6 +12,11 @@ auth-url-last.txt
 auth-urls.log
 publish-live.log
 publish-webauth.log
+# 客户端构建产物：**不入库**（1.0.5 起）。
+# 理由：它同时是「合并冲突放大器」和「产物≠源码」两类事故的源头。
+# 现在由 `prepack`（npm pack/publish 前自动跑）与 `npm test`（先 build）生成；
+# 构建确定性有实证：同一 lockfile 下 `npm ci` 产出的 lib/client.js 字节一致（docs/RELEASING.md §2bis）。
+lib/client.js
 lib/client.js.map
 .origin-verify.json
 .origin-verify.log

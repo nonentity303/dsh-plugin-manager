@@ -1,0 +1,86 @@
+name: 宿主兼容性报告
+description: 某个宿主（网页引擎 / 官方桌面 / 社区桌面）上新版 drydock 行为异常，或能力判定与本机实际不符
+title: "[兼容性] "
+labels: ["host-compat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        兼容性问题**必须是可复现的证据**，不要只写"桌面版不能用"。
+        下面的 `dsh-drydock-doctor` 输出是必填项 —— 它自带环境探测、profile / lock 状态与能力表快照，
+        有它我们才能判断是"能力门控判错了"还是"宿主真的没提供这个能力"。
+
+  - type: dropdown
+    id: host_form
+    attributes:
+      label: 宿主形态（对应仓库的 track 标签）
+      description: 三条发布通道见 `docs/版本与轨道.md`
+      options:
+        - web — 引擎 / 网页宿主（track:web）
+        - desktop — 官方桌面宿主（track:desktop）
+        - community — 社区桌面发行版（track:community）
+        - 不确定（请在下文说明你是怎么启动 DSH 的）
+    validations:
+      required: true
+
+  - type: input
+    id: host_version
+    attributes:
+      label: 宿主版本
+      description: 引擎 `dsh --version`，或桌面版「设置 → 关于」里的版本
+      placeholder: "例：dsh 0.2.2-rc.5 / deepseek-harness 0.2.2-rc.5 desktop"
+    validations:
+      required: true
+
+  - type: input
+    id: drydock_version
+    attributes:
+      label: dsh-drydock 版本与安装方式
+      description: 版本号 + 从哪个通道装的（`npm` / `desktop` / `next` / 本地 tgz）
+      placeholder: "例：1.0.4（latest，npm）"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor_json
+    attributes:
+      label: dsh-drydock-doctor 输出（必填）
+      description: 在**出问题的那个 profile** 上跑 `npx dsh-drydock-doctor --json`，把输出粘进来（会自动脱敏令牌；仍请自查一遍）
+      render: json
+      placeholder: '{"schema": …}'
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_capability
+    attributes:
+      label: 哪里不对
+      description: 指出具体能力键（如 `canTouchOfficialCatalog` / `canSpawnHost`）或具体界面分区，写你预期 vs 实际
+      placeholder: |
+        预期：桌面形态下「离线诊断」分区可见可用
+        实际：分区为空，能力表显示 canRunOfflineDiagnostics = false
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 启动方式：…
+        2. 操作：…
+        3. 现象：…
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 已阅 `docs/版本与轨道.md`，确认装的是对应通道的版本
+          required: true
+        - label: 粘贴的内容里不含 API Key / token / 凭据（我自查过）
+          required: true
+        - label: 不是"桌面版想做但明确不做"的能力（接管插件页 / 自启 / 拉起 Host / 写 node_modules 见 README「能力边界」）
+          required: true

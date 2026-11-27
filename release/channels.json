@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "package": "dsh-drydock",
+  "updated": "2026-11-27",
+  "notes": [
+    "本文件是发布通道的**唯一事实来源**：dist-tag 映射、预发布标识、Release 标题前缀都由它派生。",
+    "改这里 = 改发布行为。改完必须跑 `node test-channels.mjs`（它同时校验 release.yml / 文档 / package.json）。",
+    "通道 ≠ 包：所有通道共用同一个 npm 包 dsh-drydock，通道只决定「这次发布进哪个口、贴什么标签」。"
+  ],
+  "channels": {
+    "web": {
+      "title": "网页 / 引擎宿主（主线）",
+      "releaseLabel": "网页",
+      "prereleaseId": "rc",
+      "prereleaseAliases": ["alpha", "beta"],
+      "prereleaseTag": "next",
+      "releaseTag": "latest",
+      "enabled": true,
+      "placeholder": false,
+      "trackLabel": "track:web",
+      "install": {
+        "stable": "dsh plugin --profile web add dsh-drydock",
+        "preview": "dsh plugin --profile web add dsh-drydock@next"
+      },
+      "notes": "正式版独占 GitHub Release 的 Latest；预发布走 `-rc.N` + dist-tag next。"
+    },
+    "desktop": {
+      "title": "官方桌面宿主（Windows / macOS）",
+      "releaseLabel": "桌面",
+      "prereleaseId": "desktop",
+      "prereleaseTag": "desktop",
+      "releaseTag": null,
+      "enabled": true,
+      "placeholder": false,
+      "trackLabel": "track:desktop",
+      "install": {
+        "preview": "dsh plugin --profile desktop add dsh-drydock@desktop"
+      },
+      "notes": "不单独发 GA：永远以 `-desktop.N` 预发布形态出现，成熟后并进核心正式版。宿主升版适配只动后缀，不动核心版本号。"
+    },
+    "community": {
+      "title": "社区桌面发行版（占位）",
+      "releaseLabel": "社区桌面",
+      "prereleaseId": "community",
+      "prereleaseTag": "community",
+      "releaseTag": null,
+      "enabled": false,
+      "placeholder": true,
+      "trackLabel": "track:community",
+      "install": {},
+      "notes": "2026-11-27 决定：形态未定，只占位。enabled=false 时 test-channels 会拒绝任何 community 发布，恢复前先补形态定义与核对表。"
+    }
+  }
+}

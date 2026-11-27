@@ -450,3 +450,13 @@ if (failures.length > 0) {
 	console.log(`全部 ${checks.length} 项通过`);
 	console.log("RESULT: PASS");
 }
+
+// CI 稳定性（2026-11-27 实测）：本套件自建 HTTP 服务器做重定向/下载用例。`server.close()` 在
+// GitHub Windows runner 上可能被残留的 keep-alive 连接拖住 → 进程不退、上层 `npm test` 的这一步
+// 一直挂着，直到 30 分钟超时（master 上同样这条链只要 ~2 分钟，所以那是"卡住"不是"慢"）。
+// 结果已经打印完，这里显式退出：退出码语义与 process.exitCode 一致，但不受残留句柄影响。
+// 用 setTimeout 而不是立即 exit：给 stdout 一次 flush 的机会（管道输出异步）。
+{
+	const code = failures.length > 0 ? 1 : 0;
+	setTimeout(() => process.exit(code), 200);
+}

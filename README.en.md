@@ -6,11 +6,12 @@
 >
 > The official page and plugin markets handle **getting plugins in**; the drydock handles **what happens afterwards** — undo a bad install, rescue a dead engine. *It fixes this boot; we fix why the next one would break.*
 
-![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
+![dsh](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![latest](https://img.shields.io/npm/v/dsh-drydock?label=latest&color=orange) ![desktop](https://img.shields.io/npm/v/dsh-drydock/desktop?label=desktop&color=blue) ![next](https://img.shields.io/npm/v/dsh-drydock/next?label=next&color=lightgrey) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
 > Community plugin — not an official DSH package. npm: `dsh-drydock` (formerly `dsh-plugin-manager-pro`, which is deprecated on npm but not deleted; kept for installing historical versions) · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
 >
-> **Current version: 1.1.0-desktop.3** (desktop channel; `npm view dsh-drydock dist-tags`; tags: <https://github.com/nonentity303/dsh-drydock/tags>).
+> **Current version: 1.1.0-desktop.3** (this doc tracks `master`). **Trust the badges**, not this line: the three badges above are the **live** `latest` / `desktop` / `next` channel versions. If you are reading a **snapshot** of this README on the npm page or in a third-party catalog (ADP etc.), the text may lag — take versions and install commands from the badges, `npm view dsh-drydock dist-tags`, or <https://github.com/nonentity303/dsh-drydock/blob/master/status.json>.
 > ⚠️ A brand-new release is blocked by pnpm's **24 h cool-down** (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
 
 ## Four signature features

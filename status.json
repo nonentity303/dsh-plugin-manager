@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "package": "dsh-drydock",
+  "repo": "nonentity303/dsh-drydock",
+  "docs": {
+    "readme": "https://github.com/nonentity303/dsh-drydock/blob/master/README.md",
+    "channels": "https://github.com/nonentity303/dsh-drydock/blob/master/docs/版本与轨道.md",
+    "selfUpdate": "https://github.com/nonentity303/dsh-drydock/blob/master/docs/自更新.md"
+  },
+  "generatedAt": "2026-11-27T15:16:59.497Z",
+  "working": {
+    "version": "1.1.0-desktop.3",
+    "channel": "desktop"
+  },
+  "channels": [
+    {
+      "name": "web",
+      "maturity": "stable",
+      "title": "网页 / 引擎宿主（主线）",
+      "distTag": "latest",
+      "install": {
+        "command": "dsh plugin --profile web add dsh-drydock"
+      },
+      "publishedVersion": "1.0.4"
+    },
+    {
+      "name": "web",
+      "maturity": "preview",
+      "title": "网页 / 引擎宿主（主线）",
+      "distTag": "next",
+      "install": {
+        "command": "dsh plugin --profile web add dsh-drydock@next"
+      },
+      "publishedVersion": "1.1.0-rc.2"
+    },
+    {
+      "name": "desktop",
+      "maturity": "preview",
+      "title": "官方桌面宿主（Windows / macOS）",
+      "distTag": "desktop",
+      "install": {
+        "command": "dsh plugin --profile desktop add dsh-drydock@desktop"
+      },
+      "publishedVersion": "1.1.0-desktop.3"
+    }
+  ],
+  "compat": {
+    "dsh": ">=0.1.7-rc.2 <0.3.0-0",
+    "node": ">=18.0.0"
+  },
+  "notes": [
+    "这是 dsh-drydock 对下游的机器可读事实源：通道 / 安装命令 / 兼容性 / 当前工作区版本。",
+    "下游目录（ADP 等）建议直接读本文件或 npm registry 的 dist-tags，而不是缓存 README 里的文字与版本号。",
+    "README 顶部徽章是实时的，快照页面也能显示当前通道版本。"
+  ],
+  "registry": {
+    "distTags": {
+      "next": "1.1.0-rc.2",
+      "latest": "1.0.4",
+      "desktop": "1.1.0-desktop.3"
+    },
+    "fetchedAt": "2026-11-27T15:17:02.731Z"
+  }
+}

@@ -116,6 +116,12 @@ function makeRun(env) {
       if (!env.verifyTripleOk) return ok(`\n结论：git 远端 ↔ npm 线上 ↔ 本地 ❌ 存在差异（见上表）\n`);
       return ok(`\n结论：git 远端 ↔ npm 线上 ↔ 本地 ✅ 三者逐文件 sha256 完全一致\n`);
     }
+    // 发布成功后的下游同步（status.json）；失败不得影响发布结论
+    if (isNode && first && /sync-status\.mjs$/.test(first)) {
+      record("sync-status", { args });
+      if (env.syncStatusFails) return bad("✘ 写 status.json 失败：EACCES\n");
+      return ok("✓ status.json 已更新（3 个通道）\n");
+    }
 
     // git
     if (cmd === "git") {

@@ -478,6 +478,22 @@ tar -xOzf dsh-plugin-manager-pro-0.8.3.tgz package/lib/index.js     | grep -c 'A
 | R6 | 尝鲜安装（对外写法） | 文档/公告写 `npm i dsh-drydock@next` 或显式 RC 版本号 | 装出来的版本 = 对应 RC；不要写"装最新版" |
 | R7 | 正式版收口 | RC 验证通过后，把它的内容并入**下一个正式版本号**再发正式版 —— **此时 `latest` 才前移**；npm 不允许把已发布的正式版号重发 | `dist-tags` 的 `latest` 前移到新正式版；RC 留在 `next`（可选：发完正式版后 `npm dist-tag rm dsh-drydock next` 收掉 `next`） |
 
+### 下游同步（npm 页面 / ADP 等第三方目录）
+
+> 背景（2026-11-27 实测的割裂）：同一个包三处显示三个版本 —— npm 页面停在 `latest` 那版的 README（1.0.4），
+> ADP 条目的 `version` 停在更早的版本（1.0.0），GitHub 上是最新。**每次发布都去催下游，成本不可接受。**
+
+| 信息 | 载体 | 谁负责更新 |
+|---|---|---|
+| 各通道当前版本 | README 顶部**实时徽章**（`npm/v/dsh-drydock`、`/desktop`、`/next`） | 自动（渲染时现抓，**快照页面也显示当前值**） |
+| 结构化事实（通道 / 安装命令 / 兼容性） | 仓库根 **`status.json`**，`node tools/dev/sync-status.mjs --write --online` 生成 | 发布成功后 `publish-all` 自动刷新（失败只提示，`--skip-status` 可关） |
+| npm 页面 README 正文 | `latest` 版本的 tarball 里的 `README.md` | **只能靠发新版**（npm 不允许单独改 README）；不要为此发空版本 |
+| ADP 等目录的条目文字 | 对方仓库的 `data/plugins/*.yml` | 人工 PR，**只在内容真的变了**时提 |
+
+发布后自检：`node -p "JSON.stringify(require('./status.json').channels)"` 与 `npm view dsh-drydock dist-tags` 对得上；
+`status.json` 的改动要**随发布提交并推送**（`git add status.json && git commit -m "chore(release): 同步 status.json" && git push`）。
+
+
 > **D1 的由来**：v0.9.0 的 GitHub Release 附件与 npm 发布件**不是同一份字节** —— 附件 `217,689 B` / `sha256 a29ead25…`，
 > npm `217,699 B` / `9cbd3684…`（差 10 B）。这是 F5 的同族问题：**版本号相同、内容不同**；两个渠道拿到的包不一样，
 > 用户无法用任何哈希互相验证。第 15 步就是为它加的硬关卡。

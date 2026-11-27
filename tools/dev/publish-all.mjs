@@ -133,6 +133,7 @@ export function parseArgs(argv = []) {
     resume: has("--resume"),
     skipNpm: has("--skip-npm"),
     skipGh: has("--skip-gh"),
+    skipStatus: has("--skip-status"), // 跳过发布后的 status.json 刷新（下游同步）
     yes: has("--yes"),
     json: has("--json"),
     tag: opt("--tag", "next"),
@@ -1311,6 +1312,20 @@ export async function main(argv = [], deps = {}) {
     return 0;
   }
   log(`\n✅ 双平台发布链路完成：npm ${pkg.name}@${pkg.version}（tag: ${opts.tag}） + GitHub Release v${pkg.version}`);
+
+  // ── 下游同步（best-effort，失败只提示不影响发布结论）───────────────────────
+  // 为什么要有这一步：npm 页面渲染的是 `latest` 版本的 README（不发版就动不了），ADP 等第三方目录
+  // 有自己的构建节奏。`status.json` 是我们自己唯一的机器可读事实源，发完版就刷新它 ——
+  // 下游（ADP / 其他目录）只需**一次**改成读它，之后不必每次发布都找它们同步。
+  if (!opts.skipStatus) {
+    const synced = ctx.run(process.execPath, [join(ctx.root, "tools", "dev", "sync-status.mjs"), "--write"], {
+      cwd: ctx.root,
+      timeoutMs: 180000,
+    });
+    const out = `${synced.stdout || ""}${synced.stderr || ""}`.trim().split("\n").filter(Boolean);
+    if (synced.code === 0) log(`   下游同步：status.json 已刷新${out.length > 0 ? ` · ${out.at(-1)}` : ""}`);
+    else log(`   下游同步：status.json 刷新失败（不影响发布；可手动跑 node tools/dev/sync-status.mjs --write）`);
+  }
   return 0;
 }
 

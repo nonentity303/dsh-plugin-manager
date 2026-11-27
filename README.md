@@ -6,11 +6,12 @@
 >
 > 官方与插件市场负责「装进来」；引擎船坞负责「装完之后」——**装坏了能撤，引擎崩了能救**。它修这次启动，我们修下一次为什么还会坏。
 
-![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
+![dsh](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![latest](https://img.shields.io/npm/v/dsh-drydock?label=latest&color=orange) ![desktop](https://img.shields.io/npm/v/dsh-drydock/desktop?label=desktop&color=blue) ![next](https://img.shields.io/npm/v/dsh-drydock/next?label=next&color=lightgrey) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包已挂弃用提示、不删包，仅保留供历史版本安装）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **本页对应版本：1.1.0-desktop.3**（桌面通道；`npm view dsh-drydock dist-tags` 可核对；标签见 <https://github.com/nonentity303/dsh-drydock/tags>）
+> **本页对应版本：1.1.0-desktop.3**（本文档随 master 更新）。**以徽章为准**：上面三个徽章是**实时**的 `latest` / `desktop` / `next` 通道版本 —— 如果你是在 npm 页面或第三方目录（ADP 等）看到这份文档的**快照**，那里的文字可能滞后，版本与安装命令请以徽章、`npm view dsh-drydock dist-tags` 或 <https://github.com/nonentity303/dsh-drydock/blob/master/status.json> 为准。
 > ⚠️ 刚发布的版本会被 pnpm 的 **24 小时冷静期**（`minimumReleaseAge`）挡住：装不到或装完还是旧版时，**显式写版本号**（见下方安装）。
 > 版本与通道口径见 [docs/版本与轨道.md](docs/版本与轨道.md)：`-desktop.N` = 桌面通道、`-rc.N` = 网页预发布、无后缀 = 正式版。
 

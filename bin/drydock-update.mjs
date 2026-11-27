@@ -169,7 +169,21 @@ async function main(argv = process.argv.slice(2)) {
 	// ── --status（只读）──────────────────────────────────────
 	if (args.status) {
 		const state = readState({ dshHome });
-		out(args.json, { dshHome, profileDir, form, formSource, currentVersion, state }, statusText(state));
+		out(
+			args.json,
+			{
+				dshHome,
+				profileDir,
+				form,
+				formSource,
+				currentVersion,
+				channel: distTagForForm(form),
+				canApply: canSelfApply(form),
+				state,
+				prompt: promptText(state, { canApply: canSelfApply(state?.form ?? form) })
+			},
+			statusText(state)
+		);
 		return 0;
 	}
 
@@ -282,7 +296,11 @@ async function main(argv = process.argv.slice(2)) {
 			profileDir
 		};
 		writeState(state, { dshHome });
-		out(args.json, state, `${cand.message}\n\n${promptText(state, { canApply: canSelfApply(form) })}`);
+		out(
+			args.json,
+			{ dshHome, profileDir, form, currentVersion, channel: state.channel, canApply: canSelfApply(form), state, prompt: promptText(state, { canApply: canSelfApply(form) }) },
+			`${cand.message}\n\n${promptText(state, { canApply: canSelfApply(form) })}`
+		);
 		return 0;
 	}
 
@@ -324,7 +342,11 @@ async function main(argv = process.argv.slice(2)) {
 		profileDir
 	};
 	writeState(state, { dshHome });
-	out(args.json, state, `${staged.message}\n\n${promptText(state, { canApply: canSelfApply(form) })}`);
+	out(
+		args.json,
+		{ dshHome, profileDir, form, currentVersion, channel: state.channel, canApply: canSelfApply(form), state, prompt: promptText(state, { canApply: canSelfApply(form) }) },
+		`${staged.message}\n\n${promptText(state, { canApply: canSelfApply(form) })}`
+	);
 	return 0;
 }
 

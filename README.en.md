@@ -10,7 +10,7 @@
 
 > Community plugin — not an official DSH package. npm: `dsh-drydock` (formerly `dsh-plugin-manager-pro`, which is deprecated on npm but not deleted; kept for installing historical versions) · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
 >
-> **Current version: 1.1.0-desktop.1** (desktop channel; `npm view dsh-drydock dist-tags`; tags: <https://github.com/nonentity303/dsh-drydock/tags>).
+> **Current version: 1.1.0-desktop.2** (desktop channel; `npm view dsh-drydock dist-tags`; tags: <https://github.com/nonentity303/dsh-drydock/tags>).
 > ⚠️ A brand-new release is blocked by pnpm's **24 h cool-down** (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
 
 ## Four signature features

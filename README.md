@@ -10,7 +10,7 @@
 
 > 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包已挂弃用提示、不删包，仅保留供历史版本安装）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **本页对应版本：1.1.0-desktop.1**（桌面通道；`npm view dsh-drydock dist-tags` 可核对；标签见 <https://github.com/nonentity303/dsh-drydock/tags>）
+> **本页对应版本：1.1.0-desktop.2**（桌面通道；`npm view dsh-drydock dist-tags` 可核对；标签见 <https://github.com/nonentity303/dsh-drydock/tags>）
 > ⚠️ 刚发布的版本会被 pnpm 的 **24 小时冷静期**（`minimumReleaseAge`）挡住：装不到或装完还是旧版时，**显式写版本号**（见下方安装）。
 > 版本与通道口径见 [docs/版本与轨道.md](docs/版本与轨道.md)：`-desktop.N` = 桌面通道、`-rc.N` = 网页预发布、无后缀 = 正式版。
 
@@ -155,7 +155,7 @@ dsh web                                                   # 重启生效
 | [docs/环境自适应与剥离.md](docs/环境自适应与剥离.md) | 首启环境探测、能力表、环境专属模块的惰性装载与剥离清单（死代码审查输入） |
 | [docs/自更新.md](docs/自更新.md) | 自更新：权威源 + SRI 校验 + 现在/稍后 + detached worker（停引擎→装→健康检查→重启→失败回滚） |
 | [CHANGELOG.md](CHANGELOG.md) | 版本历史（脚本生成） |
-| [docs/releases/](docs/releases/) | 每版发布说明（本页对应 [1.1.0-desktop.1](docs/releases/1.1.0-desktop.1.md)） |
+| [docs/releases/](docs/releases/) | 每版发布说明（本页对应 [1.1.0-desktop.2](docs/releases/1.1.0-desktop.2.md)） |
 | [docs/README-full.md](docs/README-full.md) | 0.9.1 时代完整存档（能力对比 / 兼容矩阵全文），**非当前手册** |
 
 ## 许可证

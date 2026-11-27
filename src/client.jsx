@@ -156,7 +156,7 @@ function shouldDebounceSearch(query, filterQuery) {
 	return query !== filterQuery;
 }
 
-function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, t, embedded = false, onlyUpdatable = false, renderSlot, configSurfaces }) {
+function PluginManagerTab({ list, refresh, setEnabled, update, setSources, resetToggles, diagnose, quarantine, repairHarness, restartHarness, uninstallPackages, uninstallPreview, operationHistory, undoOperation, setSourceOverride, scenarioList, scenarioSave, scenarioUpdate, scenarioDelete, scenarioApply, getRescueConfig, setRescueConfig, getDownloadConfig, checkDownloads, updateBrowser, verifyProfile, fixProfile, marketCatalog, marketInstall, selfUpdateStatus, selfUpdatePrepare, selfUpdateDecide, t, embedded = false, onlyUpdatable = false, renderSlot, configSurfaces }) {
 	const [request, setRequest] = useState(0);
 	const [onlyUpdatableSelf, setOnlyUpdatableSelf] = useState(false);
 	const [query, setQuery] = useState("");
@@ -178,6 +178,8 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const [busy, setBusy] = useState(null);
 	const [feedback, setFeedback] = useState(null);
 	const [state, setState] = useState({ status: "loading" });
+	// 1.1.0：管理器自身的更新（权威源 → 校验暂存 → 现在/稍后 → worker 重启）。执行体在 host 侧转发的 CLI 里。
+	const [selfUpdate, setSelfUpdate] = useState({ status: "idle", data: null, busy: null, message: null });
 
 	// 第三方配置槽位的**已注册键**（响应式：槽位 ledger 变化即重渲染）。
 	// renderSlot 由声明了 plugins.* children 的那条 main 注册（框架契约）提供；
@@ -453,6 +455,35 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 	const expandAll = () => setOpen(new Set(NECESSITY_ORDER));
 	const collapseAll = () => setOpen(new Set());
 
+	// 1.1.0：管理器自身更新 —— 挂载时读一次状态（只读，不联网）。
+	useEffect(() => {
+		let alive = true;
+		if (typeof selfUpdateStatus !== "function") return undefined;
+		selfUpdateStatus().then(
+			(data) => {
+				if (alive) setSelfUpdate((cur) => ({ ...cur, status: "ready", data }));
+			},
+			(error) => {
+				if (alive) setSelfUpdate((cur) => ({ ...cur, status: "error", message: String(error?.message ?? error) }));
+			}
+		);
+		return () => {
+			alive = false;
+		};
+	}, [selfUpdateStatus]);
+
+	/** 检查自身更新（联网 + 下载校验 + 暂存）或记录决策；失败只影响本卡片，不拖垮列表。 */
+	const actSelfUpdate = async (action) => {
+		if (action === "prepare" ? typeof selfUpdatePrepare !== "function" : typeof selfUpdateDecide !== "function") return;
+		setSelfUpdate((cur) => ({ ...cur, busy: action, message: null }));
+		try {
+			const data = action === "prepare" ? await selfUpdatePrepare() : await selfUpdateDecide(action);
+			setSelfUpdate({ status: "ready", data, busy: null, message: data?.message ?? null });
+		} catch (error) {
+			setSelfUpdate((cur) => ({ ...cur, busy: null, message: String(error?.message ?? error) }));
+		}
+	};
+
 	if (state.status === "loading") {
 		return <p style={{ color: "var(--dsw-alias-label-tertiary)", fontSize: 13 }}>{t("loading")}</p>;
 	}
@@ -487,6 +518,49 @@ function PluginManagerTab({ list, refresh, setEnabled, update, setSources, reset
 					</span>
 				</div>
 				)}
+				{/* 1.1.0：管理器自身更新卡片 —— 有 pending 就出「现在 / 稍后」，桌面形态只给提示 */}
+				{selfUpdate.data !== null ? (
+					<div data-self-update-banner style={{
+						border: "1px solid var(--dsw-alias-border-l2)",
+						borderRadius: 8,
+						padding: "8px 10px",
+						background: "var(--dsw-alias-bg-layer-1)",
+						display: "flex",
+						gap: 8,
+						alignItems: "center",
+						flexWrap: "wrap",
+						fontSize: 12.5
+					}}>
+						<span style={{ fontWeight: 600 }}>{t("selfUpdateTitle")}</span>
+						<span style={{ color: "var(--dsw-alias-label-secondary)" }}>
+							{selfUpdate.data.pending !== null
+								? `${selfUpdate.data.pending.currentVersion} → ${selfUpdate.data.pending.targetVersion}（${selfUpdate.data.pending.channel}）`
+								: t("selfUpdateUpToDate").replace("{v}", selfUpdate.data.currentVersion)}
+						</span>
+						{selfUpdate.data.pending !== null && selfUpdate.data.pending.phase === "running" ? (
+							<span style={{ color: "var(--dsw-alias-label-secondary)" }}>{t("selfUpdateRunning")}</span>
+						) : selfUpdate.data.pending !== null ? (
+							selfUpdate.data.canApply ? (
+								<>
+									<button type="button" onClick={() => actSelfUpdate("now")} disabled={selfUpdate.busy !== null}
+										style={{ ...buttonStyle, fontWeight: 600, background: "var(--dsw-alias-state-business-primary, #4f8cff)", borderColor: "var(--dsw-alias-state-business-primary, #4f8cff)", color: "#fff" }}>
+										{t("selfUpdateNow")}
+									</button>
+									<button type="button" onClick={() => actSelfUpdate("later")} disabled={selfUpdate.busy !== null} style={buttonStyle}>
+										{t("selfUpdateLater")}
+									</button>
+								</>
+							) : (
+								<span style={{ color: "var(--dsw-alias-label-tertiary)" }}>{t("selfUpdateDesktopOnly")}</span>
+							)
+						) : (
+							<button type="button" onClick={() => actSelfUpdate("prepare")} disabled={selfUpdate.busy !== null} style={buttonStyle}>
+								{selfUpdate.busy === "prepare" ? t("selfUpdateChecking") : t("selfUpdateCheck")}
+							</button>
+						)}
+						{selfUpdate.message !== null ? <span style={{ color: "var(--dsw-alias-label-secondary)" }}>{selfUpdate.message}</span> : null}
+					</div>
+				) : null}
 				{/* 新设计：搜索框与全部操作按钮收进同一行工具栏（搜索弹性占宽，按钮自动换行） */}
 				<div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
 					<label style={{ flex: "1 1 210px", position: "relative", display: "inline-flex", alignItems: "center", minWidth: 200 }}>
@@ -2584,6 +2658,15 @@ const zh = {
 	upToDate: "已是最新版本",
 	notManaged: "随安装更新",
 	updateAvailable: "可更新",
+	// 1.1.0：管理器自身更新
+	selfUpdateTitle: "管理器自身",
+	selfUpdateUpToDate: "已是最新（当前 {v}）",
+	selfUpdateCheck: "检查自身更新",
+	selfUpdateChecking: "检查中…（下载并校验）",
+	selfUpdateNow: "现在升级",
+	selfUpdateLater: "稍后",
+	selfUpdateRunning: "正在升级：引擎会短暂重启，完成后刷新本页",
+	selfUpdateDesktopOnly: "桌面形态不自动安装（profile 由官方应用独占）：请按提示用桌面版自带 CLI 安装",
 	expandAll: "全部展开",
 	collapseAll: "全部收起",
 	sources: "更新源",
@@ -2831,6 +2914,15 @@ const en = {
 	upToDate: "Already up to date",
 	notManaged: "ships with install",
 	updateAvailable: "updates",
+	// 1.1.0: self-update
+	selfUpdateTitle: "Drydock itself",
+	selfUpdateUpToDate: "Up to date ({v})",
+	selfUpdateCheck: "Check self-update",
+	selfUpdateChecking: "Checking… (download + verify)",
+	selfUpdateNow: "Update now",
+	selfUpdateLater: "Later",
+	selfUpdateRunning: "Updating: the engine will restart briefly — reload this page afterwards",
+	selfUpdateDesktopOnly: "Not auto-installed on desktop (the app owns the profile): install with the bundled CLI as prompted",
 	expandAll: "Expand all",
 	collapseAll: "Collapse all",
 	sources: "Sources",
@@ -3051,7 +3143,12 @@ async function apply(ctx) {
 			updateBrowser: async (packageNames) => unwrap(await withTimeout(scope.remote.pluginManagerPro.updateBrowser(packageNames), "解析下载链接")),
 			marketCatalog: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketCatalog(), "加载插件市场", 45000)),
 			// 市场安装走 pnpm，可能下载 + 编译数分钟：超时放宽到 4 分钟
-			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000))
+			marketInstall: async (target, dryRun) => unwrap(await withTimeout(scope.remote.pluginManagerPro.marketInstall(target, dryRun), "安装插件", 240000)),
+			// 1.1.0：管理器自身更新（host 转发 bin/drydock-update.mjs；执行入口只有一处）
+			selfUpdateStatus: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.selfUpdateStatus(), "读取自更新状态", 45000)),
+			// 检查 = 查权威源 + 下载 + 摘要校验 + 暂存：放宽到 5 分钟
+			selfUpdatePrepare: async () => unwrap(await withTimeout(scope.remote.pluginManagerPro.selfUpdatePrepare(), "检查管理器更新", 300000)),
+			selfUpdateDecide: async (decision) => unwrap(await withTimeout(scope.remote.pluginManagerPro.selfUpdateDecide(decision), "执行更新决策", 120000))
 		};
 		// C3：旧的 `settings.plugin.item`（旧设置页插件配置卡片）在 0.1.7 已无声明者 —— 整段读取与渲染均已删除，
 		// 第三方配置改由下面两个 0.1.7 现役槽位承担（键规则见 configSurfacesFor）。

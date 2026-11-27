@@ -483,9 +483,9 @@
 
 > 完整发布说明：[`docs/releases/RELEASE_NOTES_0.7.3.md`](docs/releases/RELEASE_NOTES_0.7.3.md)
 
-## [1.1.0-desktop.1]（预发布·桌面通道）
+## [1.1.0-desktop.2]（预发布·桌面通道）
 
-> 发布日期：待发布（本文件随合并先落盘；真机验收结论回填后再发） 通道：desktop（`npm dist-tag desktop`）；本版本不会动 `latest`。 版本口径见 [`../版本与轨道.md`](../版本与轨道.md)：桌面适配走预发布后缀，不顶动核心版本号。
+> 发布日期：待发布（本文件随合并先落盘；真机验收结论回填后再发） 通道：desktop（`npm dist-tag desktop`）；本版本不会动 `latest`。 版本口径见 [`../版本与轨道.md`](../版本与轨道.md)：桌面适配/迭代走预发布后缀，不顶动核心版本号。 相对 `1.1.0-desktop.1` 的增量：自更新（含 3080 界面上的「现在 / 稍后」弹窗）＋ 首启环境探测与自动剥离的收口。
 
 ### Added · 新增
 
@@ -496,9 +496,9 @@
 - **官方目录三分区**（M3）：`lib/bundles-official.mjs` 直接读官方 `PROTECTED_PLUGINS`(17) / `HIDDEN_BUNDLES`(8) / `PROFILE_TEMPLATES`(5)，带静态回落副本。
 - **恢复后自愈**（M5）：`dsh-drydock-boot --heal-recovery`（默认 dry-run，真写需双确认），从侧车与 `.rescue-bak-*` 重建被官方恢复埋掉的归属行。
 - **官方通道救援 profile**（M5）：`dsh-drydock-boot --rescue-profile`（**桌面形态下拒绝执行**——绝不 spawn/kill 宿主）。
-- **自更新**（`bin/drydock-update.mjs` + `lib/self-update.mjs`）：从权威源（npm https + `dist.integrity` SRI）或用户显式确认的本地 tgz 取包 → 校验 → 暂存 → **「现在 / 稍后」** → detached worker（停引擎 → 装 → 健康检查 → 重启，失败自动回滚）。桌面形态**不自动装**（profile 由 Electron 独占），只提示；选了「稍后」下次启动由 3081 启动器再提醒。 → [docs/自更新.md](../自更新.md)
+- **自更新**（`bin/drydock-update.mjs` + `lib/self-update.mjs`）：从权威源（npm https + `dist.integrity` SRI）或用户显式确认的本地 tgz 取包 → 校验 → 暂存 → **「现在 / 稍后」** → detached worker（停引擎 → 装 → 健康检查 → 重启，失败自动回滚）。桌面形态**不自动装**（profile 由 Electron 独占），只提示；选了「稍后」下次启动由 3081 启动器再提醒。对应 RPC：`selfUpdateStatus` / `selfUpdatePrepare` / `selfUpdateDecide`；**3080 插件页工具栏下方新增「管理器自身」卡片** （有 pending 出「现在升级 / 稍后」两个按钮；桌面形态只显示提示文案；升级中显示"引擎会重启，完成后刷新本页"）。 → [docs/自更新.md](../自更新.md)
 
-> 完整发布说明：[`docs/releases/1.1.0-desktop.1.md`](docs/releases/1.1.0-desktop.1.md)
+> 完整发布说明：[`docs/releases/1.1.0-desktop.2.md`](docs/releases/1.1.0-desktop.2.md)
 
 ## [0.7.2]
 

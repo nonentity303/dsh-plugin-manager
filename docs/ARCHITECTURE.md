@@ -192,6 +192,7 @@
 | `lib/envprobe.mjs` | 环境探测：形态判定（`web`/`desktop`/`unknown`）+ home 候选 + 桌面锁 + 宿主版本 + 端口候选 |
 | `lib/host-profile.mjs` | **首启探测与画像持久化**：`<DSH_HOME>/.drydock/host-profile.json`（模式/证据/时间，TTL 30 天，原子写、坏缓存自愈） |
 | `lib/host-registry.mjs` | **环境专属模块登记 + 惰性装载 + 剥离清单**：能力不满足的模块不 `import`；`auditModules()` 出行数 |
+| `lib/boot-snapshot.mjs` | **启动配置快照 + 差异告警**（DESIGN_1.0.5）：`<profile>/.plugin-manager/boot-snapshot.json` 按引擎端口分键；`captureEngineState` / `diffEngineState` / `classifyDiff`（history 定性）/ `updateEngineSnapshot` |
 | `lib/bundles-official.mjs` | 官方 bundle 目录（保护集 / 隐藏集 / 模板）：纯函数 + 静态回落副本，host 侧唯一允许新增的静态依赖 |
 | `lib/diagnostics.mjs` | 离线只读诊断报告（不写盘、不碰锁、不启停进程） |
 | `lib/rescue-profile.mjs` | 走官方通道重建救援 profile + 官方恢复后的自愈（**桌面形态整体剥离**，见 [环境自适应与剥离.md](环境自适应与剥离.md)） |

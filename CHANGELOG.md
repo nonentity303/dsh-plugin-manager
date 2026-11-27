@@ -483,12 +483,16 @@
 
 > 完整发布说明：[`docs/releases/RELEASE_NOTES_0.7.3.md`](docs/releases/RELEASE_NOTES_0.7.3.md)
 
-## [1.1.0-desktop.2]（预发布·桌面通道）
+## [1.1.0-desktop.3]（预发布·桌面通道）
 
-> 发布日期：待发布（本文件随合并先落盘；真机验收结论回填后再发） 通道：desktop（`npm dist-tag desktop`）；本版本不会动 `latest`。 版本口径见 [`../版本与轨道.md`](../版本与轨道.md)：桌面适配/迭代走预发布后缀，不顶动核心版本号。 相对 `1.1.0-desktop.1` 的增量：自更新（含 3080 界面上的「现在 / 稍后」弹窗）＋ 首启环境探测与自动剥离的收口。
+> 发布日期：待发布（真机验收结论回填后再发） 通道：desktop（`npm dist-tag desktop`）；本版本不会动 `latest`。 版本口径见 [`../版本与轨道.md`](../版本与轨道.md)：桌面适配/迭代走预发布后缀，不顶动核心版本号。 相对 `1.1.0-desktop.2` 的增量：3080/3081 mod 列表一致性修复 ＋ 启动配置差异感知（DESIGN_1.0.5 方案 A/B/C/D）。
 
 ### Added · 新增
 
+- **A** 启动快照 + 启动前 diff — `lib/boot-snapshot.mjs`：`<profile>/.plugin-manager/boot-snapshot.json`，**按引擎端口分键**、原子写、坏数据当无快照；`captureEngineState` / `diffEngineState`（added / removed / version-changed / patch-changed）；**只告警不拦启动**；启动成功后由 open-boot 写入
+- **B** history 交叉核对定性质 — `classifyDiff()`：history 命中 → "上次管理台操作后没重启，本次启动已按当前状态加载"；未命中 → "配置变更未经过插件管理器，请确认来源"
+- **C** 跨引擎重启提示 — 3080 的开关返回里追加"3080 与 3081 兜底页共用同一个 profile，所有使用它的引擎都要重启才会收敛"
+- **D** supervisor 预检集成 — open-boot 拉起引擎前跑 diff，日志一行；兜底页新增「与上次启动相比的配置变更」卡片
 - **首启环境探测 + 自动剥离**（`lib/envprobe.mjs` / `lib/capabilities.mjs` / `lib/host-profile.mjs`）：安装后首次启动探测宿主形态（`web` / `desktop` / `unknown`），把结论与证据原子写入 host profile； **非本环境的模块不会被加载**（惰性装载 + 剥离清单），`dsh-drydock-modules` 可随时审计"本环境永远不会执行的代码"。
 - **能力门控**（M1）：一张能力表 + 中文理由，UI 按表渲染，**不散落 `if (isDesktop)`**；被关掉的入口可点开看理由。
 - **来源防护 + CORS**（M2/M6）：桌面页面来源 `dsh-app://app` 走单独白名单；正式响应补 `Access-Control-Allow-Origin`/`Vary`；安全响应头与 1.0.3 的 `applySecurityHeaders` 合并（桌面与网页同一套）。
@@ -498,7 +502,17 @@
 - **官方通道救援 profile**（M5）：`dsh-drydock-boot --rescue-profile`（**桌面形态下拒绝执行**——绝不 spawn/kill 宿主）。
 - **自更新**（`bin/drydock-update.mjs` + `lib/self-update.mjs`）：从权威源（npm https + `dist.integrity` SRI）或用户显式确认的本地 tgz 取包 → 校验 → 暂存 → **「现在 / 稍后」** → detached worker（停引擎 → 装 → 健康检查 → 重启，失败自动回滚）。桌面形态**不自动装**（profile 由 Electron 独占），只提示；选了「稍后」下次启动由 3081 启动器再提醒。对应 RPC：`selfUpdateStatus` / `selfUpdatePrepare` / `selfUpdateDecide`；**3080 插件页工具栏下方新增「管理器自身」卡片** （有 pending 出「现在升级 / 稍后」两个按钮；桌面形态只显示提示文案；升级中显示"引擎会重启，完成后刷新本页"）。 → [docs/自更新.md](../自更新.md)
 
-> 完整发布说明：[`docs/releases/1.1.0-desktop.2.md`](docs/releases/1.1.0-desktop.2.md)
+### Fixed · 修复
+
+- 3080 = `ctx.loader.entries()` → **只有已启用**的 bundle 有条目（被禁用的根本不出现）；
+- 3081 = profile 清单 `dependencies ∪ dsh.profile.bundles` → 会列出"装了没启用""声明了没装"的；
+- 分区：3080 用官方 `PROTECTED_PLUGINS / HIDDEN_BUNDLES`，3081 曾用硬编码 `CORE_BUNDLES`。
+- `lib/bundles-official.mjs` 新增 `isEngineProvidedBundle()` —— 引擎自带（core / hidden）的 bundle 不在 `dependencies` 里是常态，不能被判成"悬空声明"（真机实测踩过）；
+- 3080 侧 `mergeProfileOnlyBundles()`：把清单里有、loader 没有的名字补成**只读行**（`enabled:false` + 明确理由 + 指向 3081 去启用），并标出 `dangling:`（声明了但没装，引擎加载会报错）；
+- 3081 侧 `classifyProfileBundles()`：三态 `enabled / disabled / dangling` + 与 3080 相同的 `section`（core / builtin / user）；
+- 兜底页补徽章（核心 / 引擎内置 / 用户 / 未启用 / 声明未安装）与说明文案。
+
+> 完整发布说明：[`docs/releases/1.1.0-desktop.3.md`](docs/releases/1.1.0-desktop.3.md)
 
 ## [0.7.2]
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-drydock",
-  "version": "1.1.0-desktop.2",
+  "version": "1.1.0-desktop.3",
   "description": "DSH 引擎船坞（drydock，原名 dsh-plugin-manager-pro）：引擎外灾备与坞修——引擎起不来时仍能独立救援（3081 兜底页 / 3082 守护 / 官方 dsh rescue profile 通道）、离线只读诊断报告、官方恢复后自愈、启动前自检；装完之后的事——本地插件管理器：分类折叠（核心组件/引擎内置组件/用户插件，跟随官方 PROTECTED_PLUGINS 与 HIDDEN_BUNDLES）、更新源一键更新（npm/GitHub/自定义镜像）、浏览器下载优先、下载目录自动安装、插件市场（ADP 精选目录）、README 简介提取；事务化卸载（备份→删除→校验→回滚）、操作历史一键撤销、场景方案、来源人工修正、依赖关系感知；独立救援工具链（3082 rescue-daemon / open-boot 浏览器触发自启 / dsh-boot 启动序列）；1.1.0 起支持 DSH 桌面版（按 profile 能力门控 + 首启环境探测自动剥离非本环境模块：只做官方覆盖不到的引擎外灾备，不抢宿主生命周期）；跨平台（Windows/macOS/Linux）",
   "author": "nonentity303",
   "repository": {
@@ -68,11 +68,13 @@
   "scripts": {
     "build": "node build.mjs",
     "prepack": "node build.mjs",
-    "test": "node build.mjs && node test-bundle.mjs && node test-admission.mjs && node test-daemon-security.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs && node test-downloader.mjs && node test-security-provenance.mjs && node test-capabilities.mjs && node test-origin.mjs && node test-cors.mjs && node test-diagnostics.mjs && node test-rescue-profile.mjs && node test-host-strip.mjs && node test-self-update.mjs && node test-isolation.mjs && node test-channels.mjs && node test-docs.mjs",
+    "test": "node build.mjs && node test-bundle.mjs && node test-admission.mjs && node test-daemon-security.mjs && node test-render.mjs && node test-integration.mjs && node test-launcher.mjs && node test-ux.mjs && node test-downloader.mjs && node test-security-provenance.mjs && node test-capabilities.mjs && node test-origin.mjs && node test-cors.mjs && node test-diagnostics.mjs && node test-rescue-profile.mjs && node test-host-strip.mjs && node test-self-update.mjs && node test-mod-list.mjs && node test-boot-diff.mjs && node test-isolation.mjs && node test-channels.mjs && node test-docs.mjs",
     "test:isolation": "node test-isolation.mjs",
     "test:channels": "node test-channels.mjs",
     "test:host-strip": "node test-host-strip.mjs",
     "test:update": "node test-self-update.mjs",
+    "test:mod-list": "node test-mod-list.mjs",
+    "test:boot-diff": "node test-boot-diff.mjs",
     "channels": "node tools/dev/channels.mjs",
     "test:admission": "node test-admission.mjs",
     "test:launcher": "node test-launcher.mjs",

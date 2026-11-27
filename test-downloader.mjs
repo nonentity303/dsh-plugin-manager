@@ -2,8 +2,9 @@
 // 用法: node test-downloader.mjs
 //
 // 全部走本机 127.0.0.1 临时 HTTP server + 随机内容，**不依赖外网**。
-// 覆盖：明文 HTTP 门禁 / 无期望门禁 / SRI(integrity) 与 shasum（hex+base64）/ size /
-//       SRI 多算法取最强 / sha256(base64+hex) / 2MB 流式（不整体读内存）/ P2P 门禁 / classifyUrl 既有语义。
+// 覆盖：明文 HTTP 门禁 / 无期望门禁 / 只给 size 不算校验（B1）/ 重定向逐跳协议校验（B2）/
+//       SRI(integrity) 与 shasum（hex+base64）/ SRI 多算法取最强 / sha256(base64+hex) /
+//       2MB 流式（不整体读内存）/ P2P 门禁 / classifyUrl 既有语义。
 import { createServer } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
@@ -41,6 +42,40 @@ const server = createServer((req, res) => {
 	}
 	if (path === "/big") {
 		writeInChunks(res, BIG).catch(() => res.destroy());
+		return;
+	}
+	// ---- 重定向夹具（B2 逐跳校验）----
+	if (path === "/redir-relative") {
+		// 相对 Location（无 host、无前导多余层级）：必须按当前 URL 解析
+		res.writeHead(302, { location: "/small" });
+		res.end();
+		return;
+	}
+	if (path === "/redir-chain1") {
+		res.writeHead(302, { location: "/redir-chain2" });
+		res.end();
+		return;
+	}
+	if (path === "/redir-chain2") {
+		// 同级相对路径（不带前导 /）：相对 /redir-chain1 解析应得到 /small
+		res.writeHead(301, { location: "small" });
+		res.end();
+		return;
+	}
+	if (path === "/redir-loop") {
+		res.writeHead(302, { location: "/redir-loop" });
+		res.end();
+		return;
+	}
+	if (path === "/redir-to-ftp") {
+		res.writeHead(302, { location: "ftp://example.com/a.tgz" });
+		res.end();
+		return;
+	}
+	if (path === "/redir-to-https") {
+		// https→http→https 链的「第 3 跳」：新实现根本不会请求到这里（第 2 跳就被拦）
+		res.writeHead(302, { location: "https://origin.invalid/final" });
+		res.end();
 		return;
 	}
 	res.writeHead(404, { "content-type": "text/plain" });
@@ -189,17 +224,108 @@ try {
 		if (result.file !== null) cleanupDownload(result.file);
 	}
 
-	// ---- 12) expect.size 正确/错误 ----
+	// ---- 12) expect.size 单独存在：不是内容摘要 → 按未校验拒绝（B 报告 S4-1 / B1） ----
 	{
-		const { result } = await run(SMALL_URL, { allowInsecure: true, expect: { size: SMALL.length } });
-		record("size 正确 → downloaded", result.status === "downloaded" && result.code === "ok", JSON.stringify(result));
-		record("size 正确时 message 提到字节数", new RegExp(`${SMALL.length} 字节`).test(result.message ?? ""));
+		const before = hits.length;
+		const { result, fresh } = await run(SMALL_URL, { allowInsecure: true, expect: { size: SMALL.length } });
+		record("只给 size（无摘要）→ blocked/unverified", result.status === "blocked" && result.code === "unverified", JSON.stringify(result));
+		record("只给 size 的文案点明「大小不是内容摘要」", /大小不是内容摘要/.test(result.message ?? ""), result.message ?? "");
+		record("只给 size 被拒时未联网、未落盘", hits.length === before && fresh.length === 0, `hits+${hits.length - before} fresh=${fresh.length}`);
+	}
+	{
+		// 显式 allowUnverified 才放行；回执只能写「仅核对大小」，不能写成「校验通过」
+		const { result } = await run(SMALL_URL, { allowInsecure: true, allowUnverified: true, expect: { size: SMALL.length } });
+		record("只给 size + allowUnverified → downloaded", result.status === "downloaded" && result.code === "ok", JSON.stringify(result));
+		record("放行回执写「仅核对大小…未校验内容摘要」且不提「摘要校验」",
+			/仅核对大小/.test(result.message ?? "") && /未校验内容摘要/.test(result.message ?? "") && !/摘要校验/.test(result.message ?? ""),
+			result.message ?? "");
+		record("只给 size 放行后文件内容正确", result.file !== null && readFileSync(result.file).equals(SMALL));
 		if (result.file !== null) cleanupDownload(result.file);
 	}
 	{
-		const { result, fresh } = await run(SMALL_URL, { allowInsecure: true, expect: { size: SMALL.length + 1 } });
-		record("size 错误 → failed/size-mismatch", result.status === "failed" && result.code === "size-mismatch", JSON.stringify(result));
+		const { result, fresh } = await run(SMALL_URL, { allowInsecure: true, allowUnverified: true, expect: { size: SMALL.length + 1 } });
+		record("size 错误 → failed/size-mismatch（单独 size 仍会核对）", result.status === "failed" && result.code === "size-mismatch", JSON.stringify(result));
 		record("size 错误后临时文件已删除", fresh.length === 1 && readdirSync(fresh[0]).length === 0, JSON.stringify(fresh));
+	}
+	{
+		// 有摘要 + 给了 size：两者都校验（摘要对但大小错 → 失败）
+		const { result } = await run(SMALL_URL, { allowInsecure: true, expect: { integrity: sri("sha512", SMALL), size: SMALL.length + 1 } });
+		record("有摘要 + size 不一致 → 仍然 size-mismatch（不是只看摘要）", result.status === "failed" && result.code === "size-mismatch", JSON.stringify(result));
+	}
+	{
+		// 有摘要 + 正确 size：回执两者都提
+		const { result } = await run(SMALL_URL, { allowInsecure: true, expect: { integrity: sri("sha512", SMALL), size: SMALL.length } });
+		record("有摘要 + size 正确 → 成功且回执同时提摘要与大小",
+			result.status === "downloaded" && /摘要校验/.test(result.message ?? "") && new RegExp(`${SMALL.length} 字节`).test(result.message ?? ""),
+			result.message ?? "");
+		if (result.file !== null) cleanupDownload(result.file);
+	}
+
+	// ---- 12b) 重定向逐跳协议校验（B 报告 S4-2 / B2） ----
+	{
+		const { result } = await run(`${base}/redir-relative`, { allowInsecure: true, expect: { integrity: sri("sha512", SMALL) } });
+		record("相对 Location（/small）→ 正常跟随并通过校验", result.status === "downloaded" && result.code === "ok", JSON.stringify(result));
+		record("相对重定向后文件内容正确", result.file !== null && readFileSync(result.file).equals(SMALL));
+		if (result.file !== null) cleanupDownload(result.file);
+	}
+	{
+		const { result } = await run(`${base}/redir-chain1`, { allowInsecure: true, expect: { integrity: sri("sha512", SMALL) } });
+		record("多跳 + 同级相对 Location → 正常跟随并下载成功", result.status === "downloaded" && result.code === "ok", JSON.stringify(result));
+		if (result.file !== null) cleanupDownload(result.file);
+	}
+	{
+		const before = hits.length;
+		const { result } = await run(`${base}/redir-loop`, { allowInsecure: true, allowUnverified: true });
+		record("重定向超过 5 跳 → failed（不再无限跟随）", result.status === "failed" && /重定向次数超过上限/.test(result.message ?? ""), JSON.stringify(result));
+		record("超限后没有落盘文件", result.file === null && hits.length - before <= 7, `requests=${hits.length - before}`);
+	}
+	{
+		const { result } = await run(`${base}/redir-to-ftp`, { allowInsecure: true, allowUnverified: true });
+		record("重定向到非 http(s) 协议 → failed", result.status === "failed" && /不支持的协议/.test(result.message ?? ""), JSON.stringify(result));
+	}
+	{
+		// https→http→https：起点必须是 https（否则门禁 1 在入口就拒了）。本机没有可信证书，
+		// 所以只把「https 起点」这一跳换成桩：第 1 跳（https）302 到本地 http server，
+		// 本地 http 再 302 回 https —— 旧实现 redirect:"follow" 会一路跟到最终 https 而放行，
+		// 新实现必须在第 2 跳（降级为 http 的那一跳）就拦下。
+		const realFetch = globalThis.fetch;
+		const httpsOrigin = "https://origin.invalid/start";
+		const before = hits.length;
+		globalThis.fetch = async (input, init) => {
+			const href = typeof input === "string" ? input : String(input?.url ?? input);
+			if (href.startsWith("https://origin.invalid/")) {
+				return new Response(null, { status: 302, headers: { location: `${base}/redir-to-https` } });
+			}
+			return realFetch(input, init);
+		};
+		try {
+			const { result } = await run(httpsOrigin, { expect: { integrity: sri("sha512", SMALL) } });
+			record("https→http→https 链：中间跳降级 → blocked/insecure-url", result.status === "blocked" && result.code === "insecure-url", JSON.stringify(result));
+			record("…文案说明是第 2 跳降级", /第 2 跳/.test(result.message ?? ""), result.message ?? "");
+			record("…被降级的那一跳根本没被请求 / 没有落盘",
+				!hits.slice(before).includes("/redir-to-https") && result.file === null, `hits=${hits.slice(before).join(",")}`);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
+	}
+	{
+		// 同一套夹具在 allowInsecure:true 下允许走明文跳并成功（门禁可放行，不是一刀切拒绝重定向）
+		const realFetch = globalThis.fetch;
+		const httpsOrigin = "https://origin.invalid/start-ok";
+		globalThis.fetch = async (input, init) => {
+			const href = typeof input === "string" ? input : String(input?.url ?? input);
+			if (href.startsWith("https://origin.invalid/")) {
+				return new Response(null, { status: 302, headers: { location: `${base}/redir-relative` } });
+			}
+			return realFetch(input, init);
+		};
+		try {
+			const { result } = await run(httpsOrigin, { allowInsecure: true, expect: { integrity: sri("sha512", SMALL) } });
+			record("allowInsecure:true 时 https→http 跳可放行并下载成功", result.status === "downloaded" && result.code === "ok", JSON.stringify(result));
+			if (result.file !== null) cleanupDownload(result.file);
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	}
 
 	// ---- 13) SRI 多算法：取最强（sha512 > sha1） ----
@@ -286,6 +412,14 @@ try {
 		record("响应体按块迭代 (for await … of response.body)", /for await \(const chunk of response\.body\)/.test(src));
 		record("摘要边写边算（hash.update(buf) 在写盘循环里）", /for \(const hash of hashStates\.values\(\)\) hash\.update\(buf\);/.test(src));
 		record("校验失败会 unlinkSync 删除已下载文件", /safeUnlink\(destFile\)/.test(src) && /unlinkSync\(file\)/.test(src));
+		// ---- B1/B2 静态断言：语义只能靠代码保证的那部分 ----
+		record("usable 只认摘要（不再把 size 算作已校验）",
+			/const usable = plan\.hashes\.length > 0;/.test(src) && !/plan\.size !== null \|\| plan\.hashes\.length > 0/.test(src));
+		record("HTTP 下载不再用 redirect:\"follow\"（改 manual 逐跳）",
+			!/redirect: "follow"/.test(src) && /redirect: "manual"/.test(src));
+		record("每一跳都用 new URL(location, current) 解析相对地址", /new URL\(location, current\)/.test(src));
+		record("逐跳协议门禁在请求前生效（降级文案带「第 N 跳」）", /第 \$\{hopNo\} 跳重定向降级为明文 HTTP/.test(src));
+		record("重定向有跳数上限", /MAX_REDIRECTS = 5/.test(src));
 	}
 } catch (error) {
 	console.error("\n用例执行异常：", error?.stack ?? error);

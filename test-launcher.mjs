@@ -52,6 +52,7 @@
 //     · SKIP 分类计数逐桶打印（沙箱边界·管道 / 沙箱边界·文件系统 / 并发冲突 / 环境异常 / 环境缺失 / 其它）
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { get as httpGetRaw } from "node:http";
 import { createServer, connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
@@ -3042,6 +3043,227 @@ console.log("== 17. 跨平台与工具类修复（t4：C-05 弹窗假成功 / C-
 			`exit=${dry.code} | ${dry.stdout.split("\n").filter(Boolean).slice(0, 2).join(" / ")} | ${String(dry.stderr).trim().slice(0, 120)}`,
 			`${dry.stdout} ${dry.stderr}`,
 			"沙箱边界（文件系统或 npm 缓存被拒）");
+	}
+}
+
+// ---------------------------------------------------------------- 18. 1.0.3 任务 C（安全性能审查 S3/S4/P1/P2）
+// 覆盖：C1 Host 头校验（421）、C2 统一安全响应头、C3 bundles GET 令牌、
+//       C4 updates 30min 缓存 + 单飞 + pnpm --version 缓存、C5 runPnpm 有界缓冲、C6 log() 逐行 DOM。
+// 全部隔离：随机端口 + 临时 profile + 临时 DSH_HOME（沿用本套件既有夹具），不碰 3080/3081、不联网。
+console.log("== 18. 1.0.3 任务 C：Host 校验 / 安全响应头 / updates 缓存 / 环形缓冲 / log DOM ==");
+
+/** 带自定义 Host 头的裸 HTTP GET（fetch 禁止改 Host 头，这里必须用 node:http）。 */
+function rawGetWithHost(port, pathname, hostHeader) {
+	return new Promise((resolve) => {
+		let settled = false;
+		const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+		const req = httpGetRaw({ host: "127.0.0.1", port, path: pathname, headers: { Host: hostHeader }, timeout: 8000 }, (res) => {
+			let text = "";
+			res.setEncoding("utf8");
+			res.on("data", (d) => { text += d; });
+			res.on("end", () => done({ status: res.statusCode, headers: res.headers, text }));
+		});
+		req.on("error", (error) => done({ status: null, headers: {}, text: "", error: error.code ?? String(error) }));
+		req.on("timeout", () => { req.destroy(); done({ status: null, headers: {}, text: "", error: "timeout" }); });
+	});
+}
+
+/** fetch GET + 回传响应头（断言安全头用；fetch 会自行给回环 Host，正好符合白名单）。 */
+async function getWithHeaders(url, headers = {}) {
+	try {
+		const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+		return { status: res.status, headers: Object.fromEntries(res.headers.entries()), text: await res.text(), error: null };
+	} catch (error) {
+		return { status: null, headers: {}, text: "", error: `${error?.cause?.code ?? error?.code ?? "fetch-error"} ${error?.message ?? String(error)}` };
+	}
+}
+
+/** 安全响应头的统一判据（C2）。 */
+const securityHeadersOk = (headers) => headers["x-content-type-options"] === "nosniff"
+	&& headers["x-frame-options"] === "DENY"
+	&& headers["referrer-policy"] === "no-referrer"
+	&& /default-src 'none'/.test(String(headers["content-security-policy"] ?? ""));
+const cspOk = (headers) => {
+	const csp = String(headers["content-security-policy"] ?? "");
+	return csp.includes("script-src 'unsafe-inline'")
+		&& csp.includes("style-src 'unsafe-inline'")
+		&& csp.includes("connect-src 'self'")
+		&& csp.includes("frame-ancestors 'none'")
+		&& csp.includes("base-uri 'none'")
+		&& !csp.includes("unsafe-eval");
+};
+
+if (openBoot) {
+	// ---- 18.1 纯函数 / 静态断言（不起服务、不起子进程） ----
+	const bootHtml = openBoot.bootPageHtml({ token: "__TEST_TOKEN__" });
+	ok("C6: 启动页 log() 不再 innerHTML 拼接（页面源码里没有 out.innerHTML）",
+		typeof bootHtml === "string" && !/out\.innerHTML/.test(bootHtml));
+	ok("C6: log() 改为逐行 DOM + textContent 追加（不再手工转义拼 HTML）",
+		/function log\(line, cls\)\{[\s\S]{0,320}?textContent = String\(line\)/.test(bootHtml)
+		&& /out\.appendChild\(row\)/.test(bootHtml));
+	ok("C1: isAllowedHost 只认三种带端口回环名（大小写不敏感）",
+		openBoot.isAllowedHost("127.0.0.1:3081", 3081) === true
+		&& openBoot.isAllowedHost("localhost:3081", 3081) === true
+		&& openBoot.isAllowedHost("LOCALHOST:3081", 3081) === true
+		&& openBoot.isAllowedHost("[::1]:3081", 3081) === true);
+	ok("C1: isAllowedHost 拒绝外部域名 / 无端口 / 错端口 / 空值",
+		openBoot.isAllowedHost("evil.example", 3081) === false
+		&& openBoot.isAllowedHost("evil.example:3081", 3081) === false
+		&& openBoot.isAllowedHost("localhost", 3081) === false
+		&& openBoot.isAllowedHost("127.0.0.1:3082", 3081) === false
+		&& openBoot.isAllowedHost("", 3081) === false
+		&& openBoot.isAllowedHost(undefined, 3081) === false);
+	const pluginsHtml = openBoot.pluginsPageHtml({ token: "__TEST_TOKEN__", enginePort: 3080, launcherPort: 3081 });
+	ok("C3: 插件页 api() 对 GET 也带 X-DSH-PM-Token（bundles 加令牌后页面不回归）",
+		/"X-DSH-PM-Token": TOKEN/.test(pluginsHtml) && /api\("\/plugins\/api\/bundles"\)/.test(pluginsHtml));
+
+	// C5：runPnpm 有界缓冲（保留末尾 16KB + 截断标记；返回值末尾语义不变）
+	const cap = openBoot.PNPM_OUTPUT_CAP;
+	ok("C5: 输出缓冲上限 = 16KB", cap === 16 * 1024, `cap=${cap}`);
+	const bigChunk = "x".repeat(32 * 1024);
+	const buf = openBoot.createBoundedBuffer();
+	buf.append(bigChunk);
+	buf.append(bigChunk); // 共 64KB
+	const buffered = buf.toString();
+	ok("C5: 灌 64KB 后内部只保末尾 16KB（长度上界，不再无上限累积）",
+		buf.size === cap && buffered.length <= cap + 48, `size=${buf.size} text=${buffered.length}`);
+	ok("C5: 超限时前置 `<...已截断 N 字节>` 标记且 N 正确",
+		/^<\.\.\.已截断 \d+ 字节>/.test(buffered) && buf.dropped === 64 * 1024 - cap, `dropped=${buf.dropped}`);
+	ok("C5: 返回值末尾语义不变（调用方 slice(-400) 仍拿到最新输出）",
+		buffered.slice(-400) === bigChunk.slice(-400));
+	const smallBuf = openBoot.createBoundedBuffer();
+	smallBuf.append("abc");
+	smallBuf.append("def");
+	ok("C5: 未超限时原样返回、不加截断标记",
+		smallBuf.toString() === "abcdef" && smallBuf.dropped === 0);
+
+	// C4：updates 缓存 / 单飞 / pnpm --version 缓存（注入式 runner：不联网、不起子进程）
+	const updDeps = { dependencies: { "pm-launcher-updates-plugin": "1.0.0" } };
+	const updProfile = writeProfile(tempDir("pm-launcher-c-updates-"), ["pm-launcher-updates-plugin"], updDeps);
+	openBoot.resetUpdatesCacheForTests();
+	const updCalls = [];
+	const updRun = async (pnpmArgs) => {
+		updCalls.push(pnpmArgs.join(" "));
+		await wait(25);
+		if (pnpmArgs[0] === "--version") return { code: 0, stdout: "9.9.9\n", stderr: "" };
+		return { code: 0, stdout: JSON.stringify({ "pm-launcher-updates-plugin": { current: "1.0.0", latest: "1.2.0" } }), stderr: "" };
+	};
+	const updFirst = await openBoot.checkUpdates({ profile: updProfile }, { run: updRun });
+	ok("P1: checkUpdates 正常返回并投影 needsUpdate",
+		updFirst.ok === true && updFirst.updates?.length === 1 && updFirst.updates[0].needsUpdate === true,
+		JSON.stringify(updFirst).slice(0, 180));
+	ok("P1: 首次调用依次跑 pnpm --version / pnpm outdated（各一次）",
+		updCalls.join(",") === "--version,outdated --json", updCalls.join(","));
+	const hotStart = process.hrtime.bigint();
+	const updSecond = await openBoot.checkUpdates({ profile: updProfile }, { run: updRun });
+	const hotMs = Number(process.hrtime.bigint() - hotStart) / 1e6;
+	ok("P1: 30 分钟缓存命中 → 第二次调用 < 10ms", hotMs < 10, `hot=${hotMs.toFixed(2)}ms`);
+	ok("P1: 第二次返回与第一次完全相同（同一份结果）",
+		JSON.stringify(updSecond) === JSON.stringify(updFirst));
+	ok("P1: 缓存命中不再起 pnpm（调用总数仍为 2）", updCalls.length === 2, updCalls.join(","));
+
+	const updProfile2 = writeProfile(tempDir("pm-launcher-c-updates2-"), ["pm-launcher-updates-plugin"], updDeps);
+	const slowCalls = [];
+	const slowRun = async (pnpmArgs) => {
+		slowCalls.push(pnpmArgs.join(" "));
+		await wait(80);
+		return { code: 0, stdout: JSON.stringify({ "pm-launcher-updates-plugin": { current: "1.0.0", latest: "1.2.0" } }), stderr: "" };
+	};
+	const trio = await Promise.all([1, 2, 3].map(() => openBoot.checkUpdates({ profile: updProfile2 }, { run: slowRun })));
+	ok("P1: 3 并发只起 1 个 pnpm outdated（单飞复用 in-flight Promise，不是 409）",
+		slowCalls.filter((c) => c === "outdated --json").length === 1, slowCalls.join(","));
+	ok("P1: 3 并发拿到同一份结果（不是各自 409/空）",
+		trio.every((r) => JSON.stringify(r) === JSON.stringify(trio[0])) && trio[0].ok === true);
+	ok("P1: pnpm --version 成功结果模块级缓存（第二个 profile 不再 ping）",
+		!slowCalls.includes("--version"), slowCalls.join(","));
+
+	const outdatedBefore = updCalls.filter((c) => c === "outdated --json").length;
+	writeFileSync(join(updProfile, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
+	const afterLock = await openBoot.checkUpdates({ profile: updProfile }, { run: updRun });
+	ok("P1: pnpm-lock.yaml 的 mtime+size 变化 → 缓存失效并重算",
+		afterLock.ok === true && updCalls.filter((c) => c === "outdated --json").length === outdatedBefore + 1,
+		updCalls.join(","));
+
+	const failProfile = writeProfile(tempDir("pm-launcher-c-updates3-"), ["pm-launcher-updates-plugin"], updDeps);
+	const failCalls = [];
+	// 失败形态取"输出无法解析"（pnpm outdated 非 JSON）：这类结果不缓存；注意 pnpm --version 已成功缓存，
+	// 这里只统计 outdated 的调用次数。
+	const failRun = async () => { failCalls.push(1); return { code: 1, stdout: "ERR_PNPM_FAKE not-json", stderr: "boom" }; };
+	const failFirst = await openBoot.checkUpdates({ profile: failProfile }, { run: failRun });
+	const failSecond = await openBoot.checkUpdates({ profile: failProfile }, { run: failRun });
+	ok("P1: 失败结果不缓存（修好 pnpm 后下一次立即重试，不被缓存钉 30 分钟）",
+		failFirst.ok === false && failSecond.ok === false && failCalls.length === 2, `calls=${failCalls.length}`);
+
+	// ---- 18.2 真实隔离启动器实例：Host 421 / 安全响应头 / bundles GET 令牌 ----
+	const cProfile = writeProfile(tempDir("pm-launcher-c-live-"), ["@deepseek-ai/dsh-base"]);
+	const cPort = await freePort();
+	const cEnginePort = await freePort();
+	const live = spawnNode([openBootBin, "--profile", cProfile, "--port", String(cPort), "--no-window", "--dsh", "pm-launcher-not-a-real-dsh", "--wait-ms", "600"],
+		{ logName: "c-live", env: { DSH_ENGINE_PORT: String(cEnginePort) } });
+	try {
+		if (!(await waitPort(cPort, 15000))) {
+			ok("C: 隔离启动器实例就绪（随机端口；绝不碰 3080/3081）", false, live.log().out.slice(0, 200));
+		} else {
+			const base = `http://127.0.0.1:${cPort}`;
+			const liveToken = tokenFromHtml((await getText(`${base}/`)).text);
+
+			// C1：Host 校验（421，在路由之前）
+			const evilHost = await rawGetWithHost(cPort, "/api/status", "evil.example");
+			ok("C1: Host: evil.example → 421 JSON（DNS 重绑定被挡在路由之前）",
+				evilHost.status === 421 && JSON.parse(evilHost.text).ok === false && /Host 不被允许/.test(JSON.parse(evilHost.text).error ?? ""),
+				`status=${evilHost.status} body=${String(evilHost.text).slice(0, 120)}`);
+			const evilHostWithPort = await rawGetWithHost(cPort, "/", `evil.example:${cPort}`);
+			ok("C1: Host: evil.example:<port>（带正确端口的外部域名）→ 421",
+				evilHostWithPort.status === 421, `status=${evilHostWithPort.status}`);
+			const noPortHost = await rawGetWithHost(cPort, "/", "localhost");
+			ok("C1: Host: localhost（无端口）→ 421（严格按审查报告：必须带端口）",
+				noPortHost.status === 421, `status=${noPortHost.status}`);
+			const wrongPortHost = await rawGetWithHost(cPort, "/", `127.0.0.1:${cPort + 1}`);
+			ok("C1: Host: 127.0.0.1:<错端口> → 421", wrongPortHost.status === 421, `status=${wrongPortHost.status}`);
+			for (const [hostHeader, label] of [[`127.0.0.1:${cPort}`, "127.0.0.1"], [`LOCALHOST:${cPort}`, "LOCALHOST（大写）"], [`[::1]:${cPort}`, "[::1]"]]) {
+				const allowedHost = await rawGetWithHost(cPort, "/api/status", hostHeader);
+				ok(`C1: Host: ${label}:<port> → 200（回环名大小写不敏感，三种写法都可用）`,
+					allowedHost.status === 200 && JSON.parse(allowedHost.text).app === "dsh-open-boot",
+					`status=${allowedHost.status} body=${String(allowedHost.text).slice(0, 80)}`);
+			}
+			ok("C1: 421 响应自身也带安全响应头（拒绝路径同样受 S4 保护）",
+				securityHeadersOk(evilHost.headers), JSON.stringify(Object.keys(evilHost.headers)).slice(0, 160));
+
+			// C2：统一安全响应头（HTML / JSON / 救援页 / 404 全覆盖）
+			for (const pathname of ["/", "/plugins", "/rescue", "/api/status", "/nope"]) {
+				const res = await getWithHeaders(`${base}${pathname}`);
+				ok(`C2: ${pathname} 带 nosniff / X-Frame-Options: DENY / Referrer-Policy: no-referrer`,
+					securityHeadersOk(res.headers), `status=${res.status} headers=${Object.keys(res.headers).join(",")}`);
+				ok(`C2: ${pathname} 带 CSP（unsafe-inline 脚本/样式 + connect-src 'self' + frame-ancestors 'none'，无 unsafe-eval）`,
+					cspOk(res.headers), String(res.headers["content-security-policy"] ?? "(无)").slice(0, 160));
+			}
+			const pluginsPage = await getText(`${base}/plugins`);
+			ok("C2: 插件页仍含内联 <script>/<style>（CSP 保留 unsafe-inline，3081 页照常可跑）",
+				pluginsPage.status === 200 && /<script>/.test(pluginsPage.text) && /<style>/.test(pluginsPage.text));
+			ok("C2: 插件页内联 api() 确实带令牌头（加载 /plugins/api/bundles 不会 401）",
+				/"X-DSH-PM-Token": TOKEN/.test(pluginsPage.text) && liveToken !== null);
+
+			// C3：/plugins/api/bundles GET 也走 Origin + 令牌
+			const bundlesNoToken = await getWithHeaders(`${base}/plugins/api/bundles`);
+			ok("C3: GET /plugins/api/bundles 缺令牌 → 401（清单不再裸奔）",
+				bundlesNoToken.status === 401, `status=${bundlesNoToken.status}`);
+			const bundlesBadToken = await getWithHeaders(`${base}/plugins/api/bundles`, { "X-DSH-PM-Token": "0".repeat(48) });
+			ok("C3: GET /plugins/api/bundles 错令牌 → 401", bundlesBadToken.status === 401, `status=${bundlesBadToken.status}`);
+			const bundlesEvilOrigin = await getWithHeaders(`${base}/plugins/api/bundles`, { Origin: "http://evil.example", "X-DSH-PM-Token": liveToken });
+			ok("C3: GET /plugins/api/bundles 第三方 Origin → 403（即使带正确令牌）",
+				bundlesEvilOrigin.status === 403, `status=${bundlesEvilOrigin.status}`);
+			const bundlesOk = await getWithHeaders(`${base}/plugins/api/bundles`, { Origin: base, "X-DSH-PM-Token": liveToken });
+			let bundlesJson = null;
+			try { bundlesJson = JSON.parse(bundlesOk.text); } catch { /* 保持 null */ }
+			ok("C3: GET /plugins/api/bundles 同源 + 正确令牌 → 200（页面正常路径不回归）",
+				bundlesOk.status === 200 && bundlesJson && bundlesJson.ok !== false,
+				`status=${bundlesOk.status} body=${String(bundlesOk.text).slice(0, 120)}`);
+			const bundlesUnauth = await getWithHeaders(`${base}/plugins/api/updates`);
+			ok("C3 回归: GET /plugins/api/updates 缺令牌仍是 401（既有防护未减弱）",
+				bundlesUnauth.status === 401, `status=${bundlesUnauth.status}`);
+		}
+	} finally {
+		await killChild(live.child);
 	}
 }
 

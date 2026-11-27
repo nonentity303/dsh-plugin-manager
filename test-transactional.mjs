@@ -167,7 +167,8 @@ try {
 		keptText.slice(0, 200));
 
 	// ---- 4) 卸载成功矩阵（mode=ok）：全绿事务 + bundles 摘除 + patch 三形态清理 + 备份齐全
-	const bundlesBefore = (await fetch(`${base}/plugins/api/bundles`).then((r) => r.json())).bundles;
+	// 1.0.3 S3：GET /plugins/api/bundles 也必须带令牌（不再裸奔），这里用已登录头 H
+	const bundlesBefore = (await fetch(`${base}/plugins/api/bundles`, { headers: H }).then((r) => r.json())).bundles;
 	check("bundle 列表含目标与邻居", bundlesBefore.some((b) => b.name === TARGET) && bundlesBefore.some((b) => b.name === NEIGHBOR), JSON.stringify(bundlesBefore));
 	const okRes = await fetch(`${base}/plugins/api/uninstall`, { method: "POST", headers: H, body: JSON.stringify({ name: TARGET }) }).then((r) => r.json());
 	check("卸载成功：ok=true", okRes.ok === true, JSON.stringify(okRes).slice(0, 400));

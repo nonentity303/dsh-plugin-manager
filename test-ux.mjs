@@ -7,10 +7,12 @@
  *      结果卡片前移到用户插件列表之前、结果卡片 revealPanel 滚动 + 高亮。
  *   2. `/` 启动页：自检→修复→启动 有"在跑"的证据（spinner + 已等待 N 秒），失败/409 会停转。
  *   3. `/rescue` 救援页：每个按钮点击先进入 loading 态（禁用 + "处理中"文案）+ 发起文案 + 取消文案。
+ *   4. 1.0.3 B3：lib/rescue.js 的救援页不再把 entryId / 包名拼进 onclick（data-* + 事件委托），
+ *      并用 jsdom 实跑一遍「带单引号的值渲染后不可执行、请求仍收到完整原值」。
  *
- * 做法：直接调用 bin/open-boot.mjs 的 bootPageHtml / pluginsPageHtml 与
- * bin/rescue-daemon.mjs 的 rescuePageHtml 拿到真实 HTML，再用"函数体提取（花括号配平）"做断言，
- * 不 eval、不起服务、不开浏览器。
+ * 做法：直接调用 bin/open-boot.mjs 的 bootPageHtml / pluginsPageHtml、
+ * bin/rescue-daemon.mjs 的 rescuePageHtml 与 lib/rescue.js 的 RESCUE_HTML 拿到真实 HTML，
+ * 再用"函数体提取（花括号配平）"做断言，不起服务、不开浏览器、不联网。
  *
  * 退出码：0 = 全绿；1 = 有断言失败。
  */
@@ -18,6 +20,8 @@ process.env.DSH_LAUNCHER_IMPORT_ONLY = "1"; // 导入 open-boot 时不得就地�
 
 const { bootPageHtml, pluginsPageHtml } = await import("./bin/open-boot.mjs");
 const { rescuePageHtml } = await import("./bin/rescue-daemon.mjs");
+const { RESCUE_HTML } = await import("./lib/rescue.js");
+const { readFileSync } = await import("node:fs");
 
 let pass = 0;
 const failures = [];
@@ -202,6 +206,108 @@ ok("三页各自至少有一条「操作发起」反馈（兜底页 withBusy / �
 	pluginHtml.includes("withBusy(") && bootHtml.includes('class="spinner" id="spin"') && rescueHtml.includes("withBusy("));
 ok("反馈不止写日志：三页都有可见的 toast / 状态行 / 结果区文案",
 	pluginHtml.includes("function toast(") && bootHtml.includes('id="elapsed"') && rescueHtml.includes('id="out"'));
+
+// ---------------------------------------------------------------- B3 /rescue 救援页 XSS
+console.log("\n== B3 /rescue 救援页 XSS（动态值不拼进 onclick）==");
+const rescueSrc = readFileSync(new URL("./lib/rescue.js", import.meta.url), "utf8");
+
+// —— 1. 静态：拼接式 onclick 必须彻底消失，只剩无参静态调用
+const onclickAttrs = [...RESCUE_HTML.matchAll(/onclick="([^"]*)"/g)].map((m) => m[1]);
+ok('RESCUE_HTML 不含动态拼接的 onclick="quarantine(\'（entryId 走 data-*）',
+	!/onclick="quarantine\(/.test(RESCUE_HTML));
+ok('RESCUE_HTML 不含动态拼接的 onclick="uninstallPkg(\'（包名走 data-*）',
+	!/onclick="uninstallPkg\(/.test(RESCUE_HTML));
+ok("onclick 只剩静态无参调用（静态按钮允许保留）",
+	onclickAttrs.length >= 5 && onclickAttrs.every((v) => /^[A-Za-z_$][\w$]*\(\)$/.test(v)),
+	onclickAttrs.join(" | "));
+ok("救援动作改走 data-* 属性 + 事件委托（值经 getAttribute 取，不参与 JS 解析）",
+	RESCUE_HTML.includes('data-rescue-action="quarantine"') &&
+	RESCUE_HTML.includes('data-rescue-action="uninstall"') &&
+	RESCUE_HTML.includes('document.addEventListener("click"') &&
+	RESCUE_HTML.includes('closest("[data-rescue-action]")') &&
+	RESCUE_HTML.includes('getAttribute("data-entry-id")') &&
+	RESCUE_HTML.includes('getAttribute("data-package-name")'));
+
+// —— 2. grep 级：源码里动态值只以 esc() 形式进入 HTML，且不在任何 onclick 里
+const dynamicValueLines = rescueSrc.split("\n").filter((line) => /\bentryId\b|\.moduleName|\.configId/.test(line));
+ok("entryId / moduleName / configId 出现的行都不含 onclick=（值不再进 JS 字面量）",
+	dynamicValueLines.length > 0 && dynamicValueLines.every((line) => !/onclick=/.test(line)),
+	dynamicValueLines.filter((line) => /onclick=/.test(line)).join(" / "));
+const entryIdHtmlLines = rescueSrc.split("\n").filter((line) => line.includes("issue.entryId"));
+ok("issue.entryId 一律经 esc() 写入 data-entry-id（无裸拼）",
+	entryIdHtmlLines.length > 0 && entryIdHtmlLines.every((line) => line.includes("esc(issue.entryId)")),
+	entryIdHtmlLines.join(" / "));
+const moduleNameHtmlLines = rescueSrc.split("\n").filter((line) => line.includes("issue.moduleName") || line.includes("esc(e.moduleName)"));
+ok("issue.moduleName / e.moduleName 一律经 esc() 写入属性或文本",
+	moduleNameHtmlLines.length > 0 && moduleNameHtmlLines.every((line) => /esc\((issue|e)\.moduleName\)/.test(line)),
+	moduleNameHtmlLines.join(" / "));
+
+// —— 3. 行为级（jsdom，本地、无网络）：带单引号的 entryId / 包名渲染后不可执行
+{
+	const { JSDOM } = await import("jsdom");
+	const BAD_ENTRY = "x');window.__pwned=1;//";
+	const BAD_PKG = "pkg');window.__pwnedPkg=1;//";
+	const calls = [];
+	const dom = new JSDOM(RESCUE_HTML, {
+		url: "http://127.0.0.1:3080/rescue",
+		runScripts: "dangerously",
+		beforeParse(window) {
+			window.confirm = () => true;
+			window.fetch = async (input, init) => {
+				const body = JSON.parse(init.body);
+				const payload = body.payload ?? {};
+				calls.push({ method: body.method, args: payload.args ?? {} });
+				const reply = (value) => ({ ok: true, json: async () => ({ result: { ok: true, value } }) });
+				if (body.method === "pluginManagerPro/diagnose") {
+					return reply({ issues: [{ configId: "cfg", moduleName: BAD_PKG, entryId: BAD_ENTRY, phase: "load", error: "boom", suggestion: "disable", canUninstall: true }] });
+				}
+				if (body.method === "pluginManagerPro/list") {
+					return reply({ entries: [{ managed: true, configId: "cfg", moduleName: BAD_PKG }], sources: [], profileName: "p" });
+				}
+				if (body.method === "pluginManagerPro/quarantine") return reply({ items: [{ status: "disabled" }] });
+				if (body.method === "pluginManagerPro/uninstallPackages") return reply({ items: [{ status: "removed" }] });
+				return reply({});
+			};
+		}
+	});
+	const wait = (ms) => new Promise((resolve) => dom.window.setTimeout(resolve, ms));
+	await wait(80);
+	const doc = dom.window.document;
+	const actionButtons = [...doc.querySelectorAll("button[data-rescue-action]")];
+	const qBtn = actionButtons.find((b) => b.getAttribute("data-rescue-action") === "quarantine");
+	let uBtn = actionButtons.find((b) => b.getAttribute("data-rescue-action") === "uninstall");
+	ok("带单引号的 entryId 原样落在 data-entry-id 属性上（不截断、不转义变形）",
+		qBtn !== undefined && qBtn.getAttribute("data-entry-id") === BAD_ENTRY,
+		qBtn === undefined ? "缺少 quarantine 按钮" : qBtn.getAttribute("data-entry-id"));
+	ok("带单引号的包名原样落在 data-package-name 属性上",
+		uBtn !== undefined && uBtn.getAttribute("data-package-name") === BAD_PKG,
+		uBtn === undefined ? "缺少 uninstall 按钮" : uBtn.getAttribute("data-package-name"));
+	ok("这些按钮没有 onclick 属性（注入语句没有落点）",
+		actionButtons.length >= 2 && actionButtons.every((b) => !b.hasAttribute("onclick")),
+		actionButtons.map((b) => b.getAttribute("data-rescue-action") + ":" + b.hasAttribute("onclick")).join(","));
+	ok("页面里没有因动态值而新增的 <script>（只有页面自带那一个）",
+		doc.querySelectorAll("script").length === 1, `scripts=${doc.querySelectorAll("script").length}`);
+
+	qBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	await wait(80);
+	const quarantineCall = calls.find((c) => c.method === "pluginManagerPro/quarantine");
+	ok("点击隔离按钮：注入代码未执行（window.__pwned 未定义）",
+		dom.window.__pwned === undefined && dom.window.__pwnedPkg === undefined);
+	ok("点击隔离按钮：请求收到完整 entryId（旧实现会被 ' 截断成 \"x\"）",
+		quarantineCall !== undefined && quarantineCall.args.entryIds[0] === BAD_ENTRY,
+		JSON.stringify(quarantineCall?.args));
+
+	// 隔离成功后页面会重新诊断（整块 innerHTML 被替换），所以卸载按钮要重新取一次
+	uBtn = [...doc.querySelectorAll("button[data-rescue-action]")].find((b) => b.getAttribute("data-rescue-action") === "uninstall");
+	uBtn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+	await wait(80);
+	const uninstallCall = calls.find((c) => c.method === "pluginManagerPro/uninstallPackages");
+	ok("点击卸载按钮：注入代码未执行且请求收到完整包名",
+		dom.window.__pwned === undefined && dom.window.__pwnedPkg === undefined &&
+		uninstallCall !== undefined && uninstallCall.args.packageNames[0] === BAD_PKG,
+		JSON.stringify(uninstallCall?.args));
+	dom.window.close();
+}
 
 if (failures.length > 0) {
 	console.error(`\nRESULT: FAIL（${failures.length}/${pass + failures.length} 条断言失败）\n - ` + failures.join("\n - "));

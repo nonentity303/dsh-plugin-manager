@@ -12,6 +12,51 @@
 
 > 尚未发布的改动不在本文件；开发中的版本号见 `package.json` 的 `version`（发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)）。
 
+## [1.0.3] - 2026-11-27
+
+> 一句话：把"谁有资格裁决版本"从源类型改成显式权威层——自定义源默认只作降级兜底、`http://` 默认标"明文 · 仅兜底"、`next` 只给 `@deepseek-ai/*`；顺手补掉下载目录 provenance 缺口、下载器两处收紧、救援页 XSS，以及 3081 启动器的一批加固与性能问题。
+
+### Changed · 变更
+
+- **README / README.en 同步 1.0.3 口径**：删掉过时表述（"正式发布版 1.0.0"、"npm 包名将在下个版本迁移"、"回退用 `dsh-plugin-manager-pro@0.8.2`"、插件超市 dshfind、"公平取最高版本"），补上：默认更新源三源、registry 版本权威、自定义源默认只兜底、`http://` 默认"明文 · 仅兜底"（升权威需 `authoritative`，明文还需 `allowInsecure`）、`@deepseek-ai/*` 才有 `next` 轨道、下载目录自动安装需 provenance、旧包已挂弃用提示不删包、`本页对应版本：1.0.3`。
+- **`CHANGELOG.md`**：由 `docs/releases/*.md` 生成，本版条目随本文件落盘（`node tools/dev/gen-changelog.mjs`，`--check` 校验一致）。
+- **新增 `test-docs.mjs`**（离线、零依赖，已挂进 `scripts.test` 末尾）：断言 README/README.en 的版本号 == `package.json` 的 `version`；README 不含 `dshfind` / `取最高版本` / `下个版本迁移` / `正式发布版 1.0.0`；`docs/releases/1.0.3.md` 存在且含 1.0.3；`CHANGELOG.md` 含 1.0.3。
+- **自定义源不再和官方源混比版本**：加镜像 = 加速/兜底，不是把裁决权交出去。要让内网源独占权威，显式 `authoritative: true`（离线部署就是这样用）。
+- **`http://` 源默认只兜底**：照常能配、能查版本，但不会赢过官方源；要升权威必须同时确认"允许明文 + 设为权威"。
+- **普通包不再吃 `next`**：只有 `@deepseek-ai/*` 才优先 `next`；其余包只取 `latest`，且 `latest` 是预发布时视为"无可用版本"——再不会把 RC 推给你。
+- **下载目录里的手工归档不再被自动安装**：必须能对上管理器自己生成的来源记录（包名 + 版本 + 来源 + 摘要，7 天有效）；对不上的写 `.failed`，确认可信后删掉再重试。
+- **3081 只接受回环 Host 头**：用 `127.0.0.1:3081` / `localhost:3081` 访问；把非回环域名指到 3081 会拿到 421（这是有意的）。
+
+### Fixed · 修复
+
+- **updates 接口缓存 + 单飞**：`checkUpdates` 模块级缓存 key=profile、TTL 30 分钟，并记录 `pnpm-lock.yaml` 的 mtime+size，TTL 内且 lockfile 未变直接返回（热调用 < 10ms）；并发请求复用同一个 in-flight Promise（不再第二次起 pnpm）；`pnpm --version` 成功结果缓存（失败不缓存）。既有 `DSH_PM_PNPM_TIMEOUT_MS` 逃生门保留。
+- **runPnpm stdout/stderr 环形缓冲**：不再无限 `+=`，只保留末尾 16KB，超出部分丢头部并加 `<...已截断 N 字节>` 标记；返回值仍取末尾 400 字符。
+- **`log()` 去 innerHTML**：启动页/兜底页的日志输出改为逐行建 `<div>`/`<span>` + `textContent`，不再 `out.innerHTML += ...`（日志内容来自 pnpm 与包名，属于不可信文本）。
+
+### Security · 安全
+
+- 权威层判定 — 按 `entry.authoritative === true`，**不再按源类型**；`lib/index.js` 内置权威白名单只有 `https://registry.npmjs.org`、`https://registry.npmmirror.com`（URL 规范化后比较，忽略结尾 `/`）
+- `official` — 一律由服务端按白名单判定，**忽略客户端提交的 `official`**；`snapshot().sources` 暴露 `official` / `authoritative` / `insecure`
+- 用户新增源 — 默认 `authoritative:false`（`custom` 层），只在**没有权威版本**时降级兜底并标 `degraded`；需要独立裁决必须显式 `authoritative:true`
+- `http://` 源 — 允许配置（内网 registry / 代理是真实场景），默认标「明文 · 仅兜底」；升权威需同时显式 `authoritative:true` + `allowInsecure:true`，否则自动降级并把原因写进可读 note（不静默）
+- UI — 更新源面板显示「官方 / 权威 / 明文 · 仅兜底」徽标；自定义源提供「权威」「允许明文」两个显式勾选（信任升级可见、可撤销）
+- 审计 — `setSources` 把来源变更（前→后 URL 集合、authority 变化、是否 http）写进侧车 `history`（沿用现有结构与上限）
+- 向后兼容 — 旧夹具（只有 `type`、没有 `authoritative`）按 `registry` = 权威、`github` = 非权威处理，旧断言不被大面积改写
+- 仅当包名匹配 `^@deepseek-ai\//` **且**源是内置权威源时，才优先 `dist-tags.next`。
+- 其余包只取 `tags.latest`；`latest` 本身是 semver 预发布（含 `-`）→ 视为无可用版本（NOT_FOUND），**不把 RC 推给普通用户**。
+- 自定义源即使自己配了 `next` 也不采用。`@deepseek-ai/*` 行为保持不变。
+- `updateBrowser` / `resolveDownloadUrl` 生成下载链接时，把期望写进侧车新字段 `pendingDownloads`：`{url, packageName, version, sourceName, expect:{integrity?, shasum?, size?}, at}`，保留最近 50 条，按包名+版本去重。
+- `checkDownloads` 先解归档读 `package/package.json`（`node:zlib`，不新增依赖）拿 `name/version`，再找匹配且未过期（7 天）的来源记录。
+- 无记录 → **拒绝并写 `.failed`**，提示"未找到来源记录（不是本管理器生成的下载链接）；确认可信后再删除 .failed 重试"（沿用删 `.failed` 作为显式确认）。
+- 记录带摘要 → 先流式比对，不一致拒绝；安装成功后移除记录，失败保留（不重复噪音）。
+- **size 不再算"已校验"**：`usable` 只看 integrity/shasum；只给 size 时按"未校验"拒绝（门禁 2 文案明说"只给了大小，大小不是内容摘要"），显式 `unverifiedDownloads: allow` 放行时回执只写"仅核对大小，未校验内容摘要"。
+- **重定向逐跳校验**：`redirect:"manual"`，最多 5 跳，每跳用 `new URL(loc, current)` 解析且协议必须是 http/https；非 `allowInsecure` 时**任何一跳降级到 http 立即拒绝**（文案说明第几跳降级）；跨 host 不禁止（CDN 正常），超限报错。
+- **Host 头校验**：请求入口只接受 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`（大小写不敏感），不匹配 → `421` + JSON `{ok:false,error:"Host 不被允许（仅接受回环地址）"}`，且在路由之前。
+- **统一安全响应头**：所有响应（`sendHtml` / `sendJson` / 救援页）带 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy: no-referrer`、CSP（保留 `unsafe-inline` 以便页内脚本/样式与 `/plugins` 同源 fetch 照常工作）；`frame-ancestors 'none'`、`base-uri 'none'`。
+- **`GET /plugins/api/bundles` 也要令牌**：GET 也走 `rejectWrite`（Origin + token），页面内联 `api()` 同步带 token 头。
+
+> 完整发布说明：[`docs/releases/1.0.3.md`](docs/releases/1.0.3.md)
+
 ## [1.1.0-rc.1] - 2026-11-26（预发布）
 
 > 一句话：把 1.0.1 更名时有意保留的那一半命名债补齐（命令名 `dsh-pm-*` → `dsh-drydock*`，旧名留别名），并集中修掉一批"用户感知不到工具在干活"的兜底页问题。 ⚠️ 请先读这条：本版未在任何真实用户环境做完整验收。 自动化测试（bundle / render / integration / launcher / 端口隔离 等 452+ 项）全绿，兜底页在隔离环境做过点击验证； 但没有在你的多插件真实 profile、也没有在 Windows 之外的平台上人工跑过全部入口。 想稳…

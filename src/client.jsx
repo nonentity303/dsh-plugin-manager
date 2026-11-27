@@ -1944,6 +1944,14 @@ function SourcesPanel({ sources, save, busy, t }) {
 	const setEnabled = (index, enabled) => {
 		setDraft((current) => current.map((s, i) => (i === index ? { ...s, enabled } : s)));
 	};
+	// 1.0.3 A 报告 S1：信任升级必须是显式动作 —— 「权威」「允许明文」两个勾选只作用于自定义源；
+	// 服务端仍会按 URL 白名单重算（内置源恒为权威），这里只是把用户意图提交上去。
+	const setAuthoritative = (index, authoritative) => {
+		setDraft((current) => current.map((s, i) => (i === index ? { ...s, authoritative } : s)));
+	};
+	const setAllowInsecure = (index, allowInsecure) => {
+		setDraft((current) => current.map((s, i) => (i === index ? { ...s, allowInsecure } : s)));
+	};
 	const removeAt = (index) => {
 		setDraft((current) => current.filter((_, i) => i !== index));
 	};
@@ -1952,7 +1960,7 @@ function SourcesPanel({ sources, save, busy, t }) {
 		if (!url || !/^https?:\/\//.test(url)) return;
 		let type = "registry";
 		if (/^https?:\/\/github\.com\//.test(url)) type = "github";
-		setDraft((current) => [...current, { name: newName.trim() || url, url, enabled: true, official: false, type }]);
+		setDraft((current) => [...current, { name: newName.trim() || url, url, enabled: true, official: false, authoritative: false, allowInsecure: false, type }]);
 		setNewName("");
 		setNewUrl("");
 	};
@@ -1960,9 +1968,9 @@ function SourcesPanel({ sources, save, busy, t }) {
 		// 1.0.2 起默认源不再包含 dshfind —— 它用"搜索 GitHub topic 的第一个同名仓库"决定来源，
 		// 是累积性供应链风险（CWE-494），已从宿主实现中移除；这里同步去掉，避免"恢复了但少一项"。
 		setDraft([
-			{ name: "官方源 (npm)", url: "https://registry.npmjs.org", enabled: true, official: true, type: "registry" },
-			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: false, official: true, type: "github" },
-			{ name: "npmmirror 镜像", url: "https://registry.npmmirror.com", enabled: false, official: false, type: "registry" }
+			{ name: "官方源 (npm)", url: "https://registry.npmjs.org", enabled: true, official: true, authoritative: true, type: "registry" },
+			{ name: "GitHub 官方仓库", url: "https://github.com/deepseek-ai/deepseek-harness", enabled: false, official: false, authoritative: false, type: "github" },
+			{ name: "npmmirror 镜像", url: "https://registry.npmmirror.com", enabled: false, official: true, authoritative: true, type: "registry" }
 		]);
 	};
 
@@ -1992,9 +2000,23 @@ function SourcesPanel({ sources, save, busy, t }) {
 						<span style={{ fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 180 }} title={source.name}>
 							{source.name}
 							{source.official ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("official")}</em> : null}
+							{!source.official && source.authoritative ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-business-primary, #4f8cff)", marginLeft: 4 }}>{t("authoritative")}</em> : null}
+							{source.insecure ? <em title={source.note ?? t("plaintextFallbackHint")} style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-state-warning-primary, #b8860b)", marginLeft: 4 }}>{source.official || source.authoritative ? t("plaintextAuthoritative") : t("plaintextFallback")}</em> : null}
 							{source.type === "github" ? <em style={{ fontStyle: "normal", fontSize: 10, color: "var(--dsw-alias-label-tertiary)", marginLeft: 4 }}>GitHub</em> : null}
 						</span>
 						<code style={{ flex: "1 1 auto", fontFamily: "var(--ds-font-family-code)", fontSize: 11, color: "var(--dsw-alias-label-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{source.url}</code>
+						{!source.official ? (
+							<label title={t("authoritativeHint")} style={{ display: "inline-flex", alignItems: "center", gap: 4, flex: "none", cursor: "pointer", fontSize: 11 }}>
+								<input type="checkbox" checked={source.authoritative === true} onChange={(e) => setAuthoritative(index, e.currentTarget.checked)} />
+								{t("authoritative")}
+							</label>
+						) : null}
+						{!source.official && source.insecure ? (
+							<label title={t("allowInsecureHint")} style={{ display: "inline-flex", alignItems: "center", gap: 4, flex: "none", cursor: "pointer", fontSize: 11 }}>
+								<input type="checkbox" checked={source.allowInsecure === true} onChange={(e) => setAllowInsecure(index, e.currentTarget.checked)} />
+								{t("allowInsecure")}
+							</label>
+						) : null}
 						<button type="button" onClick={() => removeAt(index)} style={linkButtonStyle} disabled={busy}>{t("remove")}</button>
 					</li>
 				))}
@@ -2561,9 +2583,16 @@ const zh = {
 	collapseAll: "全部收起",
 	sources: "更新源",
 	sourcesTitle: "更新源配置",
-	sourcesHint: "版本检查与更新从启用的源获取；官方 npm 源与 GitHub 官方仓库已预填。GitHub 源适用于仓库根 package.json 的 name 匹配包名、并以 GitHub Releases 发版的插件。可添加私有/镜像 registry。",
+	sourcesHint: "版本检查与更新从启用的源获取；官方 npm 源、npmmirror 与 GitHub 官方仓库已预填。自定义源默认只作兜底（degraded），不与官方源混比版本；要让它参与权威裁决需显式勾选「权威」。http:// 源默认标注「明文·仅兜底」，升权威还须同时勾选「允许明文」。GitHub 源适用于仓库根 package.json 的 name 匹配包名、并以 GitHub Releases 发版的插件。",
 	sourcesSaved: "更新源已保存，正在重新检查版本…",
 	resetSources: "恢复默认源",
+	authoritative: "权威",
+	authoritativeHint: "把该源升为权威层：版本裁决与安装以它为准（官方源不可用时仍可用）。只对可信的内网镜像/离线源开启。",
+	allowInsecure: "允许明文",
+	allowInsecureHint: "该源是 http:// 明文传输，默认只作兜底；升为权威必须同时显式确认此项。",
+	plaintextFallback: "明文·仅兜底",
+	plaintextAuthoritative: "明文·权威",
+	plaintextFallbackHint: "明文 http:// 源：内容可在传输中被篡改，默认只作 fallback 兜底，不参与权威版本裁决。",
 	addSource: "添加",
 	remove: "删除",
 	sourceName: "源名称",
@@ -2801,9 +2830,16 @@ const en = {
 	collapseAll: "Collapse all",
 	sources: "Sources",
 	sourcesTitle: "Update sources",
-	sourcesHint: "Version checks and updates use the enabled sources; the official npm source and the GitHub official repo are pre-filled. A GitHub source applies to packages whose repo-root package.json name matches and which release via GitHub Releases. Private/mirror registries can be added.",
+	sourcesHint: "Version checks and updates use the enabled sources; the official npm source, npmmirror and the GitHub official repo are pre-filled. A custom source only acts as a fallback (degraded) by default — it does not compete with the official source unless you explicitly mark it authoritative. http:// sources are labelled plaintext·fallback-only; making one authoritative also requires the explicit allow-plaintext confirmation. A GitHub source applies to packages whose repo-root package.json name matches and which release via GitHub Releases.",
 	sourcesSaved: "Sources saved; re-checking versions…",
 	resetSources: "Reset to defaults",
+	authoritative: "authoritative",
+	authoritativeHint: "Trust this source as authoritative: version resolution and installs use it (still usable when the official source is unreachable). Enable only for a trusted internal mirror / offline registry.",
+	allowInsecure: "allow plaintext",
+	allowInsecureHint: "This source uses plaintext http:// and is fallback-only by default; making it authoritative requires this explicit confirmation.",
+	plaintextFallback: "plaintext · fallback only",
+	plaintextAuthoritative: "plaintext · authoritative",
+	plaintextFallbackHint: "Plaintext http:// source: content can be modified in transit; it is fallback-only and never participates in authoritative version resolution by default.",
 	addSource: "Add",
 	remove: "Remove",
 	sourceName: "Name",

@@ -1,18 +1,30 @@
 # dsh-drydock (formerly dsh-plugin-manager-pro)
 
-> **Archival note (2026-11-24)**: this is the **full English text of the v0.9.1 era**, not the manual for the current version —
-> statements such as "current version 0.9.1" / "latest on npm" describe the time of writing.
-> The working copy is **1.0.0** (npm package renamed to **`dsh-drydock`**; the old name `dsh-plugin-manager-pro` will get a deprecation notice but will not be deleted); the current Chinese README is [README.md](README.md), the full v0.9.1-era Chinese text is [docs/README-full.md](docs/README-full.md), and the release process is [docs/RELEASING.md](docs/RELEASING.md).
+> **Version of record: 1.0.3** — this file is the English README for 1.0.3, not an archive of the v0.9.1 era.
+> The Chinese README is [README.md](README.md), the full v0.9.1-era Chinese text is [docs/README-full.md](docs/README-full.md), release notes are in [docs/releases/](docs/releases/), and the release process is [docs/RELEASING.md](docs/RELEASING.md).
 
 > A local plugin manager for [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness): a **standalone plugin page** (visual plugin management) plus a **standalone brick-rescue toolchain**.
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
-> Community plugin — not an official DSH package. npm: `dsh-drydock` (formerly `dsh-plugin-manager-pro`, which will be marked deprecated but not deleted) · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
+> Community plugin — not an official DSH package. npm: `dsh-drydock` (formerly `dsh-plugin-manager-pro`, which is **deprecated** on npm but not deleted; it is kept for installing historical versions) · GitHub: [nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · Cross-platform (Windows / macOS / Linux).
 >
-> **Published release 1.0.0** (npm `latest`, under the new package name `dsh-drydock`).
-> Check what is published any time with `npm view dsh-drydock version`; tags: <https://github.com/nonentity303/dsh-drydock/tags>.
+> **Current version: 1.0.3** (npm `latest`, 2026-11-27). Check what is published any time with `npm view dsh-drydock version`; tags: <https://github.com/nonentity303/dsh-drydock/tags>.
 > ⚠️ A brand-new release is blocked by pnpm's 24 h cool-down (`minimumReleaseAge`) — pin the version explicitly if it does not install (see "Install" below).
+
+### Update-source trust model (1.0.3)
+
+Read this before configuring sources:
+
+- **Default sources**: npm official (`registry.npmjs.org`) / GitHub official repo / npmmirror (`registry.npmmirror.com`). **The registry version is authoritative** — when an authoritative source has a definite version, only authoritative sources are compared (random tie-break); other sources do not take part in that decision.
+- **Custom sources are fallback only**: a source you add lands in the `custom` layer with `authoritative: false` and is **no longer mixed with the official sources**. It is used only when no authoritative version exists (flagged `degraded`). Promote it deliberately with `authoritative: true`.
+- **`http://` sources are allowed but labelled "plaintext · fallback only"** (intranet registries / proxies are a real case): a plaintext source can be promoted to authoritative only with **both** `authoritative: true` and `allowInsecure: true`; otherwise it stays fallback and the downgrade reason is reported in a readable note, never silently swallowed.
+- **`official` is decided server-side** from the built-in allowlist (npm official, npmmirror, compared after URL normalization); a client-supplied `official` is ignored.
+- **Only `@deepseek-ai/*` uses the `next` track** (and only from a built-in authoritative source). Every other package takes `latest` only, and a `latest` that is itself a semver prerelease (contains `-`) counts as "no usable version" — no RC is pushed to regular users.
+- **Auto-install from the downloads folder requires provenance**: an archive in `$DSH_HOME/downloads` is installed only if it matches a record this manager wrote (package name + version + source + expected digest, valid 7 days); otherwise it is refused and stamped `.failed`. A byte size alone is **not** treated as a content check.
+- **Digest is the only "verified" state**: redirects are checked hop by hop, any hop that downgrades to plaintext `http` is refused unless `allowInsecure` is set, and downloads without a digest are refused by default (`security.unverifiedDownloads: allow` only relaxes that, and the receipt still says "unverified").
+
+§"Why this manager exists" below keeps the 0.9.1-era capability comparison and competitor history as evidence; the compatibility and install tables have been updated to the 1.0.x line.
 
 ![Standalone plugin page: sidebar entry "Plugin manager" + five sections](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm-090-official2.png)
 
@@ -28,7 +40,7 @@ This manager is not "one more plugin list". It **takes over that page and adds w
 
 ### Capability comparison
 
-| Capability | Official built-in page (DSH 0.1.7) | LX2000WASD/dsh-web-plugin-manager (**discontinued**) | This manager (0.9.1) |
+| Capability | Official built-in page (DSH 0.1.7) | LX2000WASD/dsh-web-plugin-manager (**discontinued**) | This manager (1.0.3) |
 |---|---|---|---|
 | Starts on DSH 0.1.7 | ✅ shipped with the engine | ❌ breaks the profile since 0.1.6 (loader entry id collision)¹ | ✅ verified on 0.1.7-rc.2: rehearsal + clean-environment install⁴ |
 | Transactional uninstall (impact preview → backup → remove → pre-boot self-check → rollback) | ❌ only bundle layer add/remove (`installBundle` / `removeBundle`); no preview, no undo³ | ⚠️ can uninstall (incl. bundles) but **not transactionally**: failures only say "restart to take effect", recovery means editing `cordis.patch.yml` by hand¹ | ✅ full loop, plus **one-click undo**⁴ |
@@ -65,7 +77,7 @@ The leading competitor [LX2000WASD/dsh-web-plugin-manager](https://github.com/LX
 
 Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plugin manager" and all five sections — that is Figure 1.
 
-> **Which version should I install?** DSH **0.1.6 or later → 0.9.1** (to try the pre-release: `npm i dsh-plugin-manager-pro@next` = **0.9.1-rc2**, shipped under the `next` dist-tag, does not move `latest`); **old engines (before 0.1.6) → 0.8.2**. Full matrix under "Requirements".
+> **Which version should I install?** DSH **0.1.7-rc.2 or later (and `<0.3.0-0`) → 1.0.3**. Engines older than 0.1.7-rc.2 are outside this package's `engines.dsh` range — stay on the historical release you already have. Rollback between 1.0.x releases uses the same package name: `dsh plugin --profile web add dsh-drydock@1.0.2`.
 
 ![Impact preview of a transactional uninstall plus the rescue/diagnostics entries in the same card](https://raw.githubusercontent.com/nonentity303/dsh-drydock/master/docs/images/pm4-uninstall-preview.png)
 
@@ -82,11 +94,11 @@ Verified on **DSH 0.1.7-rc.2**: the engine boots cleanly, the sidebar shows "Plu
 - **Rescue decoupled from the engine** (v0.7+): with the engine down, the **3081 launcher (with a built-in rescue page) and the 3082 rescue service** still self-check, repair and start it.
 - **Browser as launcher**: set your home page to `http://127.0.0.1:3081/` (`http://localhost:3081/` works the same way) — opening the browser runs self-check → repair → start → jumps to the main UI.
 - **Local write endpoints are guarded** (v0.9.1): same-origin `Origin` (same-host, same-port allowlist: `127.0.0.1` / `localhost` / `[::1]`) + one-time token + single-flight, so a third-party page cannot start/stop anything; `--status` also appends a `health.log` line (7 days / 1000 lines).
-- **Multi-source update aggregation**: npm registry / GitHub / custom mirrors queried in parallel, with rate-limit circuit breaking and the highest version winning.
+- **Update-source trust model** (1.0.3): npm official / GitHub official repo / npmmirror by default, the registry is authoritative, custom sources are fallback-only (never mixed with the official ones) unless explicitly marked `authoritative`, plain `http://` sources are allowed but labelled "plaintext · fallback only", only `@deepseek-ai/*` uses the `next` track, and auto-install from the downloads folder requires a provenance record. Full rules in the trust-model block at the top.
 
 ---
 
-## 📋 Feature overview (v0.9.1)
+## 📋 Feature overview (v1.0.3)
 
 ### Plugin page (sidebar "Plugin manager")
 
@@ -121,10 +133,11 @@ Five sections, switching keeps your scroll position:
 
 ### Updates and downloads
 
-- **Parallel multi-source lookups**; highest version wins, ties picked at random.
+- **Authoritative registry, fallback-only custom sources** (1.0.3): the trust layer is decided by each source's `authoritative` flag, not by its type; authoritative sources are compared among themselves (random tie-break) and other sources only step in when no authoritative version exists (`degraded`). See the trust-model block at the top.
 - **Circuit breaking**: GitHub API 403/429 cools down for 10 minutes; full refresh runs 8 concurrent queries and results are cached for 30 minutes (a cache hit returns instantly; refresh duration depends on your network and the number of enabled sources).
 - **Download order**: ① native browser download (hidden iframe, capturable by download managers) → ② external downloader → ③ built-in fallback (HTTP / aria2c / P2P magnet·torrent).
-- **Auto-install from the downloads folder**: drop `.tgz` / `.tar.gz` into `$DSH_HOME\downloads`; manifest validation + pre-boot self-check, rollback on failure and a `.failed` stamp so it is not retried forever.
+- **Auto-install from the downloads folder requires provenance** (1.0.3): drop `.tgz` / `.tar.gz` into `$DSH_HOME\downloads`; the archive's own `package.json` is read first and installation happens only when it matches a record this manager wrote (package name + version + source + expected digest, valid 7 days). Anything else is refused with a `.failed` stamp ("no provenance record — not a download link produced by this manager; delete `.failed` to retry after you have confirmed the source"), and the record is removed once the install succeeds.
+- **Verified means digest**: a byte size alone is not a content check; redirects are validated hop by hop (any hop downgrading to plaintext `http` is refused unless `allowInsecure`); archives without a digest are refused by default.
 
 ### Market
 
@@ -187,23 +200,19 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --statu
 
 - Windows 10/11 · macOS · Linux (`/rescue` and the three CLI tools are cross-platform; **`--install-autostart` is Windows-only**, on macOS/Linux use `--supervise` with your own service manager).
 - Node.js ≥ 18 · DeepSeek Harness `dsh` (global or via npx) · `pnpm` (required by `dsh plugin` and the update features).
-  - **`engines.node` in `package.json` is the only statement of record** (currently `>=18.0.0`). Note: **0.9.1 fails to load on Node 18/20** (a top-level named import of `node:module`'s `findPackageJSON`, which only exists since Node **22.14** → link-time `SyntaxError`, the whole plugin never loads); **on Node 18/20 use 0.9.1-rc2 or newer** — it uses a namespace import + runtime feature detection + a fallback resolver, guarded by the static gate `node tools/dev/compat-scan.mjs --root .` (measured on this version: `blocker=0`, exit 0; on the published 0.9.1 tarball: `blocker=1`).
+  - **`engines.node` in `package.json` is the only statement of record** — this release still declares `>=18.0.0` and was **not** tightened here (engine tightening is planned for 1.1.x). Node 18 is EOL and pnpm 11 no longer supports 18/20/21, so run it on **Node 22 LTS or newer**.
 - **The engine version decides which manager version you install** (table below) — installing the wrong one means no plugin page, or a profile that will not start.
 
 ### Engine compatibility matrix (engine × manager)
 
 | Your DSH engine | Manager version | Status | Verified | Notes / sources |
 |---|---|---|---|---|
-| **0.1.7-rc.2** | **0.9.1** (published) · **0.9.1-rc2** (pre-release, `next` dist-tag) | ✅ works | 0.9.0: 2026-09-28 rehearsal + clean-environment install; 0.9.1: all four test suites green; **0.9.1-rc2 (pre-release)**: launcher suite independently verified **448 checks / 418 OK / 30 SKIP(env) / 0 FAIL**, exit 0 (2026-10-07; all 30 SKIPs are sandbox boundaries, **not product failures**); static compat gate `compat-scan` on the candidate tarball **exit 0 / blocker 0** (the published 0.9.1 tarball reports blocker 1 / exit 2); it also carries the performance fixes (client bundle **792,931 → 255,903 B**, host hot-snapshot median **18.8 → 1.1 ms**); **the count of record is the output of `node test-launcher.mjs --strict`** (it moves with the tree) | Isolated rehearsal environment (separate `DSH_HOME` + ports): engine boots cleanly, sidebar "Plugin manager", all five sections (Figures 1–3 come from it). Sources: `docs/releases/0.9.0.md`, `docs/releases/0.9.0-verify.md`, `docs/releases/RELEASE_NOTES_0.8.3-1.md`, [docs/RELEASING.md](docs/RELEASING.md) |
-| **0.1.6 and later** (incl. 0.1.6-alpha.2) | **0.9.1** (recommended) / **0.9.1-rc2** (pre-release) | ✅ recommended (takes over the built-in page) | 0.1.7-rc.2 verified; **0.1.6-alpha.x not tested individually** | The official page became part of the engine in 0.1.6; the `ui-plugin-manager` row our `cordis.patch.yml` disables is exactly that page (`@deepseek-ai/dsh-client-ui-plugin-manager`) |
-| **0.1.0-rc.6 ~ 0.1.5** (engines before 0.1.6) | **0.8.2** | ✅ works (legacy "Settings → Plugins" tab) | 0.8.2 released 2026-09-04; the pre-upgrade baseline on this machine was engine 0.1.1-rc.2 + 0.8.x | 0.8.x and 0.9 are two different clients (`docs/releases/0.9.0.md` ⑤); **the 0.1.5 line was not tested individually** |
-| **0.1.7-rc.2** | **0.8.2 / early 0.8.3 builds** | ❌ plugin never activates | measured in the 2026-09-28 rehearsal | Two independent causes: ① since 0.1.7 the typert strict codec must provide a `create()` factory; ② `dsh.client.inject` referenced `@deepseek-ai/dsh-client-runtime`, removed in 0.1.7. Fixed in 0.8.3-1 and 0.9.x |
-| **0.1.6 and later** | **any third-party manager that declares the same loader entry id** (e.g. LX2000WASD 0.6.x) | ❌ profile will not start | competitor announcement, 2026-09 | `TypeError: duplicate loader entry id: plugin-manager` (the official `dsh-base` row id is `plugin-manager`); this manager uses its own id `drydock` |
-| Already on 0.9.x with an engine before 0.1.6 | rollback: `dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2` | ⚠️ recovery path | — | see the rollback command under "Install" |
+| **≥ 0.1.7-rc.2** (incl. 0.2.x, `<0.3.0-0`) | **1.0.3** (recommended) · 1.0.2 / 1.0.1 / 1.0.0 | ✅ supported | 1.0.x verified on 0.2.x engines (isolated rehearsal + main environment); **the count of record is the output of `node test-launcher.mjs --strict`** (it moves with the tree) | `engines.dsh` = `>=0.1.7-rc.2 <0.3.0-0`; per-version evidence in [docs/releases/](docs/releases/) |
+| **0.1.6 and later** (incl. 0.1.6-alpha.2) | **1.0.3** | ✅ recommended (takes over the built-in page) | 0.1.7-rc.2 verified; **0.1.6-alpha.x not tested individually** | The official page became part of the engine in 0.1.6; the `ui-plugin-manager` row our `cordis.patch.yml` disables is exactly that page (`@deepseek-ai/dsh-client-ui-plugin-manager`) |
+| **before 0.1.7-rc.2** (0.1.0-rc.6 ~ 0.1.5) | not supported by 1.0.x | ⚠️ stay on the historical release you already have | — | 1.0.x `engines.dsh` starts at 0.1.7-rc.2; the old package name is deprecated (notice live on npm) but not deleted |
 
-> **One line**: **newer engines want 0.9.1; only very old engines (before 0.1.6) need 0.8.2.** The 0.1.6 boundary is the only certain one; the transitional 0.1.6-alpha.x versions were not tested individually.
-> **On Node 18/20 (or to try the pre-release) install `0.9.1-rc2`**: `npm i dsh-plugin-manager-pro@next` — 0.9.1 **fails to load on Node 18/20**, which is the first blocker this pre-release fixes (see `docs/releases/0.9.1-rc2.md`).
-> The "verified" records come from the rehearsal environment, the clean-environment install report and the real-machine install archive (`docs/releases/0.9.0-verify.md`; developer workspace `upgrade-rehearsal/`, `audit/install-090/` — the latter two are not part of the npm package). The process is repeated for every engine patch release per `docs/RELEASING.md`.
+> **One line**: engine **≥ 0.1.7-rc.2 → install 1.0.3**. Rollback between 1.0.x releases uses the same package name: `dsh plugin --profile web add dsh-drydock@1.0.2`.
+> The "verified" records come from the rehearsal environment, the clean-environment install report and the real-machine install archive (`docs/releases/0.9.0-verify.md`; developer workspace `upgrade-rehearsal/`, `audit/install-090/` — the latter two are not part of the npm package). The process is repeated for every release per `docs/RELEASING.md`.
 
 ## 🔐 Permissions and data scope
 
@@ -216,7 +225,7 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --statu
 | `~/.dsh/profiles/<name>/plugin-manager.json` (sidecar) | operation history (last 20), scenarios, manual origin overrides, pending removals, update-source config | No |
 | `~/.dsh/profiles/<name>/node_modules/**` | read the dependency graph and package summaries; uninstall/quarantine deletes package directories via `pnpm` (Windows file locks are queued for the next start) | No (pnpm talks to the registry during install/uninstall) |
 | `~/.dsh/profiles/<name>/vendor/downloads/*.tgz` | archive staging for browser downloads; archives still referenced by dependencies are never deleted | No |
-| `$DSH_HOME/downloads/*` | "auto-install from the downloads folder" scans archives and writes `.installed` / `.failed` stamps | No |
+| `$DSH_HOME/downloads/*` | "auto-install from the downloads folder" scans archives; only archives matching a provenance record (package name + version + source + digest) are installed; writes `.installed` / `.failed` stamps | No |
 | Local npm global root (Windows `%APPDATA%\npm`, macOS/Linux `npm root -g` and common paths) | **read-only**: locate the engine-provided `@deepseek-ai/*` packages and extract plugin summaries | No |
 | Update sources: npm registry (`registry.npmjs.org` by default), GitHub, mirrors you add (e.g. `registry.npmmirror.com`) | query versions and download archives | **Queries only** (GET metadata / archives) — no local data is uploaded |
 | GitHub API: `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com` | read releases and repository `package.json`, download tgz | same |
@@ -232,24 +241,23 @@ node "$DSH_HOME/profiles/web/node_modules/dsh-drydock/bin/open-boot.mjs" --statu
 > **Install from npm** (`dsh plugin … add` is pnpm underneath and reuses the engine-provided `@deepseek-ai/*`).
 
 ```sh
-# 1) recommended (engine >= 0.1.6) — new package name since the 1.0.0 rename
+# 1) recommended (engine >= 0.1.7-rc.2) — current package name
 dsh plugin --profile web add dsh-drydock
 
 # 2) right after a release (or during the 24 h cool-down) — pin the version, always reliable
-dsh plugin --profile web add dsh-drydock@1.0.0
+dsh plugin --profile web add dsh-drydock@1.0.3
 
 # 3) offline tarball (downloaded from the GitHub Release page, or built with npm pack)
-dsh plugin --profile web add ./dsh-drydock-1.0.0.tgz
+dsh plugin --profile web add ./dsh-drydock-1.0.3.tgz
 
-# old engines (0.1.0-rc.6 ~ 0.1.5), or when 0.9.x does not take effect: roll back to the legacy UI
-# (0.8.2 only ever existed under the old package name — the rollback command keeps the old name)
-dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
+# 4) roll back to the previous stable release (same package name for the whole 1.0.x line)
+dsh plugin --profile web add dsh-drydock@1.0.2
 
 # restart the web engine to load the client bundle
 dsh web
 ```
 
-> **Does not install / still shows the old UI?** Two usual causes: ① the engine loads client bundles **at startup** — restart `dsh web`; ② pnpm 11's **24 h cool-down** (`minimumReleaseAge`, default 1440 minutes) refuses versions published today unless you pin them (you can also add `dsh-plugin-manager-pro@0.9.1` to `minimumReleaseAgeExclude` in the profile's `pnpm-workspace.yaml`).
+> **Does not install / still shows the old UI?** Two usual causes: ① the engine loads client bundles **at startup** — restart `dsh web`; ② pnpm 11's **24 h cool-down** (`minimumReleaseAge`, default 1440 minutes) refuses versions published today unless you pin them (you can also add `dsh-drydock@1.0.3` to `minimumReleaseAgeExclude` in the profile's `pnpm-workspace.yaml`).
 
 After installing: the sidebar shows the first-level entry **"Plugin manager"** (the built-in page is disabled and taken over by this package's patch). 🛟 in the bottom right opens the rescue center; the engine-hosted rescue page is `http://127.0.0.1:3080/rescue`.
 
@@ -263,7 +271,7 @@ After installing: the sidebar shows the first-level entry **"Plugin manager"** (
 Uninstall:
 
 ```sh
-dsh plugin --profile web remove dsh-plugin-manager-pro   # calls --uninstall below to clean autostart/supervisor/shims first
+dsh plugin --profile web remove dsh-drydock   # calls --uninstall below to clean autostart/supervisor/shims first
 npx dsh-drydock --uninstall-autostart                # Windows: remove autostart (idempotent)
 npx dsh-drydock --uninstall                          # optional: remove every launcher trace (stop supervisor + delete DSHWeb* + shims + pid)
 ```
@@ -290,8 +298,8 @@ npx dsh-drydock --uninstall                          # optional: remove every la
 - **Host** (`lib/index.js`): reads live Cordis loader state (enabled / runtime phase / error) and exposes remote methods through the Typert gateway (list / setEnabled / update / verifyProfile / fixProfile / marketCatalog / …). Convergence is judged from real engine fields (`Entry.disabled` / `_initTask` / `fiber.state`) and honestly reports "restart required" instead of pretending.
 - **Plugin page takeover** (`src/client.jsx` + `cordis.patch.yml`): registers into `main` (key=`plugins`) and `sidebar.panellist` (id=`plugins`), disables the built-in `ui-plugin-manager` row and declares the 7 `plugins.*` child slots; the three that third-party plugins really use (`plugins.row.config` / `plugins.bundle.config` / `plugins.item`) have real render exits — **an unregistered key never produces an empty button**.
 - **Toggle persistence**: rows written into the profile's `cordis.patch.yml`, always carrying the `Managed by dsh-drydock` marker (legacy `dsh-plugin-manager-pro` markers are still read) so user-owned patch rows are never touched.
-- **Update aggregation** (`lib/aggregate.js` + `compare-versions.js`): parallel sources → highest version → random tie-break; 10-minute circuit breaking on 403/429; full pre-release support.
-- **Downloader** (`lib/downloader.js`): streaming HTTP; magnet/.torrent prefer an external downloader (cross-platform where/which) → built-in webtorrent → manual import.
+- **Update aggregation** (`lib/aggregate.js` + `compare-versions.js`): the trust layer is decided by each source's `authoritative` flag (not by its type) → highest among authoritative sources (random tie-break) → fallback only when no authoritative version exists (`degraded`); 10-minute circuit breaking on 403/429; prereleases only on the `@deepseek-ai/*` `next` track.
+- **Downloader** (`lib/downloader.js`): streaming HTTP; magnet/.torrent prefer an external downloader (cross-platform where/which) → built-in webtorrent → manual import; downloads-folder auto-install is gated by the `pendingDownloads` provenance records in the sidecar.
 - **Cross-platform** (`lib/platform.js`): npm global root via `%APPDATA%\npm` on Windows, `npm root -g` plus common paths and nvm directories elsewhere (10-minute cache).
 - **Standalone rescue** (`lib/preflight.mjs` + `lib/enginectl.mjs`): plain-Node self-check/repair and engine lifecycle shared by all three CLI tools; port split: 3081 launcher (single web entry with `/rescue`), 3082 backup rescue service, 4081 supervisor lock.
 - **Local write-endpoint guards** (v0.9.1, `lib/enginectl.mjs`: `newApiToken` / `allowedOriginsOf` / `guardWriteRequest` / `createSingleFlight`): the local write endpoints (`POST /api/boot`, `/rescue/api/start|fix|stop`) require a **same-origin `Origin`** — the same-host, same-port allowlist `127.0.0.1` / `localhost` / `[::1]`, **never derived from the `Host` header** (`localhost:3081` and `127.0.0.1:3081` are equivalent; another port is not) — plus a page-injected one-time token (`X-DSH-PM-Token`, 48 hex chars, never written to disk, rotated on every start); a missing `Origin` (local tools) still requires the token, otherwise 401. Boot/start are single-flighted (a concurrent second request gets 409), so a third-party web page cannot start/stop anything. Read endpoints (`GET /api/status|verify`) stay open for local tools.
@@ -313,6 +321,7 @@ npm run check:vendor                          # vendor consistency (per-file sha
 npm run pack                                  # build + npm pack
 node tools/dev/gen-changelog.mjs              # regenerate CHANGELOG.md from docs/releases/*.md
 node tools/dev/gen-changelog.mjs --check      # verify CHANGELOG.md is up to date (exit 1 when stale)
+node test-docs.mjs                            # docs/version consistency (offline, no deps: README version == package.json, release notes + CHANGELOG contain 1.0.3)
 ```
 
 Docs: [docs/RELEASING.md](docs/RELEASING.md) (release flow), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/LAUNCHER.md](docs/LAUNCHER.md), [CHANGELOG.md](CHANGELOG.md) (generated) and [docs/releases/](docs/releases/).

@@ -6,6 +6,18 @@
  * 自动 verify → 有问题自动 fix（隔离坏 bundle）→ 拉起 `dsh web` → 跳转 3080。
  *
  * 设计取舍：
+ *  - 1.0.3（安全性能审查 S3/S4/P1/P2）：
+ *    · **Host 头校验（S3）**：请求入口只接受 `127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`
+ *      （带端口、大小写不敏感），其余 421 JSON —— 挡住"攻击者域名解析到 127.0.0.1 后同源读接口"
+ *      的 DNS 重绑定；校验在**路由之前**。
+ *    · **统一安全响应头（S4）**：CSP（default-src 'none' + script/style 'unsafe-inline' + connect-src 'self'
+ *      + frame-ancestors 'none' + base-uri 'none'）、X-Frame-Options DENY、nosniff、Referrer-Policy
+ *      no-referrer，覆盖 sendHtml/sendJson/救援页/404/421；页面内联脚本样式照常可跑。
+ *    · **bundles GET 也过 Origin+令牌（S3 附带）**：已装插件清单不再裸奔（页面 api() 本就带令牌）。
+ *    · **updates 缓存 + 单飞（P1）**：30 分钟缓存（key=profile，另存 pnpm-lock.yaml 的 mtime+size 失效）、
+ *      并发共用 in-flight Promise（不再重复起 pnpm）、`pnpm --version` 成功结果进程内缓存 → 热调用 < 10ms。
+ *    · **runPnpm 有界缓冲（P2）**：stdout/stderr 只保末尾 16KB + `<...已截断 N 字节>` 标记，长驻守护不再堆峰值。
+ *    · **启动页 log() 改逐行 DOM（S4）**：textContent 追加，不再 innerHTML 拼接。
  *  - 3081 独立入口，无端口争抢（v0.7.0 的 3080 接管模式已移除）。
  *  - **平时隐藏，拉起引擎时弹窗**：常驻守护自身无任何窗口；
  *    只有当引擎（3080）真的不在时，才弹出一个**可见的启动窗口**，
@@ -1541,7 +1553,15 @@ function stopSpin(){
 	spin.style.display = "none";
 	if (waited > 0) elapsedEl.textContent = "本次等待 " + waited + " 秒";
 }
-function log(line, cls){ out.innerHTML += (cls?'<span class="'+cls+'">':'') + String(line).replace(/</g,'&lt;') + (cls?'</span>':'') + "\\n"; }
+// S4：逐行 DOM 追加（textContent），不再 innerHTML += —— 日志里出现什么字符都不会被解析成 HTML，
+// 也省掉手工转义（旧实现只转义 "<"，"&" 与属性上下文仍是缺口）。样式沿用 span.cls。
+function log(line, cls){
+	var row = document.createElement("div");
+	if (cls) { var span = document.createElement("span"); span.className = cls; span.textContent = String(line); row.appendChild(span); }
+	else { row.textContent = String(line); }
+	out.appendChild(row);
+	out.scrollTop = out.scrollHeight;
+}
 function goEntry(r){
 	stopSpin();
 	if (r && r.entryUrl) { location.href = r.entryUrl; return; }
@@ -1688,6 +1708,31 @@ function userBundleNames(profile) {
 }
 
 /**
+ * P2：pnpm 输出缓冲上限 = 保留末尾 16 KB。调用方普遍只用 `slice(-400)`（错误摘录），
+ * 大 profile 的 `pnpm outdated --json` / `pnpm install` 输出可达 MB 级，长驻守护里是无上限的堆峰值。
+ */
+const PNPM_OUTPUT_CAP = 16 * 1024;
+
+/**
+ * 有界输出缓冲（P2）：超出上限时丢**头部**、只留末尾 cap 个字符，并记下丢弃字节数；
+ * 取值时前置 `<...已截断 N 字节>` 标记，让读日志的人知道"这里不是开头"。
+ * 返回值仍是完整字符串（末尾语义不变），所以 `slice(-400)` 这类调用方无需改动。
+ */
+function createBoundedBuffer(cap = PNPM_OUTPUT_CAP) {
+	let tail = "";
+	let dropped = 0;
+	return {
+		append(chunk) {
+			tail += String(chunk);
+			if (tail.length > cap) { dropped += tail.length - cap; tail = tail.slice(-cap); }
+		},
+		toString() { return dropped === 0 ? tail : `<...已截断 ${dropped} 字节>${tail}`; },
+		get dropped() { return dropped; },
+		get size() { return tail.length; }
+	};
+}
+
+/**
  * 以「pnpm 命令 + 白名单参数」的方式跑子进程（rc.2 P1-4：exec → spawn 拿 pid）。
  * resolve 永不 reject，失败也返回结构化结果 { code, stdout, stderr, timedOut, state }：
  *   state="done"    —— 子进程已确认退出（含超时后确认杀死的情形）；
@@ -1695,6 +1740,7 @@ function userBundleNames(profile) {
  *                      调用方（卸载事务）据此不做回滚/继续，直接报告 unknown 请人工确认。
  * 超时杀的是**本函数自己启动**的子树（taskkill /PID <pid> /T /F），与 P0-1「不 /T 连坐别人」不冲突。
  * 测试逃生门：DSH_PM_PNPM_TIMEOUT_MS 环境变量可整体下调默认超时（不设 = 180000）。
+ * P2：stdout/stderr 走有界环形缓冲（保末尾 16KB + 截断标记），不再无上限累积。
  */
 function runPnpm(pnpmArgs, { cwd, timeoutMs } = {}) {
 	const defaultTimeout = Number(process.env.DSH_PM_PNPM_TIMEOUT_MS);
@@ -1710,15 +1756,16 @@ function runPnpm(pnpmArgs, { cwd, timeoutMs } = {}) {
 			resolveRun({ code: 1, stdout: "", stderr: `pnpm spawn 失败：${error.message}`, timedOut: false, state: "done" });
 			return;
 		}
-		let stdout = "";
-		let stderr = "";
+		// P2：有界缓冲（保末尾 16KB）；返回值语义与旧版一致（末尾内容不变）
+		const stdoutBuf = createBoundedBuffer();
+		const stderrBuf = createBoundedBuffer();
 		let settled = false;
 		let timedOut = false;
 		const finish = (code, state) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			resolveRun({ code, stdout, stderr, timedOut, state });
+			resolveRun({ code, stdout: stdoutBuf.toString(), stderr: stderrBuf.toString(), timedOut, state });
 		};
 		const killTree = () => {
 			timedOut = true;
@@ -1740,10 +1787,10 @@ function runPnpm(pnpmArgs, { cwd, timeoutMs } = {}) {
 		const timer = setTimeout(() => {
 			if (!settled && child.pid) killTree();
 		}, timeout);
-		child.stdout?.on("data", (d) => { stdout += d; });
-		child.stderr?.on("data", (d) => { stderr += d; });
+		child.stdout?.on("data", (d) => { stdoutBuf.append(d); });
+		child.stderr?.on("data", (d) => { stderrBuf.append(d); });
 		child.on("error", (error) => {
-			stderr += `\n${error.message}`;
+			stderrBuf.append(`\n${error.message}`);
 			finish(1, "done");
 		});
 		child.on("close", (code) => finish(typeof code === "number" ? code : 1, "done"));
@@ -1933,29 +1980,78 @@ async function uninstallPackageTransactional(args, pkgName) {
 	};
 }
 
-/** 检查用户插件更新：一次 pnpm outdated --json，再投影到用户 bundle（核心组件不参与）。 */
-async function checkUpdates(args) {
+/**
+ * P1：updates 结果缓存（key = profile，TTL 30 分钟）。
+ * 另存 `pnpm-lock.yaml` 的 mtime+size 作失效键：lockfile 一变（用户装了/卸了包、改了依赖树）
+ * 立刻重算，不让 30 分钟缓存把"刚装的插件"藏起来。只缓存**成功**结果——失败（pnpm 缺失/输出异常）
+ * 留给用户重试，不把一个可修的故障钉在缓存里半小时。
+ */
+const UPDATES_CACHE_MS = 30 * 60 * 1000;
+const updatesCache = new Map();
+/** P1：单飞——同一 profile 的并发请求共用同一个 in-flight Promise（复用同一结果，不是 409）。 */
+const updatesInflight = new Map();
+/** P1：`pnpm --version` 成功结果模块级缓存（失败不缓存：装好 pnpm 后下一次就能恢复）。 */
+let pnpmVersionCache = null;
+
+/** lockfile 指纹：mtimeMs + size（文件不存在记 "absent"，仍然稳定可比）。 */
+function lockfileStamp(profile) {
+	try {
+		const st = statSync(join(profile, "pnpm-lock.yaml"));
+		return `${st.mtimeMs}:${st.size}`;
+	} catch { return "absent"; }
+}
+
+/** 测试面：清空 updates 缓存 / 单飞 / 版本缓存（生产路径不调用）。 */
+function resetUpdatesCacheForTests() {
+	updatesCache.clear();
+	updatesInflight.clear();
+	pnpmVersionCache = null;
+}
+
+/**
+ * 检查用户插件更新：一次 pnpm outdated --json，再投影到用户 bundle（核心组件不参与）。
+ * P1：30 分钟缓存（key=profile + lockfile 指纹）+ 并发单飞 + pnpm --version 进程内缓存；
+ *     `run`/`now` 是测试注入点（默认就是 runPnpm / Date.now）。
+ * 热调用目标 < 10ms：命中缓存时不 spawn 任何子进程。
+ */
+async function checkUpdates(args, { run = runPnpm, now = Date.now } = {}) {
 	const profile = args.profile;
 	const users = userBundleNames(profile);
 	if (users.length === 0) return { ok: true, updates: [], message: "profile 没有用户插件。" };
-	const ping = await runPnpm(["--version"], { cwd: profile, timeoutMs: 15000 });
-	if (ping.code !== 0) return { ok: false, error: `pnpm 不可用（exit ${ping.code}）：${(ping.stderr || ping.stdout).slice(-200)}` };
-	const out = await runPnpm(["outdated", "--json"], { cwd: profile, timeoutMs: 120000 });
-	let table = {};
-	try { table = JSON.parse(out.stdout || "{}") || {}; }
-	catch {
-		return { ok: false, error: `pnpm outdated 输出无法解析（exit ${out.code}）：${(out.stderr || out.stdout).slice(-300)}` };
-	}
-	const updates = users.map((name) => {
-		const row = table[name] || table[`./${name}`] || null;
-		return {
-			name,
-			current: row?.current ?? null,
-			latest: row?.latest ?? null,
-			needsUpdate: Boolean(row && row.latest && row.current !== row.latest)
-		};
-	});
-	return { ok: true, updates };
+	const lock = lockfileStamp(profile);
+	const cached = updatesCache.get(profile);
+	if (cached && now() - cached.at < UPDATES_CACHE_MS && cached.lock === lock) return cached.result;
+	// 并发进来时复用同一个 Promise：不会重复拉起 pnpm，也不会把第二个请求判成 409
+	const pending = updatesInflight.get(profile);
+	if (pending) return pending;
+	const task = (async () => {
+		if (pnpmVersionCache === null) {
+			const ping = await run(["--version"], { cwd: profile, timeoutMs: 15000 });
+			if (ping.code !== 0) return { ok: false, error: `pnpm 不可用（exit ${ping.code}）：${(ping.stderr || ping.stdout).slice(-200)}` };
+			pnpmVersionCache = (ping.stdout || "").trim();
+		}
+		const out = await run(["outdated", "--json"], { cwd: profile, timeoutMs: 120000 });
+		let table = {};
+		try { table = JSON.parse(out.stdout || "{}") || {}; }
+		catch {
+			return { ok: false, error: `pnpm outdated 输出无法解析（exit ${out.code}）：${(out.stderr || out.stdout).slice(-300)}` };
+		}
+		const updates = users.map((name) => {
+			const row = table[name] || table[`./${name}`] || null;
+			return {
+				name,
+				current: row?.current ?? null,
+				latest: row?.latest ?? null,
+				needsUpdate: Boolean(row && row.latest && row.current !== row.latest)
+			};
+		});
+		const result = { ok: true, updates };
+		updatesCache.set(profile, { at: now(), lock, result });
+		return result;
+	})();
+	updatesInflight.set(profile, task);
+	try { return await task; }
+	finally { updatesInflight.delete(profile); }
 }
 
 /** 更新单个用户插件（与卸载同一套 EBUSY 引导 + P1-3 fail-closed：握手失败但端口有监听者 → 拒绝）。 */
@@ -2841,6 +2937,47 @@ function readJsonBody(req) {
 	});
 }
 
+/**
+ * S3：Host 头校验（DNS 重绑定防护）。只接受带端口的回环主机名 ——
+ * 攻击者把 `evil.example` 解析到 127.0.0.1 后，浏览器发出的请求 Host 仍是 `evil.example`，
+ * 只看 Origin/令牌挡不住"读接口被同源化"（/api/status 会暴露 profile 绝对路径 / pid / 版本）。
+ * 严格按审查报告：必须带端口、大小写不敏感、只认这三种回环写法。
+ */
+function isAllowedHost(hostHeader, port) {
+	if (typeof hostHeader !== "string" || hostHeader.trim() === "") return false;
+	const host = hostHeader.trim().toLowerCase();
+	return host === `127.0.0.1:${port}` || host === `localhost:${port}` || host === `[::1]:${port}`;
+}
+
+/**
+ * S4：统一安全响应头。页面是内联 `<script>` + 内联 `<style>`，因此保留 `'unsafe-inline'`
+ * （nonce 化要同时改三个页面模板 + 救援页，1.0.3 不做）；其余全部收紧：
+ *   default-src 'none'      —— 默认不许加载任何东西；
+ *   connect-src 'self'      —— 3081 页只能同源 fetch（/plugins/api/*、/rescue/api/*）；
+ *   img-src 'self' data:    —— 内联 favicon 是 data: URI；
+ *   frame-ancestors 'none' / X-Frame-Options: DENY —— 禁止被嵌框（点劫持）；
+ *   base-uri 'none'         —— 防 <base> 改写相对地址；
+ *   nosniff / Referrer-Policy: no-referrer —— 防 MIME 嗅探与地址外泄。
+ */
+const SECURITY_HEADERS = {
+	"X-Content-Type-Options": "nosniff",
+	"X-Frame-Options": "DENY",
+	"Referrer-Policy": "no-referrer",
+	"Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+};
+
+/**
+ * 给响应挂上安全头并返回可交给 writeHead 的 headers。
+ * 也在请求入口先 `setHeader` 一次：这样 lib/rescue 的 handleRescueApi 自己 writeHead 的
+ * JSON 响应（本仓库文件范围外）同样带上安全头。
+ */
+function applySecurityHeaders(res, extra = {}) {
+	if (res && typeof res.setHeader === "function" && !res.headersSent) {
+		for (const [name, value] of Object.entries(SECURITY_HEADERS)) res.setHeader(name, value);
+	}
+	return { ...SECURITY_HEADERS, ...extra };
+}
+
 function startServer(args) {
 	const startedAt = new Date().toISOString();
 	// 1.0.0-rc.1：每次启动器进程起来都重写 dsh-launcher.cmd（重装/升级后自愈，路径全部来自当前实况）
@@ -2853,7 +2990,7 @@ function startServer(args) {
 	const pluginsFlight = createSingleFlight("open-boot:plugins");
 	const rescueCtx = { profile: args.profile, dsh: args.dsh, cwd: args.cwd, port: args.port, flight };
 	const sendJson = (res, code, body) => {
-		res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
+		res.writeHead(code, applySecurityHeaders(res, { "Content-Type": "application/json; charset=utf-8" }));
 		res.end(JSON.stringify(body));
 	};
 	/** L11 ①②：写接口的 Origin + 令牌检查。返回 true 表示已拒绝并应答。 */
@@ -2864,11 +3001,18 @@ function startServer(args) {
 		return true;
 	};
 	const sendHtml = (res, html) => {
-		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+		res.writeHead(200, applySecurityHeaders(res, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }));
 		res.end(html);
 	};
 
 	const server = createServer(async (req, res) => {
+		// S4：先挂安全头（任何分支、含救援 API 自己的 writeHead 都继承）
+		applySecurityHeaders(res);
+		// S3：Host 校验放在**路由之前**——DNS 重绑定请求在这里就该被 421 挡掉
+		if (!isAllowedHost(req.headers.host, args.port)) {
+			sendJson(res, 421, { ok: false, code: 421, error: "Host 不被允许（仅接受回环地址）" });
+			return;
+		}
 		const url = new URL(req.url, "http://127.0.0.1");
 		const pathname = url.pathname;
 		if (pathname === "/") {
@@ -2897,6 +3041,9 @@ function startServer(args) {
 			return;
 		}
 		if (pathname === "/plugins/api/bundles" && req.method === "GET") {
+			// S3 附带：已装插件清单不该裸奔给任意本地网页（DNS 重绑定后可读），GET 也过 Origin+令牌。
+			// 页面侧 api() 对 GET 已经带 X-DSH-PM-Token（loadBundles 走 api()），不需要额外改动。
+			if (rejectWrite(req, res)) return;
 			sendJson(res, 200, listBundles(args.profile));
 			return;
 		}
@@ -3033,7 +3180,7 @@ function startServer(args) {
 			});
 			return;
 		}
-		res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+		res.writeHead(404, applySecurityHeaders(res, { "Content-Type": "text/plain; charset=utf-8" }));
 		res.end("not found");
 	});
 
@@ -3062,7 +3209,8 @@ function startServer(args) {
 		console.log(`[open-boot] profile: ${args.profile}；引擎端口: ${ENGINE_PORT}；拉起引擎时${args.window ? "弹窗显示进度" : "静默启动"}；cwd: ${process.cwd()}`);
 		console.log(`[open-boot] 救援能力（唯一网页入口）：http://127.0.0.1:${args.port}/rescue（/rescue/api/*：verify|fix|start|stop|status）；` +
 			`rescue-daemon 备份入口默认 ${RESCUE_DAEMON_PORT}（不再抢占 ${args.port}）`);
-		console.log(`[open-boot] 写接口防护：/api/boot 与 /rescue/api/* 的 POST 需同源 Origin + 一次性令牌（页面自动带上，不写日志/不落盘）`);
+		console.log(`[open-boot] 写接口防护：/api/boot 与 /rescue/api/* 的 POST 需同源 Origin + 一次性令牌（页面自动带上，不写日志/不落盘）；` +
+			`入口 Host 仅接受回环地址 127.0.0.1/localhost/[::1]:${args.port}（其余 421）`);
 	});
 	return server;
 }
@@ -3138,6 +3286,8 @@ export {
 	// rc.2 测试面：单测直接驱动这些函数（不经过 HTTP）
 	CORE_BUNDLES, MANAGER_SELF_NAME, PKG_NAME_RE, runPnpm, writeFileAtomic, engineBusyGate,
 	uninstallPackageTransactional, updatePackage, checkUpdates, healthReport, restartEngine, ensureLauncherCmd,
+	// 1.0.3 任务 C 测试面：Host 校验 / 安全响应头 / 有界缓冲 / updates 缓存
+	isAllowedHost, SECURITY_HEADERS, PNPM_OUTPUT_CAP, createBoundedBuffer, lockfileStamp, resetUpdatesCacheForTests,
 	// U1 测试面：兜底页 HTML 静态断言（test-ux.mjs）直接检查页面结构，不用起浏览器
 	pluginsPageHtml
 };

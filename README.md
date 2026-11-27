@@ -6,10 +6,10 @@
 
 ![badge](https://img.shields.io/badge/dsh-0.1.7+-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![version](https://img.shields.io/npm/v/dsh-drydock?color=orange) ![npm](https://img.shields.io/npm/dt/dsh-drydock)
 
-> 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包将加弃用标记、不删包）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
+> 社区/本地插件，非 DSH 官方包。npm：`dsh-drydock`（原名 `dsh-plugin-manager-pro`，旧包已挂弃用提示、不删包，仅保留供历史版本安装）· GitHub：[nonentity303/dsh-drydock](https://github.com/nonentity303/dsh-drydock) · 跨平台（Windows / macOS / Linux）
 >
-> **正式发布版 1.0.0**（npm `latest`，2026-11-25 发布）。核对：`npm view dsh-drydock version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
-> ⚠️ **正在更名为 `dsh-drydock`（引擎船坞）**：GitHub 仓库已改名（旧链接自动跳转）；npm 包名将在下个版本迁移，旧名届时加弃用标记（不删包）。安装方式见下文[安装](#安装--更新--卸载)。
+> **本页对应版本：1.0.3（npm latest，2026-11-27）**。核对：`npm view dsh-drydock version`；标签见 <https://github.com/nonentity303/dsh-drydock/tags>。
+> **包名迁移已完成**：npm 包名就是 `dsh-drydock`（旧包名只保留供历史版本安装）；GitHub 仓库已改名（旧链接自动跳转）。安装方式见下文[安装](#安装--更新--卸载)。
 > ⚠️ 刚发布的版本会被 pnpm 的 24 小时冷静期（`minimumReleaseAge`）挡住，装不到时请**显式写版本号**（见下文[安装](#安装--更新--卸载)）。
 
 **本管理器接管引擎内置的插件管理页，并补上官方不做的部分**：装卸的完整闭环（影响预览 → 事务化卸载 → 失败回滚 → 一键撤销）、操作历史与场景方案、引擎不可用时依然可用的兜底管理页，以及**主引擎起不来时的独立救援工具链**。任一载体失效时，其余载体仍可完成启停、卸载与恢复操作。
@@ -51,11 +51,12 @@
 - **事务化卸载**（v1.0 加固）：卸载前**影响预览与体检** → 备份 → `pnpm remove` → 清理补丁条目 → 逐项验证 → **失败自动回滚**；卸载后可**一键撤销**
 - **操作历史 + 场景方案**：最近 20 次操作留痕可撤销；插件组合保存为命名场景，一键切换（应用前展示变更预览）
 - **兜底页独立于引擎**（v1.0）：引擎挂了，`http://127.0.0.1:3081/plugins` 依然能启停 / 更新 / 卸载 / 体检 / 重启引擎
-- **多源更新聚合**：npm registry / GitHub / 自定义镜像并行查询，限流熔断，公平取最高版本
+- **多源更新聚合**：默认 npm 官方 / GitHub 官方仓库 / npmmirror 三源，**registry 版本权威**；自定义源默认只作降级兜底（不与官方源混比），`http://` 源默认标「明文 · 仅兜底」；仅 `@deepseek-ai/*` 才走 `next` 轨道，其余只取 `latest` 并过滤预发布
+- **下载目录自动安装有来源记录**（1.0.3）：`$DSH_HOME\downloads` 里的归档必须对上管理器自己生成的 provenance 记录（包名 + 版本 + 来源 + 摘要）才会自动安装，对不上的拒绝并写 `.failed`
 - **浏览器即启动器**：主页设为 `http://127.0.0.1:3081/`，打开浏览器 = 自动自检 → 修复 → 启动 → 跳转主界面
 - **本地写接口有防护**（v0.9.1）：`Origin`（同机同端口白名单）+ 一次性令牌 + 单飞闸门，第三方网页无法触发启动/停止
 
-## 📋 功能总览（1.0.0）
+## 📋 功能总览（1.0.3）
 
 ### 管理台（3080）
 
@@ -105,10 +106,21 @@
 
 ### 📥 更新与下载
 
-- **多源并行 + 权重一致**：所有启用源并行查询取最高版本；并列时随机挑选
+#### 更新源信任模型（1.0.3 新口径）
+
+- **默认更新源（三个）**：npm 官方（`registry.npmjs.org`）/ GitHub 官方仓库 / npmmirror 镜像（`registry.npmmirror.com`）
+- **registry 版本权威**：权威源给出确定版本时，**只在权威源之间**取最高（并列随机），其它源不参与这次裁决；权威源都没有版本时才降级兜底，并在界面与回执里标 `degraded`
+- **自定义源默认只作兜底**：用户新增的源落在 `custom` 层，默认 `authoritative: false`，**不再与官方源混比**；要让它独立裁决版本，必须显式 `authoritative: true`（内网 / 离线部署用，意味着"此后版本裁决与安装均来自该源"）
+- **`http://` 源允许但默认"明文 · 仅兜底"**：内网 registry / 代理是真实场景，所以不禁止；但默认不进权威层。升权威需显式 `authoritative: true`，明文源还要再给 `allowInsecure: true` 才真正生效，否则自动降级并把原因写进可读 note（不静默）
+- **`official` 徽标由服务端判定**：内置权威白名单只有 npm 官方与 npmmirror（按规范化 URL 比较），客户端提交的 `official` 一律忽略
+- **只有 `@deepseek-ai/*` 有 `next` 轨道**：仅该命名空间（且源是内置权威源）才优先 `dist-tags.next`；其余包只取 `latest`，`latest` 本身是 semver 预发布（含 `-`）时视为"无可用版本"——不把 RC 推给普通用户
+
+#### 下载
+
 - **限流熔断**：GitHub API 403/429 自动冷却 10 分钟；全量刷新 8 并发、结果缓存 30 分钟
 - **下载优先级**：① 浏览器原生下载（隐藏 iframe，NDM 等扩展可捕获）→ ② 外部下载软件 → ③ 内置下载器兜底（HTTP 直链 / aria2c / P2P magnet·torrent）
-- **下载目录自动安装**：`.tgz` / `.tar.gz` 放入 `$DSH_HOME\downloads` → 自动拾取安装；**安装前做清单校验 + 启动前自检，失败自动回滚并标记 `.failed`（不再反复重试）**
+- **下载目录自动安装需来源记录（provenance）**：`.tgz` / `.tar.gz` 放进 `$DSH_HOME\downloads` 后，先读归档内的 `package.json`，只有能与管理器自己生成的下载记录（包名 + 版本 + 来源 + 期望摘要，7 天有效）对上的才自动安装；对不上的拒绝并写 `.failed`（提示"未找到来源记录——不是本管理器生成的下载链接；确认可信后再删除 .failed 重试"），安装成功后记录移除
+- **校验口径**：只有内容摘要（integrity / shasum）才算"已校验"，**字节数单独存在不算**；重定向逐跳校验，任何一跳降级到明文 `http` 都拒绝（除非显式 `allowInsecure`）；无摘要的下载默认拒绝，`security.unverifiedDownloads: allow` 放行时回执也会明说"未校验"
 
 ### 🛒 插件市场
 
@@ -170,17 +182,18 @@
 
 - Windows 10/11 · macOS · Linux（`/rescue` 与三个 bin 工具全平台可用；**开机自启管理目前为 Windows**）
 - Node.js ≥ 18 · DeepSeek Harness `dsh`（全局安装或 npx）· `pnpm`（`dsh plugin` 与更新功能依赖）
+  - `engines.node` 以 `package.json` 为准（本版仍是 `>=18.0.0`，**未收紧**）；但 Node 18 已 EOL、pnpm 11 也不再支持 18/20/21，实际请在 **Node 22 LTS 或更新**上运行。engines 收紧排在 1.1.x。
 - 端口（均只监听 `127.0.0.1`）：**3080** 引擎主界面 · **3081** 启动器（启动页 / 兜底页 / 救援页）· **3082** 备份救援 · **4081**（3081+1000）守护单实例锁；`DSH_LAUNCHER_PORT` / `DSH_ENGINE_PORT` 可覆盖
 
 ### 引擎兼容性矩阵
 
 | 你的 DSH 引擎 | 本管理器版本 | 说明 |
 |---|---|---|
-| **≥ 0.1.7-rc.2**（含 0.2.x，`<0.3.0-0`） | **1.0.0**（推荐）／ 0.9.1 | 独立插件页 + 兜底页 + 救援工具链全套；1.0.0 实测于 0.2.x 引擎（三分区 / 统一口径 / 事务卸载，隔离环境 + 主环境双验证） |
-| 0.1.6 及以后 | 0.9.1 | 官方 0.1.6 起内置插件管理页，本包接管（停用 `ui-plugin-manager` + 自己的行 id） |
-| **0.1.0-rc.6 ~ 0.1.5**（老引擎） | **0.8.2** | 旧「设置 → 插件」tab 路线；0.8.x 在 0.1.7 上不成立（typert strict codec / runtime 依赖移除） |
+| **≥ 0.1.7-rc.2**（含 0.2.x，`<0.3.0-0`） | **1.0.3**（推荐）／ 1.0.2 / 1.0.1 / 1.0.0 | 独立插件页 + 兜底页 + 救援工具链全套；1.0.x 实测于 0.2.x 引擎（三分区 / 统一口径 / 事务卸载，隔离环境 + 主环境双验证） |
+| 0.1.6 及以后 | **1.0.3** | 官方 0.1.6 起内置插件管理页，本包接管（停用 `ui-plugin-manager` + 自己的行 id） |
+| **0.1.7-rc.2 之前**（0.1.0-rc.6 ~ 0.1.5） | 不支持 | 1.0.x 的 engines 下界就是 `0.1.7-rc.2`；旧引擎请留在旧包名的历史版本（该包已挂弃用提示，包未删除） |
 
-> **一句话**：引擎越新越要 1.0.0；引擎很老（0.1.6 之前）才需要 0.8.2。回退：`dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2`。
+> **一句话**：引擎 ≥ 0.1.7-rc.2 用 1.0.3。回退上一个正式版：`dsh plugin --profile web add dsh-drydock@1.0.2`。
 
 ## 🔐 权限与数据范围
 
@@ -192,7 +205,7 @@
 | `~/.dsh/profiles/<名字>/cordis.patch.yml` | 读/写插件启用状态与隔离行（只动带归属标记的部分，改前备份） | 否 |
 | `~/.dsh/profiles/<名字>/plugin-manager.json`（侧车） | 操作历史（20 条）、场景方案、来源人工修正、待清理列表、更新源配置 | 否 |
 | `~/.dsh/profiles/<名字>/node_modules/**` | 读依赖反向图与包简介；卸载/隔离时经 `pnpm` 删除 | 否（装卸时由 pnpm 访问 registry） |
-| `$DSH_HOME/downloads/*` | 「下载目录自动安装」扫描归档；写 `.installed` / `.failed` 标记 | 否 |
+| `$DSH_HOME/downloads/*` | 「下载目录自动安装」扫描归档；只有带 provenance 记录（包名+版本+来源+摘要）的归档才会被自动安装；写 `.installed` / `.failed` 标记 | 否 |
 | 本机 npm 全局根 | **只读**：定位引擎自带的 `@deepseek-ai/*`、提取简介 | 否 |
 | 更新源（npm registry / GitHub / 你加的镜像） | 查询最新版本、下载归档 | **只查询**，不上传本地数据 |
 | 本机回环端口 3080 / 3081 / 3082 / 4081 | 主界面 / 启动器 / 备份救援 / 守护锁；全部只绑 `127.0.0.1` | 否（不出本机） |
@@ -210,21 +223,20 @@
 dsh plugin --profile web add dsh-drydock
 
 # 方式二：刚发版时（或在 24 小时冷静期内）——显式写版本号，最可靠
-dsh plugin --profile web add dsh-drydock@1.0.0
+dsh plugin --profile web add dsh-drydock@1.0.3
 
 # 方式三：离线 tgz（GitHub Release 页下载，或 npm pack 自建）
-dsh plugin --profile web add ./dsh-drydock-1.0.0.tgz
+dsh plugin --profile web add ./dsh-drydock-1.0.3.tgz
 
-# 老引擎（0.1.0-rc.6 ~ 0.1.5）或 0.9.x 装上去不生效时，回退到旧 UI 版
-# （0.8.2 只存在于旧包名 dsh-plugin-manager-pro 下，回退命令保留旧名）
-dsh plugin --profile web add dsh-plugin-manager-pro@0.8.2
+# 回退上一个正式版（1.0.x 之间回退都走同一个包名，不需要旧包）
+dsh plugin --profile web add dsh-drydock@1.0.2
 
 # 重启 web 生效（客户端 bundle 在引擎启动时加载，装完必须重启）
 dsh web
 ```
 
 > **装不到 / 装完还是旧版？** ① 客户端 bundle 只在引擎**启动时**加载——装完必须重启 `dsh web`；
-> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），当天刚发布的版本不带版本号会解析到旧版——用"方式二"的显式版本号即可（也可把 `dsh-drydock@1.0.0` 加入 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
+> ② pnpm 11 起有 **24 小时冷静期**（`minimumReleaseAge` 默认 1440 分钟），当天刚发布的版本不带版本号会解析到旧版——用"方式二"的显式版本号即可（也可把 `dsh-drydock@1.0.3` 加入 profile 的 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`）。
 
 装好后两个入口：3080 侧边栏**「插件管理」**（内置插件页已接管）；3081 `http://127.0.0.1:3081/plugins`（引擎不可用时仍可用）。浏览器主页设为 `http://127.0.0.1:3081/` = 打开即自检启动引擎。
 
@@ -278,8 +290,8 @@ npx dsh-drydock --uninstall                          # 需要时：彻底清理�
 - **运行期错误**：从 cordis 的 `fiber._error` 取真实错误文本（诊断与救援页能看到失败原因）
 - **插件页接管**（`src/client.jsx` + `cordis.patch.yml`）：客户端注册进 `main`（key=`plugins`）与 `sidebar.panellist`（id=`plugins`），patch 停用内置 `ui-plugin-manager`；用自己的行 id `drydock` 不与官方同名；注册内置页原有的 `plugins.*` 子槽位，第三方配置卡片有真实渲染出口
 - **开关持久化**：写入 profile 的 `cordis.patch.yml`（带归属注释行，不触碰用户自有补丁）
-- **更新源聚合**（`lib/aggregate.js` + `compare-versions.js`）：多源并行 → 最高版本 → 并列随机；源级熔断；完整支持预发布段
-- **下载器**（`lib/downloader.js`）：HTTP 直链流式；magnet/.torrent 优先外部下载器 → 内置 webtorrent → 提示手动导入
+- **更新源聚合**（`lib/aggregate.js` + `compare-versions.js`）：信任层按源 `authoritative` 判定（不是按源类型）→ 权威源之间取最高（并列随机）→ 没有权威版本才降级兜底并标 `degraded`；源级熔断；预发布只出现在 `@deepseek-ai/*` 的 `next` 轨道
+- **下载器**（`lib/downloader.js`）：HTTP 直链流式；magnet/.torrent 优先外部下载器 → 内置 webtorrent → 提示手动导入；下载目录自动安装靠侧车 `pendingDownloads` 记录做 provenance 比对
 - **跨平台**（`lib/platform.js`）：npm 全局根按平台定位（10 分钟缓存）
 - **独立救援**（`lib/preflight.mjs` + `lib/enginectl.mjs`）：纯 Node 自检/修复 + 引擎生命周期，被三个 bin 工具复用；与 host 方法同源逻辑
 - **本地写接口防护**：`Origin` + 一次性令牌 + 单飞三道闸，第三方网页无法触发启动/停止
@@ -299,6 +311,7 @@ node test-launcher.mjs                       # 启动器全量回归（354 项�
 node tools/smoke-plugins-api.mjs             # 独立端口 + 临时 DSH_HOME 的 /plugins API 冒烟（28 项）
 npm run check:vendor                         # 迁移件内容级校验（tgz 内文件 sha256 == 工作树）
 node tools/dev/gen-changelog.mjs             # 从 docs/releases/*.md 生成 CHANGELOG.md（--check 校验一致）
+node test-docs.mjs                           # 文档/版本号口径断言（离线、零依赖：README 版本号 == package.json、发布说明与 CHANGELOG 含 1.0.3）
 npm run pack                                 # build + npm pack（产出安装用 tarball）
 ```
 
@@ -331,6 +344,6 @@ MIT。补丁持久化机制借鉴 [hrhgit/deepseek-harness-plugin-manager](https
 
 An English README lives at [README.en.md](README.en.md). Quick version:
 
-A local plugin manager for DeepSeek Harness. It takes over the engine's built-in plugin page as a **standalone page** (sidebar entry "Plugin manager"): since **1.0.0** the list is grouped **by origin** — **Core components (locked) · Engine built-ins · User plugins** — with "Recommended" demoted to an inline row tag. Sections: Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance. It also ships a **standalone rescue toolchain**: `open-boot` (the single web entry on **3081**: boot page `/` + fallback manager page `/plugins` + rescue page `/rescue`), `rescue-daemon` (independent backup rescue service on **3082**), and `dsh-boot` (Steam-style boot sequence with exit codes). Transactional uninstall with impact preview, pre-uninstall health check, operation history (undo) and named scenarios included. Cross-platform, zero new runtime dependencies.
+A local plugin manager for DeepSeek Harness. It takes over the engine's built-in plugin page as a **standalone page** (sidebar entry "Plugin manager"): since **1.0.0** the list is grouped **by origin** — **Core components (locked) · Engine built-ins · User plugins** — with "Recommended" demoted to an inline row tag. Sections: Official built-ins (optional) · All plugins · Market · Operations & scenarios · Maintenance. It also ships a **standalone rescue toolchain**: `open-boot` (the single web entry on **3081**: boot page `/` + fallback manager page `/plugins` + rescue page `/rescue`), `rescue-daemon` (independent backup rescue service on **3082**), and `dsh-boot` (Steam-style boot sequence with exit codes). Transactional uninstall with impact preview, pre-uninstall health check, operation history (undo) and named scenarios included. Cross-platform, zero new runtime dependencies. **Update-source trust model (1.0.3)**: npm official / GitHub official repo / npmmirror by default, the registry is authoritative, custom sources are fallback-only unless explicitly marked `authoritative`, plain `http://` sources are allowed but labelled "plaintext · fallback only", only `@deepseek-ai/*` uses the `next` track, and auto-install from the downloads folder now requires a provenance record.
 
-Install: `dsh plugin --profile web add dsh-drydock` (pin `@1.0.0` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).
+Install: `dsh plugin --profile web add dsh-drydock` (pin `@1.0.3` if the release is less than 24 h old — pnpm's `minimumReleaseAge` default blocks brand-new versions) → restart `dsh web` → open the sidebar "Plugin manager". Details: [README.en.md](README.en.md).

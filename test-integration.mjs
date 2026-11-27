@@ -902,14 +902,16 @@ ok(netStats.fetched === c02Before && c02Again.version === null && c02Again.reaso
 	`C-02: 合流窗口内不重复打网络（fetched ${c02Before} → ${netStats.fetched}）且原因如实返回（reason=${c02Again.reason}）`);
 stubMode = "ok";
 const c02Ok = await net.refreshLatest("stub-pkg-0", stubSource(), { force: true });
-ok(c02Ok.version === "2.0.0-next.1" && c02Ok.reason === "ok",
+// 1.0.3 A2：非 @deepseek-ai/* 包不再采用 dist-tags.next（桩源 next=2.0.0-next.1、latest=1.0.0
+// → 取 latest 并过滤 prerelease）。本断言原意只是"网络恢复后能拿到真实版本"，故同步为 1.0.0。
+ok(c02Ok.version === "1.0.0" && c02Ok.reason === "ok",
 	`C-02: **网络恢复后立即重试拿到真实版本 ${c02Ok.version}**（reason=${c02Ok.reason}，未被负缓存短路）`);
 net.resetNetworkState();
 stubMode = "hang";
 await net.refreshLatest("stub-pkg-1", stubSource(`${stubBase}/registry-bad`), hangOpts());
 stubMode = "ok";
 const c02Switch = await net.refreshLatest("stub-pkg-1", stubSource(), {});
-ok(c02Switch.version === "2.0.0-next.1",
+ok(c02Switch.version === "1.0.0",
 	`C-02: 换回可用源（不加 force）立即拿到 ${c02Switch.version} —— 失败源不污染其它源/其它包`);
 
 // C-02-d（已移除）：dshfind 源的 1 小时负缓存断言 —— dshfind 源连同它的搜索/缓存实现

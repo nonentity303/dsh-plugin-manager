@@ -191,8 +191,21 @@ await verify("本地 tgz：不给 --accept-local 就拒；给了标 source=local
 	eq([no.ok, no.code], [false, "local-needs-ack"], "未确认");
 	const yes = await localCandidate({ file, name: NAME, currentVersion: "1.0.0", form: "web", acceptLocal: true, dshHome: DSH_HOME });
 	eq([yes.ok, yes.target.local], [true, true], "已确认");
+	// 版本号从文件名解析（否则 UI 会显示 "1.2.0 → local:C:\..." 这种没法看的东西）
+	eq([yes.target.version, yes.target.versionFromFilename], ["1.2.0", true], "文件名解析版本");
 	const missing = await localCandidate({ file: join(TMP, "nope.tgz"), name: NAME, currentVersion: "1.0.0", form: "web", acceptLocal: true, dshHome: DSH_HOME });
 	eq(missing.code, "local-missing", "文件不存在");
+});
+
+await verify("本地 tgz 文件名带通道后缀也能解出完整版本；解析不出就退回 local:<文件名>（不假装知道）", async () => {
+	const desk = join(TMP, "dsh-drydock-1.1.0-desktop.2.tgz");
+	writeFileSync(desk, "x");
+	const a = await localCandidate({ file: desk, name: NAME, currentVersion: "1.1.0-desktop.1", form: "desktop", acceptLocal: true, dshHome: DSH_HOME });
+	eq([a.target.version, a.target.versionFromFilename], ["1.1.0-desktop.2", true], "通道后缀");
+	const weird = join(TMP, "some-build.tgz");
+	writeFileSync(weird, "x");
+	const b = await localCandidate({ file: weird, name: NAME, currentVersion: "1.0.0", form: "web", acceptLocal: true, dshHome: DSH_HOME });
+	eq([b.target.version, b.target.versionFromFilename], ["local:some-build.tgz", false], "退回文件名");
 });
 
 // ── ⑥ worker 状态机 ───────────────────────────────────────

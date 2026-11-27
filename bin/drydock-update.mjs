@@ -233,7 +233,11 @@ async function main(argv = process.argv.slice(2)) {
 			return 1;
 		}
 		writeState({ ...running, workerPid: spawned.pid }, { dshHome });
-		console.log(`已开始升级到 ${state.targetVersion}：引擎会短暂重启（日志：${join(dshHome, ".drydock", "self-update-worker.log")}）`);
+		console.log(
+			args.noRestart
+				? `已开始升级到 ${state.targetVersion}：只装不重启（你稍后自己重启引擎生效）；日志：${join(dshHome, ".drydock", "self-update-worker.log")}`
+				: `已开始升级到 ${state.targetVersion}：引擎会短暂重启（日志：${join(dshHome, ".drydock", "self-update-worker.log")}）`
+		);
 		console.log("进度：dsh-drydock-update --status");
 		return 0;
 	}
@@ -286,7 +290,7 @@ async function main(argv = process.argv.slice(2)) {
 			form,
 			channel: distTagForForm(form),
 			currentVersion,
-			targetVersion: `local:${resolve(args.acceptLocal)}`,
+			targetVersion: cand.target.version,
 			stagedFile: resolve(args.acceptLocal),
 			integrity: null,
 			registry: null,
